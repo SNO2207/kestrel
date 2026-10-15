@@ -122,7 +122,8 @@ const openViewMenu = async () => {
   await menu.waitFor();
   return menu;
 };
-const menuItem = (menu, label) => menu.locator(".menu-item", { hasText: new RegExp(`^${escape(label)}`) });
+/** A menu item by its whole label, so "Open" does not also find "Open with…". */
+const menuItem = (menu, label) => menu.locator(".menu-item").filter({ has: page.locator(".menu-label", { hasText: exactly(label) }) });
 const choose = async (label) => {
   const menu = await openViewMenu();
   await menuItem(menu, label).click();

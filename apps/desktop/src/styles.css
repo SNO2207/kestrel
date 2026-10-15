@@ -990,6 +990,7 @@ code {
   height: 22px;
   margin-left: -5px;
   text-align: left;
+}
 
 .notice.info {
   border-color: var(--select-line);
