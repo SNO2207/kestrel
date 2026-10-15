@@ -1,0 +1,1002 @@
+/*
+ * The disk usage hub. Kept apart from styles.css so the feature merges cleanly; it uses the
+ * tokens defined there, plus the colours of the types of data below.
+ *
+ * The eight types with hues of their own take the eight slots of a categorical palette checked
+ * for colour-blind separation on Kestrel's surfaces (dark and light, each its own steps); the
+ * types that are nobody's content (build output, the system, everything else) are greys, and
+ * folders and "smaller items" are the surfaces' own tones.
+ */
+:root {
+  --disk-video: #3987e5;
+  --disk-images: #d95926;
+  --disk-audio: #199e70;
+  --disk-documents: #c98500;
+  --disk-archives: #d55181;
+  --disk-code: #008300;
+  --disk-programs: #9085e9;
+  --disk-disk-images: #e66767;
+  --disk-build-output: #7a7062;
+  --disk-system: #5d6877;
+  --disk-other: #8a95a5;
+  --disk-folder: #3b4654;
+  --disk-rest: #2f3844;
+  --disk-open: #1f262f;
+  --disk-open-alt: #252d38;
+  --disk-hatch: rgb(255 255 255 / 0.1);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --disk-video: #2a78d6;
+    --disk-images: #eb6834;
+    --disk-audio: #1baf7a;
+    --disk-documents: #eda100;
+    --disk-archives: #e87ba4;
+    --disk-code: #008300;
+    --disk-programs: #4a3aa7;
+    --disk-disk-images: #e34948;
+    --disk-build-output: #a39985;
+    --disk-system: #7d8796;
+    --disk-other: #b3bbc6;
+    --disk-folder: #cdd4dd;
+    --disk-rest: #e1e5ea;
+    --disk-open: #f4f6f8;
+    --disk-open-alt: #eaedf1;
+    --disk-hatch: rgb(0 0 0 / 0.09);
+  }
+}
+
+.disk-hub [data-category="video"] { --disk-color: var(--disk-video); }
+.disk-hub [data-category="images"] { --disk-color: var(--disk-images); }
+.disk-hub [data-category="audio"] { --disk-color: var(--disk-audio); }
+.disk-hub [data-category="documents"] { --disk-color: var(--disk-documents); }
+.disk-hub [data-category="archives"] { --disk-color: var(--disk-archives); }
+.disk-hub [data-category="code"] { --disk-color: var(--disk-code); }
+.disk-hub [data-category="programs"] { --disk-color: var(--disk-programs); }
+.disk-hub [data-category="disk_images"] { --disk-color: var(--disk-disk-images); }
+.disk-hub [data-category="build_output"] { --disk-color: var(--disk-build-output); }
+.disk-hub [data-category="system"] { --disk-color: var(--disk-system); }
+.disk-hub [data-category="other"] { --disk-color: var(--disk-other); }
+.disk-hub [data-category="folder"] { --disk-color: var(--disk-folder); }
+.disk-hub [data-category="rest"] { --disk-color: var(--disk-rest); }
+
+/* ---------- sidebar entry ---------- */
+
+/* Drawn like the projects entry above it: no place, and nothing can be dropped on it. */
+.disk-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  text-align: left;
+  color: var(--muted);
+}
+
+.disk-entry span {
+  color: var(--text);
+}
+
+.disk-entry:hover {
+  background: var(--raised);
+}
+
+.disk-entry.current {
+  background: var(--select);
+  color: var(--accent);
+}
+
+/* ---------- the hub ---------- */
+
+.disk-hub {
+  position: absolute;
+  inset: 0;
+  /* Above the lists and the preview pane, below notices, menus and dialogs. */
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  outline: 0;
+}
+
+.disk-head {
+  flex: none;
+  display: grid;
+  gap: 6px;
+  padding: 14px 18px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.disk-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--accent);
+}
+
+.disk-title-row h1 {
+  margin: 0 4px 0 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.disk-icon-button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+.disk-icon-button:hover:not(:disabled) {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.disk-icon-button:disabled {
+  opacity: 0.4;
+}
+
+.disk-crumbs {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px;
+  overflow: hidden;
+  background: var(--chrome);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--faint);
+  cursor: text;
+}
+
+.disk-crumbs.editing {
+  border-color: var(--accent);
+}
+
+.disk-crumb {
+  flex: none;
+  max-width: 260px;
+  padding: 2px 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.disk-crumb:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.disk-crumb[aria-current] {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.disk-crumb-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  user-select: text;
+}
+
+.disk-drive-pick {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.disk-drive-pick select {
+  height: 28px;
+  padding: 0 6px;
+  background: var(--chrome);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  outline: 0;
+  font: inherit;
+  color: var(--text);
+}
+
+.disk-drive-pick select:focus {
+  border-color: var(--accent);
+}
+
+.disk-tab-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  min-width: 0;
+}
+
+.disk-tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
+.disk-tab {
+  height: 34px;
+  margin-bottom: -1px;
+  padding: 0 12px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+}
+
+.disk-tab:hover {
+  color: var(--text);
+}
+
+.disk-tab[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.disk-summary {
+  min-width: 0;
+  margin-left: auto;
+  padding-bottom: 9px;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.disk-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.disk-spacer {
+  flex: 1;
+}
+
+.disk-message {
+  margin: 48px auto;
+  color: var(--muted);
+}
+
+.disk-message.error {
+  max-width: 560px;
+  padding: 12px 16px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  color: var(--text);
+  user-select: text;
+}
+
+.disk-status {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(640px, calc(100% - 32px));
+  padding: 8px 8px 8px 14px;
+  transform: translateX(-50%);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+}
+
+.disk-status > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.disk-status-action {
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.disk-status-action:hover {
+  background: var(--select);
+}
+
+.disk-status-dismiss {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+.disk-status-dismiss:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* ---------- overview ---------- */
+
+.disk-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 16px 18px 28px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  container-type: inline-size;
+}
+
+.disk-overview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  max-width: 1440px;
+}
+
+.disk-totals,
+.disk-growth,
+.disk-footnote {
+  grid-column: 1 / -1;
+}
+
+@container (max-width: 860px) {
+  .disk-overview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .disk-totals {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .disk-table .col-logical {
+    display: none;
+  }
+}
+
+.disk-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 16px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.disk-card h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.disk-card h3 {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.disk-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.disk-card-head h2 {
+  flex: 1;
+}
+
+.disk-subtitle {
+  margin: -6px 0 0;
+  color: var(--muted);
+}
+
+.disk-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.disk-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.disk-footnote {
+  margin: 2px 2px 0;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.disk-swatch {
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--disk-color, var(--disk-other));
+}
+
+.disk-swatch[data-category="rest"] {
+  background: repeating-linear-gradient(135deg, var(--disk-rest) 0 3px, var(--disk-hatch) 3px 4px), var(--disk-rest);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.disk-swatch[data-category="folder"] {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* Totals: the folder's own numbers, and the drive's beside the index's. */
+.disk-totals {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.6fr);
+  gap: 18px 28px;
+}
+
+.disk-totals-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.disk-big {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.disk-big-number {
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.disk-big-label {
+  color: var(--muted);
+}
+
+.disk-facts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.disk-facts div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.disk-facts dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.disk-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.disk-cloud dt {
+  color: var(--weight-folder);
+}
+
+.disk-drive {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.disk-drive-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  color: var(--muted);
+}
+
+.disk-drive-name {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.disk-drive-numbers {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.disk-meter {
+  display: flex;
+  gap: 2px;
+  height: 12px;
+  overflow: hidden;
+  background: var(--raised);
+  border-radius: 6px;
+}
+
+.disk-meter-part {
+  flex: none;
+  height: 100%;
+}
+
+.disk-meter-part.indexed,
+.disk-key.indexed {
+  background: var(--weight-folder);
+}
+
+.disk-meter-part.mine,
+.disk-key.mine {
+  background: var(--accent);
+}
+
+.disk-meter-part.unseen,
+.disk-key.unseen {
+  background: repeating-linear-gradient(135deg, var(--faint) 0 3px, transparent 3px 6px), color-mix(in srgb, var(--faint) 35%, transparent);
+}
+
+.disk-key.free {
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.disk-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+}
+
+.disk-legend li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.disk-key {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.disk-explain {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  user-select: text;
+}
+
+.disk-explain p {
+  margin: 0;
+}
+
+.disk-explain ul {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
+/* By type: a stacked bar and its table. */
+.disk-stack {
+  display: flex;
+  gap: 2px;
+  height: 14px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--raised);
+}
+
+.disk-stack-part {
+  flex-basis: 0;
+  min-width: 2px;
+  background: var(--disk-color);
+}
+
+.disk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.disk-table th {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.disk-table td {
+  padding: 5px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  vertical-align: top;
+}
+
+.disk-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.disk-table .numeric {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.disk-table .muted {
+  color: var(--muted);
+}
+
+.disk-type-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.disk-cloud-note {
+  display: block;
+  margin-left: 18px;
+  color: var(--weight-folder);
+  font-size: 12px;
+}
+
+/* By age: one bar per age, in one hue from strong (recent) to faint (old). */
+.disk-bars {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.disk-bar-row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr) 76px 92px;
+  align-items: center;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.disk-bar-label {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.disk-bar-track {
+  height: 12px;
+}
+
+.disk-bar {
+  display: block;
+  min-width: 2px;
+  height: 100%;
+  border-radius: 0 4px 4px 0;
+  background: var(--accent);
+}
+
+.disk-bar-row[data-age="1"] .disk-bar { background: color-mix(in srgb, var(--accent) 86%, var(--surface)); }
+.disk-bar-row[data-age="2"] .disk-bar { background: color-mix(in srgb, var(--accent) 74%, var(--surface)); }
+.disk-bar-row[data-age="3"] .disk-bar { background: color-mix(in srgb, var(--accent) 63%, var(--surface)); }
+.disk-bar-row[data-age="4"] .disk-bar { background: color-mix(in srgb, var(--accent) 54%, var(--surface)); }
+.disk-bar-row[data-age="5"] .disk-bar { background: color-mix(in srgb, var(--accent) 46%, var(--surface)); }
+.disk-bar-row[data-age="6"] .disk-bar { background: color-mix(in srgb, var(--accent) 40%, var(--surface)); }
+
+.disk-bar-value {
+  text-align: right;
+}
+
+.disk-bar-count {
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Lists of files and folders. */
+.disk-list-card {
+  min-height: 0;
+}
+
+.disk-items {
+  display: grid;
+  margin: 0 -6px;
+  padding: 0;
+  list-style: none;
+}
+
+.disk-item {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 64px 70px 44px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 3px 6px;
+  border-radius: var(--radius);
+  text-align: left;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.disk-items.compact .disk-item {
+  grid-template-columns: 14px minmax(0, 1fr) auto auto;
+}
+
+.disk-item:hover {
+  background: var(--raised);
+}
+
+.disk-item .icon {
+  color: var(--weight-folder);
+}
+
+.disk-item .disk-swatch {
+  justify-self: center;
+}
+
+.disk-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.disk-item-name,
+.disk-item-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.disk-item-name {
+  color: var(--text);
+}
+
+.disk-item-path {
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.disk-item-weight {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--raised);
+}
+
+.disk-item-weight span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--weight);
+}
+
+.disk-items.folders .disk-item-weight span {
+  background: var(--weight-folder);
+}
+
+.disk-item-size {
+  color: var(--text);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.disk-item-size.grew {
+  color: var(--accent);
+}
+
+.disk-item-share,
+.disk-item-count {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* What grew, or what changed lately. */
+.disk-growth-summary {
+  margin: 0;
+}
+
+.disk-recent {
+  display: grid;
+  gap: 10px;
+}
+
+.disk-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.disk-tile {
+  display: grid;
+  gap: 2px;
+  min-width: 180px;
+  padding: 10px 14px;
+  background: var(--chrome);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.disk-tile-label,
+.disk-tile-sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.disk-tile-number {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- map ---------- */
+
+.disk-map {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px 18px 12px;
+}
+
+.disk-map-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.disk-map-legend {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.disk-map-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.disk-map-frame {
+  position: relative;
+  flex: 1;
+  min-height: 120px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+.disk-map-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.disk-map-overlay {
+  outline: 0;
+}
+
+.disk-map-overlay:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.disk-map-message {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.disk-map-hint {
+  margin: 0;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.disk-tooltip {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  gap: 3px;
+  max-width: min(420px, 70%);
+  padding: 8px 10px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+  pointer-events: none;
+}
+
+.disk-tooltip-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.disk-tooltip-path {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.disk-tooltip-size {
+  font-variant-numeric: tabular-nums;
+}
+
+.disk-tooltip-kind {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---------- the confirmation ---------- */
+
+.disk-confirm {
+  width: min(480px, 100%);
+}
+
+.disk-confirm-body {
+  display: grid;
+  gap: 6px;
+  padding: 8px 20px 0;
+}
+
+.disk-confirm-body p {
+  margin: 0;
+}
+
+.disk-confirm-path {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.dialog-button.primary.disk-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}

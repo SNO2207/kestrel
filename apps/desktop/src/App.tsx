@@ -4,6 +4,8 @@ import { api, type Row } from "./lib/api";
 import { locationKey, setViewMode, shortcutView } from "./lib/views";
 import { LOCKED_MESSAGE, isLocked, recheckAccess } from "./lib/access";
 import { BatchRenameDialog, openBatchRename } from "./components/BatchRename";
+import { DiskHub } from "./components/DiskHub";
+import { openDiskUsage } from "./disk";
 import { isDropFolder, listenForDrops } from "./dragdrop";
 import { DropHint } from "./components/DropHint";
 import { FileList, type ListCommand } from "./components/FileList";
@@ -98,6 +100,8 @@ export function App() {
       case "pin-folder":
       case "tags":
         return runShortcutCommand(tabId, command);
+      case "disk-usage":
+        return openDiskUsage(tabs.find((tab) => tab.id === tabId)?.path);
     }
   };
 
@@ -180,6 +184,7 @@ export function App() {
         </For>
         <PreviewPane />
         <ProjectsHub />
+        <DiskHub />
         <DropHint />
         <Show when={notice()}>
           <div class="notice" classList={{ info: noticeTone() === "info" }} role="alert">

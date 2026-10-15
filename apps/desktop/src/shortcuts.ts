@@ -13,6 +13,7 @@ import { createStore, reconcile } from "solid-js/store";
 
 import { api } from "./lib/api";
 import { closeProjects } from "./projects";
+import { closeDiskUsage } from "./disk";
 import { baseName, parentPath } from "./lib/format";
 import {
   shortcutsApi as backend,
@@ -163,11 +164,12 @@ export async function pinFolder(tabId: number) {
 
 /**
  * Opens a folder in the active tab or a new one, or a file in its default app. Going to a
- * folder closes the projects hub, even when the tab is already there under it.
+ * folder closes the projects and disk usage hubs, even when the tab is already there under them.
  */
 export function openPlace(path: string, dir: boolean, inNewTab = false) {
   if (!dir) return void api.openPath(path).catch(notify);
   closeProjects();
+  closeDiskUsage();
   const tab = activeTab();
   if (inNewTab || !tab) openTab(path);
   else navigate(tab.id, path);

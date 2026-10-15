@@ -4,6 +4,7 @@
 mod access;
 mod batchrename;
 mod clipboard;
+mod disk;
 mod dragdrop;
 mod engine;
 mod fileops;
@@ -328,6 +329,7 @@ fn main() {
     let thumbs = ThumbService::start(icons.clone());
     let database = open_database();
     let projects = projects::Projects::new(engine.clone(), database.clone());
+    let disk = disk::Disk::new(engine.clone(), database.clone());
     // The command palette's providers; other features register theirs in `setup` (palette.rs).
     let palette = Arc::new(palette::Palette::new(database.clone()));
     palette.register(Arc::new(palette::files::FilesProvider::new(engine.clone())));
@@ -347,6 +349,7 @@ fn main() {
         .manage(Journal::with_store(database.clone()))
         .manage(database.clone())
         .manage(projects.clone())
+        .manage(disk.clone())
         .manage(palette)
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
@@ -451,6 +454,12 @@ fn main() {
             projects::git_badges,
             projects::projects_probe,
             projects::projects_probe_take,
+            disk::disk_overview,
+            disk::disk_treemap,
+            disk::disk_growth,
+            disk::disk_watch,
+            disk::disk_recycle,
+            disk::disk_history_probe,
             palette::palette_query,
             palette::palette_record,
             palette::palette_forget,
@@ -481,6 +490,8 @@ fn main() {
                 .name("kestrel-undo-restore".into())
                 .spawn(move || restoring.state::<Journal>().restore())?;
             projects.start(app.handle().clone());
+            // The disk usage hub's change announcements and its daily sample (disk/).
+            disk.start(app.handle().clone());
             // The quick launcher, its shortcut and the tray icon; never fatal.
             launcher::setup(app.handle(), database.clone());
             // Launching Kestrel again shows this one, wherever it is hiding.

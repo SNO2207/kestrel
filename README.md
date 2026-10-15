@@ -2,8 +2,8 @@
 
 A fast file explorer for Windows 11. One in-memory index of every file on the drive powers
 instant search, instant folder listings with folder sizes, a command palette that reaches
-every folder and file, and the projects on the drive with their git status; disk analysis is
-to come.
+every folder and file, the projects on the drive with their git status, and a disk usage hub
+that shows what uses the disk.
 
 *Kestrel is a working name.*
 
@@ -14,6 +14,7 @@ to come.
 | `crates/kestrel-index` | The index: struct-of-arrays store, crawler, MFT builder, journal follower, snapshots |
 | `crates/kestrel-ntfs` | NTFS access: change journal reader, MFT record parser, raw volume reader |
 | `crates/kestrel-query` | Query language, parallel search, sorting |
+| `crates/kestrel-analyze` | Disk usage from the index: treemap layout, breakdowns by type and age, largest items, growth |
 | `crates/kestrel-cli` | Command-line front end and benchmark harness |
 | `apps/desktop` | The app: Tauri 2 backend in `src-tauri`, SolidJS front end in `src` |
 | `apps/broker` | Optional Windows service that reads drives' file tables for the app |
@@ -124,6 +125,7 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+wheel | Larger or smaller icons |
 | Alt+P | Show or hide the preview pane (drag its left edge to resize it) |
 | Ctrl+Shift+P | Show or hide the projects hub |
+| Ctrl+Shift+U | Show or hide the disk usage of the folder on screen; in it, Alt+Left or Backspace steps back out of a folder |
 | Space | Quick Look; Space or Esc closes it, the arrow keys move to the previous or next item |
 | Ctrl+D | Pin the selection to the sidebar, or the folder when nothing is selected |
 | Ctrl+1 … Ctrl+9 | Open the first nine pins, or the pins given those numbers |
@@ -312,6 +314,51 @@ trees, whose configurations it would have to trust too. A submodule on another c
 marked; uncommitted changes inside one are not. Claude Code is started from the PATH only,
 never from a `claude.cmd` in the project folder.
 
+## Disk usage
+
+"Disk usage" in the sidebar opens a hub of what uses the drive the folder on screen is on;
+Ctrl+Shift+U, "Show disk usage" in a folder's menu, or the command palette open it on the
+folder itself. Everything comes from the index, so a drive of millions of files is added up in
+about a tenth of a second without reading the disk, and the hub follows the index as files
+change. The breadcrumb (click beside it to type a folder), the drive list, a click on any
+folder and Back (Alt+Left or Backspace) move around; Esc closes the hub.
+
+The overview shows the size on disk, the size of the files, and how many files and folders
+there are. For a drive it sets what Windows says is used and free beside what the index holds,
+and says why they differ: NTFS's own file table (whose size Kestrel reads without
+administrator rights), System Volume Information with its restore points and shadow copies,
+the page, hibernation and swap files when the index lacks them, files Windows keeps compressed
+in a stream of their own (browsers' program files, for one), folders the account can't open,
+and files with several names, counted under each name where the index read their folder by
+name. Then come a breakdown by type (video, images, audio, documents, archives, code, programs
+and libraries, disk images and virtual machines, developer build output, system, and other;
+by extension, and by location: everything under `C:\Windows` is the system's, everything in a
+`node_modules`, a Cargo `target` or a package cache is build output) and one by age (when files
+last changed), each with the size on disk, the size and the number of files; the largest files
+and folders (a folder that only passes one big subfolder on is left out, so the list names
+where the space is); and what grew.
+
+Once a day Kestrel notes the size of every folder of 64 MB or more, down to five levels, and
+of every file of 100 MB or more, in `kestrel.db` (daily samples are kept for 90 days, then one
+a week). "What grew" compares the index now with the sample a day, a week and a month old: the
+folders that grew most (a folder whose growth is nearly all one subfolder's is left to that
+subfolder), the large files that grew, and the new large files. Until there is a day to compare
+with, it shows the files changed in the last 7 and 30 days, by folder.
+
+The map is a squarified treemap: every file and folder a rectangle with an area in proportion
+to its size on disk (or its size), coloured by type, shaded as a cushion, folders holding their
+contents under a strip with their name, and items too small to draw one by one gathered as
+"smaller items". Only what is big enough to see is laid out, so a whole drive takes a couple of
+milliseconds. Hovering shows an item's path and size; a click looks inside the folder under the
+pointer; a right-click offers Open, Show in folder and Move to the Recycle Bin, which asks
+first and goes through Kestrel's own file operations, so Ctrl+Z (or Undo in the hub) puts it
+back. Files kept online only (OneDrive's cloud files) take no space on the disk, so they get no
+area; they are counted apart, as in the cloud, and never downloaded. A hard-linked file counts
+once where the index charged it once, as an index read from the drive's file table does.
+
+`openDiskUsage(path)` in `src/disk.ts` opens the hub on any drive or folder, and the hub's tabs
+are a list in `DiskHub.tsx` that other panels join.
+
 ## Command palette and quick launcher
 
 Ctrl+K opens the command palette over the window: one list, ranked by a fuzzy match as you
@@ -358,6 +405,8 @@ cargo test --workspace                 # engine and backend unit tests
 cargo run --release -p kestrel-cli -- index C:\       # crawl and save, with a journal position
 cargo run --release -p kestrel-cli -- catch-up        # apply journal changes since the save
 cargo run --release -p kestrel-cli -- bench
+cargo run --release -p kestrel-cli -- disk-bench          # treemap layouts, the disk usage overview, a growth sample
+cargo run --release -p kestrel-cli -- usage C:\Users      # what the disk usage hub says about a folder
 cargo run --release -p kestrel-cli -- mft C:\ --compare   # as administrator: read the MFT, diff against the crawl
 cargo run --release -p kestrel-cli -- remote C:\      # ask the installed broker for an index
 ```
@@ -386,6 +435,7 @@ node e2e/integration.mjs    # the features together, in the icon, list and tile 
 node e2e/projects.mjs       # the projects hub and git badges, with repositories it makes
 node e2e/palette.mjs        # command palette, quick launcher, shortcut settings and tray option
 node e2e/connections.mjs    # where the palette, shortcuts, projects and preview meet
+node e2e/disk.mjs           # the disk usage hub on a scratch folder of known composition
 node e2e/dev.mjs stop
 ```
 
@@ -394,8 +444,8 @@ instead: it runs `tauri build` (no installer) with the slot's identity and start
 `kestrel.exe` that produced, whose front end is built in. `smoke.mjs`, `fileops.mjs`,
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
 `shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`,
-`integration.mjs`, `shortcuts.mjs`, `projects.mjs`, `palette.mjs` and `connections.mjs` need a
-dev build, whose test hooks they use. A release build has the Windows menu's test hook only
+`integration.mjs`, `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs` and
+`disk.mjs` need a dev build, whose test hooks they use. A release build has the Windows menu's test hook only
 when started with `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
 Run the suites one after another, not side by side: several use the clipboard or the window's
@@ -433,3 +483,9 @@ with two tiny files named `kestrel-test-*` and runs by default, and the helper's
 `invoking_copy_leaves_the_file_on_the_clipboard` replaces the clipboard's contents.
 `locked.mjs` and `integration.mjs` use `icacls` to remove, then restore, the permissions of
 one scratch folder.
+
+`disk.mjs` checks the hub's totals, types, ages and largest files against a scratch folder
+named `kestrel-test-e2e-disk-*` whose sixteen files it writes with known sizes and dates, finds
+the treemap's tiles through a development hook, and sends one file of that folder to the
+Recycle Bin from the treemap's menu, then undoes it, checking that the Recycle Bin ends as it
+began. It opens the hub on the whole drive once, which is read only.
