@@ -1,5 +1,6 @@
 import { For, Show } from "solid-js";
 
+import { isDropPlace } from "../dragdrop";
 import { formatSize } from "../lib/format";
 import { activeTab, navigate, openTab, places } from "../state";
 import { Icon, hasIcon } from "./Icon";
@@ -20,7 +21,9 @@ export function Sidebar() {
         <Show when={places().home}>
           <button
             class="place"
-            classList={{ current: current() === places().home.toLowerCase() }}
+            classList={{ current: current() === places().home.toLowerCase(), "drop-target": isDropPlace(places().home) }}
+            data-place={places().home}
+            data-place-name="Home"
             onClick={[open, places().home]}
             onAuxClick={[open, places().home]}
           >
@@ -32,8 +35,10 @@ export function Sidebar() {
           {(folder) => (
             <button
               class="place"
-              classList={{ current: current() === folder.path.toLowerCase() }}
+              classList={{ current: current() === folder.path.toLowerCase(), "drop-target": isDropPlace(folder.path) }}
               title={folder.path}
+              data-place={folder.path}
+              data-place-name={folder.name}
               onClick={[open, folder.path]}
               onAuxClick={[open, folder.path]}
             >
@@ -52,7 +57,9 @@ export function Sidebar() {
             return (
               <button
                 class="place drive"
-                classList={{ current: current() === drive.path.toLowerCase() }}
+                classList={{ current: current() === drive.path.toLowerCase(), "drop-target": isDropPlace(drive.path) }}
+                data-place={drive.path}
+                data-place-name={`${drive.label || "Local Disk"} (${drive.path.slice(0, 2)})`}
                 onClick={[open, drive.path]}
                 onAuxClick={[open, drive.path]}
               >

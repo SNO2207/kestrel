@@ -362,6 +362,18 @@ export function paste(tabId: number) {
   });
 }
 
+/**
+ * Refreshes every tab showing `folder` and selects `names` there once they appear, as paste
+ * does. Used after files are dropped into a folder, which may be shown in any tab or none.
+ */
+export function selectInFolder(folder: string, names: string[]) {
+  for (const tab of tabs) {
+    if (isSearch(tab) || tab.renaming || !samePath(tab.path, folder)) continue;
+    if (names.length > 0) patch(tab.id, (tab) => void (tab.pending = { names, rename: false }));
+    refresh(tab.id);
+  }
+}
+
 /** Creates a folder here and starts renaming it, as Explorer does. */
 export function createFolder(tabId: number) {
   const tab = find(tabId);

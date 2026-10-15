@@ -4,6 +4,8 @@ import { api, type Row } from "./lib/api";
 import { locationKey, setViewMode, shortcutView } from "./lib/views";
 import { LOCKED_MESSAGE, isLocked, recheckAccess } from "./lib/access";
 import { BatchRenameDialog, openBatchRename } from "./components/BatchRename";
+import { isDropFolder, listenForDrops } from "./dragdrop";
+import { DropHint } from "./components/DropHint";
 import { FileList, type ListCommand } from "./components/FileList";
 import { PreviewPane } from "./components/PreviewPane";
 import { QuickLook } from "./components/QuickLook";
@@ -124,6 +126,8 @@ export function App() {
       window.removeEventListener("contextmenu", onContextMenu);
     });
     void start().then(focusList);
+    const stopDrops = listenForDrops();
+    onCleanup(() => void stopDrops.then((stop) => stop()));
   });
 
   return (
@@ -134,7 +138,7 @@ export function App() {
       <main class="content">
         <For each={tabs}>
           {(tab) => (
-            <div class="tab-panel" classList={{ active: tab.id === activeId() }}>
+            <div class="tab-panel" classList={{ active: tab.id === activeId(), "drop-target": isDropFolder(tab.id) }}>
               <FileList
                 listing={tab.listing}
                 revision={tab.revision}
@@ -162,6 +166,7 @@ export function App() {
           )}
         </For>
         <PreviewPane />
+        <DropHint />
         <Show when={notice()}>
           <div class="notice" classList={{ info: noticeTone() === "info" }} role="alert">
             <span>{notice()}</span>

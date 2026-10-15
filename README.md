@@ -142,6 +142,17 @@ Icon and tile views show thumbnails rendered by the Windows shell, cached in
 are only in the cloud, such as OneDrive files not kept on this device, show their icon instead,
 so browsing never downloads them.
 
+### Drag and drop
+
+Drag selected items out of the list to Explorer, the desktop, an email or any other program: it
+is a native Windows drag with the shell's drag image, and the target decides between copy,
+move and shortcut as it would for Explorer. Files dragged onto Kestrel, from anywhere or from
+Kestrel itself, go into the folder row, sidebar place or tab under the cursor, or into the open
+folder. As in Explorer, they move within a drive and are copied to another; hold Ctrl to copy
+or Shift to move. A hint at the bottom of the list says which will happen. Hovering a folder,
+place or tab for a second opens it, and the list scrolls when the cursor nears its top or
+bottom edge. Dropped items are selected where they land.
+
 ## Testing
 
 ```powershell
@@ -166,6 +177,7 @@ node e2e/undo.mjs       # undo and redo, in a scratch folder
 node e2e/batchrename.mjs # batch rename and its preview, in a scratch folder
 node e2e/locked.mjs     # a scratch folder this account can't open shows locked
 node e2e/preview.mjs    # preview pane and Quick Look, confined to a scratch folder under %TEMP%
+node e2e/dragdrop.mjs   # drops driven by synthetic drag events, in a scratch folder under %TEMP%
 ```
 
 The preview pane shows images (SVG only through `<img>`), video, audio, PDF (the web view's own
@@ -174,6 +186,10 @@ JSON re-indented, and details for folders and everything else. File bytes reach 
 `preview` protocol (`src-tauri/src/preview.rs`), which serves regular files only, honours
 `Range`, shows HTML and other active content as text, and whose frames may not call the app's
 commands.
+
+`dragdrop.mjs` needs a dev build: it drives drops through the test hook such a build exposes,
+since a real mouse drag can't be scripted. Drags out are rehearsed rather than performed, so
+nothing is ever dropped on another program.
 
 `fileops.mjs` replaces the clipboard's contents, and with `KESTREL_E2E_RECYCLE=1` it also
 sends one small file to the Recycle Bin. `undo.mjs` and `batchrename.mjs` (undo, redo, batch

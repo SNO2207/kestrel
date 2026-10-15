@@ -1,7 +1,8 @@
 import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 
-import { api, iconUrl, type Listing, type Marks, type Row, type SortKey, type SortSpec } from "../lib/api";
+import { api, iconUrl, type Listing, type Marks, type Row, type RowRange, type SortKey, type SortSpec } from "../lib/api";
 import { LOCKED_MESSAGE, checkFolders, foldersOf, isLocked } from "../lib/access";
+import { dragOut, followPress, isDropRow } from "../dragdrop";
 import { formatDate, formatSize } from "../lib/format";
 import { Selection } from "../lib/selection";
 import { geometry, keyTarget, sameGeometry } from "../lib/viewLayout";
@@ -602,11 +603,22 @@ export function FileList(props: Props) {
     (target as HTMLElement).classList.contains("list-spacer") ||
     (target as HTMLElement).classList.contains("list-rows");
 
-  // Mouse handling for the items of the icon, list and tile views: the same as a details row's.
+  // Mouse handling for an item in any view: a details row, or a cell of the other views.
   const onItemMouseDown = (index: number, event: MouseEvent) => {
     if (event.button !== 0 || event.target instanceof HTMLInputElement) return;
     resetTypeAhead();
-    select(index, { extend: event.shiftKey, toggle: event.ctrlKey });
+    const mode = { extend: event.shiftKey, toggle: event.ctrlKey };
+    // A press on a selected item may start a drag of the whole selection, so narrowing the
+    // selection to that item, or toggling it off, waits until the button comes up without a drag.
+    const deferred = selection().has(index) && !event.shiftKey;
+    if (!deferred) select(index, mode);
+    followPress(event, {
+      drag: () => {
+        const listing = props.listing;
+        if (listing && selection().count > 0) void dragOut(listing.set, selection().ranges as RowRange[]);
+      },
+      click: () => deferred && select(index, mode),
+    });
   };
   const onItemDblClick = (index: number, event: MouseEvent) => {
     if (!(event.target instanceof HTMLInputElement)) open(index);
@@ -699,27 +711,18 @@ export function FileList(props: Props) {
                       focused: focused() === index,
                       dimmed: row()?.hidden || locked(),
                       locked: locked(),
+                      "drop-target": isDropRow(row()?.path),
                     }}
                     title={locked() ? LOCKED_MESSAGE : undefined}
                     role="row"
                     aria-rowindex={index + 1}
                     aria-selected={selection().has(index)}
                     data-index={index}
-                    onMouseDown={(event) => {
-                      if (event.button !== 0 || event.target instanceof HTMLInputElement) return;
-                      resetTypeAhead();
-                      select(index, { extend: event.shiftKey, toggle: event.ctrlKey });
-                    }}
-                    onDblClick={(event) => {
-                      if (!(event.target instanceof HTMLInputElement)) open(index);
-                    }}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      // Right-clicking outside the selection acts on that one item instead.
-                      if (!selection().has(index)) select(index);
-                      void openMenu(event.clientX, event.clientY, true);
-                    }}
+                    data-path={row()?.path}
+                    data-folder={row()?.dir ? "" : undefined}
+                    onMouseDown={(event) => onItemMouseDown(index, event)}
+                    onDblClick={(event) => onItemDblClick(index, event)}
+                    onContextMenu={(event) => onItemContextMenu(index, event)}
                   >
                     <Show when={row()}>
                       {(data) => (
@@ -786,6 +789,7 @@ export function FileList(props: Props) {
                     const data = rowAt(index);
                     return data !== undefined && isLocked(data);
                   })()}
+                  dropTarget={isDropRow(rowAt(index)?.path)}
                   loadThumbs={!scrolling()}
                   onMouseDown={(event) => onItemMouseDown(index, event)}
                   onDblClick={(event) => onItemDblClick(index, event)}

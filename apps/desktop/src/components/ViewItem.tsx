@@ -21,6 +21,8 @@ export function ViewItem(props: {
   showExtension: boolean;
   /** The item is in, or is, a folder this account can't open. */
   locked: boolean;
+  /** Files dragged over the window would be dropped into this folder. */
+  dropTarget: boolean;
   /** Thumbnails may start loading: the view is not being scrolled. */
   loadThumbs: boolean;
   onMouseDown: (event: MouseEvent) => void;
@@ -56,10 +58,13 @@ export function ViewItem(props: {
         focused: props.focused,
         dimmed: props.row?.hidden || props.locked,
         locked: props.locked,
+        "drop-target": props.dropTarget,
       }}
       role="option"
       aria-selected={props.selected}
       data-index={props.index}
+      data-path={props.row?.path}
+      data-folder={props.row?.dir ? "" : undefined}
       title={props.row && !props.renaming ? (props.locked ? `${props.row.name}\n${LOCKED_MESSAGE}` : props.row.name) : undefined}
       onMouseDown={(event) => props.onMouseDown(event)}
       onDblClick={(event) => props.onDblClick(event)}
