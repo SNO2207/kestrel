@@ -69,10 +69,11 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection, shortcut
   overridable with `KESTREL_DATA_DIR`); `fileops.rs` runs file operations through the shell's
   copy engine and reports exactly what each did; `undo.rs` keeps the journal they are recorded
   in (anything new that changes files calls `fileops::execute`, then `journal.record`);
-  `clipboard.rs`, `watch.rs`, `icons.rs`, `places.rs` do what their names say. `shellmenu.rs`
-  runs the Windows context menu and Open With in `apps/shellhost` (`kestrel-shellhost.exe`),
-  a helper process found next to `kestrel.exe`, so third-party shell extensions never load
-  into the app.
+  `clipboard.rs`, `watch.rs`, `icons.rs`, `places.rs`, `lru.rs` (the icon and thumbnail
+  memory caches) and `navigation.rs` (the window stays on the app) do what their names say.
+  `shellmenu.rs` runs the Windows context menu and Open With in `apps/shellhost`
+  (`kestrel-shellhost.exe`), a helper process found next to `kestrel.exe`, so third-party
+  shell extensions never load into the app.
 - `apps/desktop/src`: the front end. `state.ts` holds tabs and every action; `lib/api.ts`
   wraps every backend command; `components/` has one file per piece of UI; `styles.css` holds
   the design tokens (slate surfaces, one ochre accent, light and dark) and all styles.
@@ -165,6 +166,11 @@ Git:
   every custom protocol host as local. Pages served by a custom protocol must never run
   script; `preview::guard` refuses app commands from other frames, but Tauri's own plugin
   commands are not covered by it.
+- The window refuses every top-level navigation away from the app's own origin
+  (`navigation.rs`): a borderless window taken over by a web page has no way back. An e2e
+  script that needs another page must use a frame, and Markdown links reach the browser only
+  through `open_link`. The Bash tool also loses backslashes in heredocs, not only in Rust:
+  write Windows paths in scripts with the editor tools.
 - `styles.css` has no build-time check: a lost brace once hid every style after it (the
   browser reads the rest as one broken rule). After editing it, check the page's rule count
   (`document.styleSheets[0].cssRules.length`) or look at the screenshots.

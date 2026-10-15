@@ -9,6 +9,8 @@ mod engine;
 mod fileops;
 mod icons;
 mod indexer;
+mod lru;
+mod navigation;
 mod places;
 mod preview;
 mod recycle;
@@ -293,6 +295,8 @@ fn main() {
     let thumbs = ThumbService::start(icons.clone());
 
     tauri::Builder::default()
+        // The window never leaves the app's own page; see navigation.rs.
+        .plugin(navigation::guard())
         .manage(engine.clone())
         .manage(Watcher::default())
         .manage(Journal::default())

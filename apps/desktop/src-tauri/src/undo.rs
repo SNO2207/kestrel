@@ -18,6 +18,9 @@ use crate::fileops::{self, Done, Op, Options, Outcome, file_name, parent};
 /// Operations remembered; older ones fall off the end.
 const LIMIT: usize = 100;
 
+/// Ops that reverse an entry's steps, each with the position of its step in the entry.
+type Steps = Vec<(usize, Op)>;
+
 #[derive(Clone, Debug)]
 struct Entry {
     id: u64,
@@ -92,6 +95,17 @@ fn source(op: &Op) -> Option<&str> {
         Op::Rename { path, .. } | Op::Recycle { path } | Op::Erase { path } => Some(path),
         Op::Move { source, .. } | Op::Copy { source, .. } => Some(source),
         Op::NewFolder { .. } | Op::Restore { .. } => None,
+    }
+}
+
+/// The folder an op puts its item in, which must still exist: the shell can't move into a
+/// folder that isn't there, and an op whose folder is gone would fail the whole undo.
+fn destination(op: &Op) -> Option<String> {
+    match op {
+        Op::Move { folder, .. } | Op::Copy { folder, .. } => Some(folder.clone()),
+        Op::NewFolder { parent, .. } => Some(parent.clone()),
+        Op::Restore { path, .. } => Some(parent(path)),
+        Op::Rename { .. } | Op::Recycle { .. } | Op::Erase { .. } => None,
     }
 }
 
@@ -213,7 +227,7 @@ impl Journal {
         };
 
         // The steps that can be reversed, each with its position in the entry.
-        let reversible: Vec<(usize, Op)> =
+        let reversible: Steps =
             entry.steps.iter().enumerate().filter_map(|(at, step)| Some((at, inverse(step)?))).collect();
         if reversible.is_empty() {
             // Nothing in it can ever be reversed, so it would only block older entries.
@@ -221,12 +235,23 @@ impl Journal {
             return Err(format!("The {} merged folders, so it can't be undone.", entry.label));
         }
         // Items changed elsewhere since, such as renamed or deleted in another program, are no
-        // longer where the history says; they are left out rather than blocking the rest.
-        let (present, gone): (Vec<(usize, Op)>, Vec<(usize, Op)>) =
+        // longer where the history says, and the folders some would go back to may have been
+        // removed; they are left out rather than blocking the rest.
+        let (present, gone): (Steps, Steps) =
             reversible.into_iter().partition(|(_, op)| source(op).is_none_or(|path| Path::new(path).exists()));
+        let (present, homeless): (Steps, Steps) =
+            present.into_iter().partition(|(_, op)| destination(op).is_none_or(|folder| Path::new(&folder).is_dir()));
         if present.is_empty() {
             self.drop_entry(direction, entry.id);
-            return Err(format!("Couldn't {} the {}: its items are no longer where they were.", direction.verb(), entry.label));
+            let mut folders: Vec<String> = homeless.iter().filter_map(|(_, op)| destination(op)).collect();
+            folders.sort();
+            folders.dedup();
+            let why = match folders.as_slice() {
+                [] => "its items are no longer where they were".to_owned(),
+                [folder] => format!("{folder} no longer exists"),
+                _ => "the folders its items go back to no longer exist".to_owned(),
+            };
+            return Err(format!("Couldn't {} the {}: {why}.", direction.verb(), entry.label));
         }
         let (positions, ops): (Vec<usize>, Vec<Op>) = present.into_iter().unzip();
         let outcome = if ops.iter().all(|op| matches!(op, Op::Rename { .. })) {
@@ -253,7 +278,7 @@ impl Journal {
         for &op in &outcome.missing {
             reversed[positions[op]] = true;
         }
-        for (at, _) in &gone {
+        for (at, _) in gone.iter().chain(&homeless) {
             reversed[*at] = true;
         }
         let left: Vec<Done> =
@@ -283,7 +308,7 @@ impl Journal {
         let verb = if undoing { "Undid" } else { "Redid" };
         let mut message = if results.is_empty() {
             format!("Nothing was {}", if undoing { "undone" } else { "redone" })
-        } else if reversible_left || !outcome.completed || !gone.is_empty() || !outcome.missing.is_empty() {
+        } else if reversible_left || !outcome.completed || !gone.is_empty() || !homeless.is_empty() || !outcome.missing.is_empty() {
             format!("{verb} part of the {}", entry.label)
         } else {
             format!("{verb} {}", entry.label)
@@ -295,6 +320,11 @@ impl Journal {
         }
         if !gone.is_empty() {
             notes.push(format!("{} no longer where {} left {}", count(gone.len()), if undoing { "the operation" } else { "the undo" }, if gone.len() == 1 { "it" } else { "them" }));
+        }
+        match homeless.len() {
+            0 => {}
+            1 => notes.push("1 item's folder no longer exists".to_owned()),
+            n => notes.push(format!("{n} items' folders no longer exist")),
         }
         if !notes.is_empty() {
             message.push_str(&format!(": {}", notes.join(", and ")));
@@ -494,6 +524,41 @@ mod tests {
         assert_eq!(report.message, "Undid part of the rename of 2 items: 1 item was no longer where the operation left it");
         assert_eq!(names_in(&dir), ["a.txt", "elsewhere.txt", "x.txt"]);
         assert_eq!(journal.state().undo, None, "the missing item is forgotten");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_move_whose_folder_is_gone_does_not_block_older_history() {
+        let dir = sandbox("undo-folder-gone");
+        for folder in ["Drafts", "Notes", "Final"] {
+            fs::create_dir_all(dir.join(folder)).unwrap();
+        }
+        fs::write(dir.join("Drafts/a.txt"), b"a").unwrap();
+        fs::write(dir.join("Notes/b.txt"), b"b").unwrap();
+        fs::write(dir.join("c.txt"), b"c").unwrap();
+        let path = |name: &str| text(&dir.join(name));
+        let journal = Journal::default();
+        journal.record(&execute(Request::Rename { path: path("c.txt"), new_name: "d.txt".into() }, QUIET).unwrap());
+        let move_ = |sources: Vec<String>| Request::Transfer { sources, destination: path("Final"), kind: Transfer::Move };
+        journal.record(&execute(move_(vec![path("Drafts/a.txt")]), QUIET).unwrap());
+
+        // Another program removes the folder the file came from.
+        fs::remove_dir(dir.join("Drafts")).unwrap();
+        assert_eq!(journal.undo(QUIET).unwrap_err(), format!("Couldn't undo the move of a.txt: {} no longer exists.", path("Drafts")));
+        assert_eq!(journal.state().undo.as_deref(), Some("rename of c.txt"), "older entries stay reachable");
+        journal.undo(QUIET).unwrap();
+        assert!(dir.join("c.txt").exists());
+
+        // Of a batch, whatever has a folder to go back to goes back.
+        fs::create_dir_all(dir.join("Drafts")).unwrap();
+        fs::rename(dir.join("Final/a.txt"), dir.join("Drafts/a.txt")).unwrap();
+        journal.record(&execute(move_(vec![path("Drafts/a.txt"), path("Notes/b.txt")]), QUIET).unwrap());
+        fs::remove_dir(dir.join("Drafts")).unwrap();
+        let report = journal.undo(QUIET).unwrap();
+        assert_eq!(report.message, "Undid part of the move of 2 items: 1 item's folder no longer exists");
+        assert_eq!(names_in(&dir.join("Notes")), ["b.txt"]);
+        assert_eq!(names_in(&dir.join("Final")), ["a.txt"], "the other item stays where it is");
+        assert_eq!(journal.state().undo, None, "the item without a folder is forgotten");
         fs::remove_dir_all(&dir).unwrap();
     }
 

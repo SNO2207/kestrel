@@ -6,18 +6,21 @@ import { previewUrl, resolveRelative } from "./preview";
  * Renders Markdown into HTML that is safe to insert into the app's own page.
  *
  * Marked does not sanitise, so its output goes through DOMPurify: no script, event handler,
- * `javascript:` URL, form, frame or inline style survives. On top of that, nothing is fetched
- * from elsewhere: a relative image is shown through the `preview` protocol from the file's
- * folder, and any other image source (the web, another drive's root, a share) is dropped,
- * so opening a document cannot reveal to anyone that it was opened. Links stay inert until
- * clicked; see `openMarkdownLink`.
+ * `javascript:` URL, form, frame, image map or inline style survives. On top of that, nothing
+ * is fetched from elsewhere: a relative image is shown through the `preview` protocol from the
+ * document's drive or share (and not downloaded if it is online only), and any other image
+ * source (the web, another drive's root, a share) is dropped, so opening a document cannot
+ * reveal to anyone that it was opened. Links stay inert until clicked; see `linkTarget`.
  */
 const CONFIG: Config = {
   FORBID_TAGS: [
     "style", "form", "input", "button", "textarea", "select", "option", "iframe", "frame", "frameset",
     "object", "embed", "link", "meta", "base", "svg", "math", "video", "audio", "source", "track", "picture",
+    // An image map's areas are links laid invisibly over a picture; clicked, they would
+    // navigate the app's window, and no document needs them.
+    "map", "area",
   ],
-  FORBID_ATTR: ["style", "srcset", "ping", "action", "formaction", "background"],
+  FORBID_ATTR: ["style", "srcset", "ping", "action", "formaction", "background", "usemap"],
   ALLOW_DATA_ATTR: false,
   // Prefixes ids and names, so content cannot clobber globals such as `document.forms`.
   SANITIZE_NAMED_PROPS: true,
@@ -71,7 +74,7 @@ export async function renderMarkdown(source: string, folder: string): Promise<st
  * is ignored. Returns the link to open, if any.
  */
 export function linkTarget(event: MouseEvent, container: HTMLElement): string | null {
-  const link = (event.target as Element | null)?.closest?.("a[href]");
+  const link = (event.target as Element | null)?.closest?.("a[href], area[href]");
   if (!link || !container.contains(link)) return null;
   event.preventDefault();
   const href = link.getAttribute("href") ?? "";

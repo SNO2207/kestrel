@@ -212,7 +212,8 @@ interface ContentProps {
 }
 
 function Content(props: ContentProps) {
-  const url = () => previewUrl(props.item.path, props.item.mtime);
+  // Content is only shown for an online-only file once the user asked to download it.
+  const url = () => previewUrl(props.item.path, props.item.mtime, props.details.online_only);
   const [failed, setFailed] = createSignal(false);
   const tooLarge = () => (props.details.size ?? 0) > MAX_WHOLE;
 

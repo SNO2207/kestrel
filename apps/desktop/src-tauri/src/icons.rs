@@ -1,9 +1,10 @@
 //! System file icons, rendered to PNG for the web view.
 //!
 //! All shell calls happen on one dedicated single-threaded-apartment thread, which is what the
-//! shell icon APIs expect, and results are cached so each distinct icon is rendered once.
+//! shell icon APIs expect, and results are cached so an icon in use is rendered once. The cache
+//! is bounded: the large views ask for a 256-pixel icon of every program, shortcut and icon file
+//! they show, which over a session would otherwise add up to hundreds of megabytes.
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::zeroed;
 use std::ptr::null_mut;
@@ -24,6 +25,8 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
 use windows_sys::core::GUID;
 
+use crate::lru::Lru;
+
 const IID_IIMAGELIST: GUID = GUID {
     data1: 0x46EB5926,
     data2: 0x582E,
@@ -43,6 +46,49 @@ pub enum IconKey {
 pub type Png = Arc<Vec<u8>>;
 type Reply = Box<dyn FnOnce(Option<Png>) + Send>;
 
+/// Memory the icon cache may hold: a few hundred of the largest icons, and every small one.
+const CACHE_CAP: usize = 32 << 20;
+/// Memory counted for each cached icon besides its pixels, so that even the icons a file
+/// doesn't have, which are remembered too, count towards the cap.
+const ENTRY_OVERHEAD: usize = 64;
+
+/// The shell's image list that holds icons of `size` pixels. Every size above 48 comes from
+/// the 256-pixel list, so the thumbnail sizes, 64 to 1024, all share one rendering.
+fn list_kind(size: u32) -> u32 {
+    match size {
+        0..=16 => SHIL_SMALL,
+        17..=32 => SHIL_LARGE,
+        33..=48 => SHIL_EXTRALARGE,
+        // 256 pixels, for the large icon views.
+        _ => SHIL_JUMBO,
+    }
+}
+
+/// Rendered icons, by icon and image list, the least recently used going first once they add
+/// up to the cap.
+struct IconCache {
+    lru: Lru<(IconKey, u32), Option<Png>>,
+}
+
+impl IconCache {
+    fn new(cap: usize) -> Self {
+        Self { lru: Lru::new(cap) }
+    }
+
+    /// The icon for `key` at `size` pixels, from the cache or else from `render`, which is
+    /// given the key and the image list to render from.
+    fn get_or_render(&mut self, key: IconKey, size: u32, render: impl FnOnce(&IconKey, u32) -> Option<Vec<u8>>) -> Option<Png> {
+        let slot = (key, list_kind(size));
+        if let Some(png) = self.lru.get(&slot) {
+            return png;
+        }
+        let png = render(&slot.0, slot.1).map(Arc::new);
+        let cost = png.as_ref().map_or(0, |png| png.len()) + ENTRY_OVERHEAD;
+        self.lru.put(slot, png.clone(), cost);
+        png
+    }
+}
+
 pub struct IconService {
     requests: mpsc::Sender<(IconKey, u32, Reply)>,
 }
@@ -55,14 +101,10 @@ impl IconService {
             .spawn(move || {
                 // SAFETY: initialises COM for this thread only; the thread lives for the process.
                 unsafe { CoInitializeEx(null_mut(), COINIT_APARTMENTTHREADED as u32) };
-                let mut cache: HashMap<(IconKey, u32), Option<Png>> = HashMap::new();
+                let mut cache = IconCache::new(CACHE_CAP);
                 for (key, size, reply) in inbox {
-                    let png = cache
-                        .entry((key, size))
-                        // SAFETY: called on the COM-initialised icon thread.
-                        .or_insert_with_key(|(key, size)| unsafe { render(key, *size) }.map(Arc::new))
-                        .clone();
-                    reply(png);
+                    // SAFETY: called on the COM-initialised icon thread.
+                    reply(cache.get_or_render(key, size, |key, list| unsafe { render(key, list) }));
                 }
             })
             .expect("spawning the icon thread");
@@ -89,18 +131,15 @@ unsafe fn release(unknown: *mut c_void) {
     }
 }
 
-unsafe fn render(key: &IconKey, size: u32) -> Option<Vec<u8>> {
+/// Renders `key` from the image list `list_kind` (see [`list_kind`]) as PNG.
+///
+/// # Safety
+/// Call on a thread where COM is initialised as a single-threaded apartment.
+unsafe fn render(key: &IconKey, list_kind: u32) -> Option<Vec<u8>> {
     let (path, attributes, flags) = match key {
         IconKey::Folder => ("folder".to_owned(), FILE_ATTRIBUTE_DIRECTORY, SHGFI_USEFILEATTRIBUTES),
         IconKey::Ext(ext) => (format!(".{ext}"), FILE_ATTRIBUTE_NORMAL, SHGFI_USEFILEATTRIBUTES),
         IconKey::File(path) => (path.clone(), 0, 0),
-    };
-    let list_kind = match size {
-        0..=16 => SHIL_SMALL,
-        17..=32 => SHIL_LARGE,
-        33..=48 => SHIL_EXTRALARGE,
-        // 256 pixels, for the large icon views.
-        _ => SHIL_JUMBO,
     };
     // SAFETY: all pointers passed below are valid for the duration of each call, and every
     // handle or interface obtained is released before returning.
@@ -230,6 +269,33 @@ mod tests {
         let mut rgba = vec![0u8; 256 * 256 * 4];
         rgba[(y * 256 + x) * 4..][..4].copy_from_slice(&[1, 2, 3, 255]);
         rgba
+    }
+
+    #[test]
+    fn the_icon_cache_stays_within_its_cap() {
+        let rendered = std::cell::Cell::new(0);
+        let render = |_: &IconKey, list: u32| {
+            rendered.set(rendered.get() + 1);
+            // About what a 256-pixel icon takes as PNG.
+            Some(vec![0; if list == SHIL_JUMBO { 40_000 } else { 2_000 }])
+        };
+        let mut cache = IconCache::new(1 << 20);
+        // A large icon view scrolled through a folder of five thousand programs.
+        for n in 0..5000 {
+            cache.get_or_render(IconKey::File(format!(r"C:\Tools\tool{n}.exe")), 256, render);
+        }
+        assert!(cache.lru.used() <= 1 << 20, "{} bytes kept", cache.lru.used());
+        assert!(cache.lru.len() < 30, "{} icons kept", cache.lru.len());
+
+        // Icons in use stay; and the thumbnail sizes, which all come from the 256-pixel list,
+        // share one rendering.
+        let before = rendered.get();
+        for size in [64, 96, 128, 256, 512, 1024] {
+            assert_eq!(cache.get_or_render(IconKey::Ext("png".into()), size, render).map(|png| png.len()), Some(40_000));
+        }
+        assert_eq!(cache.get_or_render(IconKey::Ext("png".into()), 16, render).map(|png| png.len()), Some(2_000));
+        assert_eq!(rendered.get() - before, 2, "one rendering per image list");
+        assert!(cache.get_or_render(IconKey::Ext("png".into()), 128, |_, _| panic!("rendered again")).is_some());
     }
 
     #[test]

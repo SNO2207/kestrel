@@ -6,7 +6,8 @@
 //! chose to keep both), where a moved item ended up, which items reached the Recycle Bin. New
 //! items are selected, and the undo history is built, from these results rather than guesses.
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,6 +25,8 @@ use windows::Win32::UI::Shell::{
     SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH,
 };
 use windows::core::{HRESULT, HSTRING, PCWSTR, Ref, implement};
+
+use kestrel_index::walk;
 
 use crate::recycle;
 
@@ -236,10 +239,20 @@ pub fn rename_all(renames: Vec<(String, String)>, options: Options) -> Result<Ou
     }
     let more = run(second.into_iter().map(|(_, op)| op).collect(), false, options)?;
     // Fold "a to temp" and "temp to b" into "a to b".
+    let by_temp: HashMap<String, usize> = outcome
+        .done
+        .iter()
+        .enumerate()
+        .filter_map(|(at, (_, done))| match done {
+            Done::Renamed { to, .. } => Some((key(to), at)),
+            _ => None,
+        })
+        .collect();
     for (_, done) in more.done {
         let Done::Renamed { from: temp, to } = done else { continue };
-        let earlier = outcome.done.iter_mut().find(|(_, d)| matches!(d, Done::Renamed { to: t, .. } if key(t) == key(&temp)));
-        if let Some((_, Done::Renamed { to: target, .. })) = earlier {
+        if let Some(&at) = by_temp.get(&key(&temp))
+            && let (_, Done::Renamed { to: target, .. }) = &mut outcome.done[at]
+        {
             *target = to;
         }
     }
@@ -250,37 +263,61 @@ pub fn rename_all(renames: Vec<(String, String)>, options: Options) -> Result<Ou
 /// Renames in the order to run them, each with its index in the list they were planned from.
 pub type Planned = Vec<(usize, Op)>;
 
+/// The path of `name` in `folder`, which may be a drive root (`D:\`).
+pub fn child(folder: &str, name: &str) -> String {
+    format!("{}\\{name}", folder.trim_end_matches(['\\', '/']))
+}
+
 /// Orders renames so that none targets a name still held by another item in the batch, and
 /// breaks cycles through temporary names. Returns the renames to run first and, for cycles,
 /// the renames from temporary to final names to run afterwards.
+///
+/// Each rename waits on at most one other: the one whose item holds the name it wants. So the
+/// renames form chains that end in a free name, and cycles. A rename is run as soon as the
+/// one it waits on has run, earliest in the batch first; when every rename left waits, they
+/// are in cycles, and the earliest is parked under a temporary name, which frees its own name.
+/// That keeps planning linear in the size of the batch, however long its chains.
 pub fn plan_renames(renames: &[(String, String)]) -> (Planned, Planned) {
-    let mut pending: Vec<(usize, &String, &String)> =
-        renames.iter().enumerate().map(|(at, (path, name))| (at, path, name)).collect();
-    let mut first = Vec::new();
+    let holders: HashMap<String, usize> = renames.iter().enumerate().map(|(at, (path, _))| (key(path), at)).collect();
+    // The renames waiting on each one.
+    let mut waiting: Vec<Vec<usize>> = vec![Vec::new(); renames.len()];
+    // The earliest first.
+    let mut ready = BinaryHeap::new();
+    for (at, (path, name)) in renames.iter().enumerate() {
+        // A rename that only changes the case of a name waits on nothing.
+        match holders.get(&key(&child(&parent(path), name))).filter(|&&holder| holder != at) {
+            Some(&holder) => waiting[holder].push(at),
+            None => ready.push(Reverse(at)),
+        }
+    }
+    let mut planned = vec![false; renames.len()];
+    // Renames before this one have all been planned; it is where cycles are looked for.
+    let mut earliest = 0;
+    let mut first = Vec::with_capacity(renames.len());
     let mut second = Vec::new();
-    let mut temp = 0;
-    while !pending.is_empty() {
-        // A rename is blocked while another pending item still holds its target name.
-        let blocked = |at: usize| {
-            let (_, path, name) = pending[at];
-            let wanted = key(&format!("{}\\{name}", parent(path)));
-            pending.iter().enumerate().any(|(other, (_, path, _))| other != at && key(path) == wanted)
-        };
-        match (0..pending.len()).find(|&at| !blocked(at)) {
-            Some(at) => {
-                let (index, path, name) = pending.remove(at);
-                first.push((index, Op::Rename { path: path.clone(), name: name.clone() }));
+    while first.len() < renames.len() {
+        let at = match ready.pop() {
+            Some(Reverse(at)) if planned[at] => continue,
+            Some(Reverse(at)) => {
+                let (path, name) = &renames[at];
+                first.push((at, Op::Rename { path: path.clone(), name: name.clone() }));
+                at
             }
             None => {
-                // Every remaining rename waits on another: a cycle. Park one item.
-                let (index, path, name) = pending.remove(0);
-                temp += 1;
-                let parked = format!("{}.kestrel-rename-{temp}-{}", file_name(path), std::process::id());
-                let parked_path = format!("{}\\{parked}", parent(path).trim_end_matches('\\'));
-                second.push((index, Op::Rename { path: parked_path, name: name.clone() }));
-                first.push((index, Op::Rename { path: path.clone(), name: parked }));
+                // Every remaining rename waits on another: a cycle. Park its earliest item.
+                while planned[earliest] {
+                    earliest += 1;
+                }
+                let (path, name) = &renames[earliest];
+                let parked = format!("{}.kestrel-rename-{}-{}", file_name(path), second.len() + 1, std::process::id());
+                second.push((earliest, Op::Rename { path: child(&parent(path), &parked), name: name.clone() }));
+                first.push((earliest, Op::Rename { path: path.clone(), name: parked }));
+                earliest
             }
-        }
+        };
+        planned[at] = true;
+        // Its name is free now.
+        ready.extend(waiting[at].iter().filter(|&&next| !planned[next]).map(|&next| Reverse(next)));
     }
     (first, second)
 }
@@ -475,15 +512,17 @@ impl IFileOperationProgressSink_Impl for Sink_Impl {
 }
 
 fn new_item_key(folder: &str, name: &str) -> String {
-    key(&format!("{}\\{name}", folder.trim_end_matches('\\')))
+    key(&child(folder, name))
 }
 
 /// An op as queued: what the sink will report it under and how to read the report.
 struct Queued {
     op: usize,
     key: String,
-    /// The folder or file the item would land on already existed, for spotting merges.
-    target_existed: Option<String>,
+    /// The file id of the folder the item would land on, if one already existed: a folder
+    /// copied or moved onto it merges into it. Unlike a path, the id is the same however the
+    /// destination was spelled (with 8.3 short names, say), while the shell reports long names.
+    target_existed: Option<u64>,
 }
 
 /// Completes each restore that happened by removing the Recycle Bin's record of the item.
@@ -545,9 +584,9 @@ fn run_on_this_thread(ops: &[Op], rename_on_collision: bool, options: Options) -
             let item = match op {
                 Op::Copy { source, folder, name } | Op::Move { source, folder, name } => {
                     let item = shell_item(source)?;
-                    let target = format!("{}\\{}", folder.trim_end_matches('\\'), name.as_deref().unwrap_or(file_name(source)));
-                    if Path::new(&target).exists() {
-                        target_existed = Some(key(&target));
+                    let target = child(folder, name.as_deref().unwrap_or(file_name(source)));
+                    if Path::new(&target).is_dir() {
+                        target_existed = walk::file_id_of(&target);
                     }
                     let name = name.as_deref().map(HSTRING::from);
                     let name = name.as_ref().map_or(PCWSTR::null(), |name| PCWSTR(name.as_ptr()));
@@ -645,7 +684,7 @@ fn interpret(ops: &[Op], queued: &[Queued], events: Vec<Event>, when: Window) ->
             continue;
         }
         let op = &ops[queued.op];
-        let merged = |to: &str| queued.target_existed.as_deref() == Some(key(to).as_str()) && Path::new(to).is_dir();
+        let merged = |to: &str| Path::new(to).is_dir() && queued.target_existed.is_some_and(|id| walk::file_id_of(to) == Some(id));
         // Paths as the caller gave them, with the separators Windows itself uses.
         let given = |path: &String| path.replace('/', "\\");
         let result = match (event.kind, op, event.result) {
@@ -827,6 +866,91 @@ pub mod tests {
         let expected = [("1.txt", "2.txt"), ("2.txt", "3.txt"), ("a.txt", "b.txt"), ("b.txt", "a.txt")];
         assert_eq!(results, expected.map(|(a, b)| (a.to_owned(), b.to_owned())));
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 4, "no temporary names are left behind");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn renames(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(path, name)| (path.to_string(), name.to_string())).collect()
+    }
+
+    /// Replays a plan over the names the batch starts with and checks that no rename lands on
+    /// a name another item still holds.
+    fn assert_never_collides(renames: &[(String, String)], first: &Planned, second: &Planned) {
+        let mut taken: HashSet<String> = renames.iter().map(|(path, _)| key(path)).collect();
+        for (_, op) in first.iter().chain(second) {
+            let Op::Rename { path, name } = op else { panic!("{op:?}") };
+            assert!(taken.remove(&key(path)), "{path} is renamed from where it is");
+            let target = key(&format!("{}\\{name}", parent(path).trim_end_matches('\\')));
+            assert!(taken.insert(target), "{path} is renamed to {name} while that name is taken");
+        }
+        assert_eq!(first.len(), renames.len(), "every item is renamed once, or parked once");
+    }
+
+    #[test]
+    fn orders_renames_in_a_drive_root() {
+        // Planning reads only the paths, so the drive need not exist.
+        let batch = renames(&[(r"D:\1.txt", "2.txt"), (r"D:\2.txt", "3.txt"), (r"D:\a.txt", "b.txt"), (r"D:\b.txt", "a.txt")]);
+        let (first, second) = plan_renames(&batch);
+        assert_eq!(first[0], (1, Op::Rename { path: r"D:\2.txt".into(), name: "3.txt".into() }), "the chain's end goes first");
+        assert_eq!(second.len(), 1, "the swap needs one temporary name");
+        let Op::Rename { path: parked, .. } = &second[0].1 else { panic!("{second:?}") };
+        assert_eq!(parent(parked), r"D:\", "the temporary name is in the root too");
+        assert_never_collides(&batch, &first, &second);
+    }
+
+    #[test]
+    fn plans_long_renumbering_chains_quickly() {
+        // The batch rename dialog's largest batch, renumbered from 2 in name order, and the
+        // same renames reversed, in the order an undo of them comes in. Planning used to take
+        // hours for this many.
+        const COUNT: usize = 10_000;
+        let chain: Vec<(String, String)> =
+            (1..=COUNT).map(|n| (format!(r"C:\Photos\{n:05}.jpg"), format!("{:05}.jpg", n + 1))).collect();
+        let undo: Vec<(String, String)> =
+            (1..=COUNT).rev().map(|n| (format!(r"C:\Photos\{:05}.jpg", n + 1), format!("{n:05}.jpg"))).collect();
+        for batch in [chain, undo] {
+            let (sender, planned) = std::sync::mpsc::channel();
+            let input = batch.clone();
+            std::thread::spawn(move || sender.send(plan_renames(&input)));
+            let (first, second) =
+                planned.recv_timeout(std::time::Duration::from_secs(20)).expect("planning 10,000 renames takes seconds at most");
+            assert!(second.is_empty(), "a chain needs no temporary names");
+            assert_never_collides(&batch, &first, &second);
+        }
+    }
+
+    /// The 8.3 form of an existing path, if the volume gives it one.
+    fn short_path(path: &Path) -> Option<String> {
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+        let wide: Vec<u16> = text(path).encode_utf16().chain([0]).collect();
+        let mut buffer = vec![0u16; 1024];
+        // SAFETY: `wide` is NUL-terminated and `buffer` holds the length passed.
+        let len = unsafe { GetShortPathNameW(wide.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+        let short = String::from_utf16_lossy(&buffer[..len.min(buffer.len())]);
+        (len > 0 && len < buffer.len() && short.contains('~')).then_some(short)
+    }
+
+    #[test]
+    fn merges_are_recognised_through_short_names() {
+        let dir = sandbox("merge-short");
+        let destination = dir.join("Destination Folder With Long Name");
+        fs::create_dir_all(destination.join("shared")).unwrap();
+        fs::write(destination.join("shared/precious.txt"), b"there before").unwrap();
+        let Some(short) = short_path(&destination) else {
+            eprintln!("this volume makes no 8.3 names, so there is nothing to check");
+            return fs::remove_dir_all(&dir).unwrap();
+        };
+        fs::create_dir_all(dir.join("src/shared")).unwrap();
+        fs::write(dir.join("src/shared/new.txt"), b"new").unwrap();
+        let source = vec![text(&dir.join("src/shared"))];
+
+        let copy = Request::Transfer { sources: source.clone(), destination: short.clone(), kind: Transfer::Copy };
+        let copied = execute(copy, QUIET).unwrap();
+        assert!(matches!(copied.done.as_slice(), [(_, Done::Copied { merged: true, .. })]), "{copied:?}");
+        let move_ = Request::Transfer { sources: source, destination: short, kind: Transfer::Move };
+        let moved = execute(move_, QUIET).unwrap();
+        assert!(matches!(moved.done.as_slice(), [(_, Done::Moved { merged: true, .. })]), "{moved:?}");
+        assert!(destination.join("shared/precious.txt").exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

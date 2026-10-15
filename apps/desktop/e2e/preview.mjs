@@ -10,6 +10,7 @@
 // Screenshots go to e2e/out/preview-*.png, in a dark and a light pass.
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -17,6 +18,7 @@ import { fileURLToPath } from "node:url";
 
 import { connectToKestrel, port } from "./connect.mjs";
 import { pdf, png, wav } from "./fixtures.mjs";
+import { devUrl } from "./slot.mjs";
 
 const out = join(dirname(fileURLToPath(import.meta.url)), "out");
 mkdirSync(out, { recursive: true });
@@ -27,6 +29,11 @@ const sandbox = join(tmpdir(), `kestrel-preview-${process.pid}`);
 rmSync(sandbox, { recursive: true, force: true });
 mkdirSync(join(sandbox, "sub"), { recursive: true });
 const parent = JSON.stringify(sandbox);
+/**
+ * Somewhere outside the app for content to try to take the window to. Nothing listens on the
+ * discard port, so even a navigation that got through would reach nothing beyond this computer.
+ */
+const AWAY = "http://127.0.0.1:9/kestrel-e2e-away";
 /** Script that would prove it ran: a message to the app, and a folder made through its IPC. */
 const attack = (name) =>
   `top.postMessage('marker:${name}', '*'); window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('new_folder', { parent: ${parent} });`;
@@ -64,6 +71,8 @@ Some **bold** text, a [web link](https://example.com/docs) and a [relative link]
 ![remote image](https://example.com/tracker.png)
 
 <img src="missing.png" onerror="window.__mdInjected = true; ${attack("markdown").replace(/"/g, "&quot;")}">
+
+<img src="photo.png" alt="mapped image" width="160" height="120" usemap="#escape"><map name="escape"><area shape="rect" coords="0,0,160,120" href="${AWAY}" alt="away"></map>
 
 <script>window.__mdInjected = true</script>
 
@@ -200,6 +209,9 @@ async function expectContent(scope, name) {
       // The injected <img> arrives as real HTML, so the sanitiser has to act on it.
       assert.equal(await markdown.locator("img[src*='missing.png']").count(), 1, "the injected image is an element");
       assert.equal(await markdown.locator("[onerror], script, [href^='javascript']").count(), 0, "the injection was sanitised");
+      // An image map's areas are links outside `linkTarget`'s reach; they must not survive.
+      assert.equal(await markdown.locator("map, area, [usemap]").count(), 0, "the image map was removed");
+      assert.match(await markdown.locator("img[alt='mapped image']").getAttribute("src"), /^http:\/\/preview\.localhost\/\?p=/);
       assert(!(await markdown.textContent()).includes("onerror"), "nothing of the handler is left, not even as text");
       assert.match(await markdown.locator("img[alt='local image']").getAttribute("src"), /^http:\/\/preview\.localhost\/\?p=/);
       assert.equal(await markdown.locator("img[alt='remote image']").getAttribute("src"), null, "remote images are not loaded");
@@ -401,6 +413,10 @@ try {
     await page.waitForTimeout(300);
     assert.equal(page.url(), before);
     assert.equal(await page.locator(".notice").count(), 0);
+    // The image that carried an image map is only an image now.
+    await pane.locator(".preview-markdown img[alt='mapped image']").click();
+    await page.waitForTimeout(300);
+    assert.equal(page.url(), before, "clicking the mapped image left the app");
     assert.equal(
       await pane.locator(".preview-markdown a", { hasText: "web link" }).getAttribute("title"),
       "https://example.com/docs",
@@ -615,6 +631,91 @@ try {
     assert.equal(missing, "It no longer exists.");
   });
 
+  await step("the window refuses to leave the app's page", async () => {
+    const home = page.url();
+    await page.evaluate((away) => {
+      location.href = away;
+    }, AWAY);
+    await page.waitForTimeout(1500);
+    assert.equal(page.url(), home, "the window navigated away");
+    assert.equal(await page.title(), "Kestrel");
+    assert.equal(await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("index_status").then((s) => typeof s.entries)), "number");
+  });
+
+  await step("Markdown on a share cannot name another server", async () => {
+    // Worked out in the app's own page, from its own modules, without loading anything: the
+    // rendered HTML is only parsed, never shown.
+    const result = await page.evaluate(async () => {
+      const { resolveRelative } = await import("/src/lib/preview.ts");
+      const { renderMarkdown } = await import("/src/lib/markdown.ts");
+      const folder = "\\\\fileserver\\team\\docs";
+      const html = await renderMarkdown("![escape](../../../attacker.example/share/pixel.png)\n\n![inside](../images/ok.png)", folder);
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      return {
+        escape: resolveRelative(folder, "../../../attacker.example/share/pixel.png"),
+        webdav: resolveRelative(folder, "../../../attacker.example@SSL@443/s/x.png"),
+        otherShare: resolveRelative(folder, "../../other/x.png"),
+        inside: resolveRelative(folder, "../images/ok.png"),
+        drive: resolveRelative("C:\\docs", "../../x.png"),
+        escapeSrc: doc.querySelector("img[alt='escape']")?.getAttribute("src") ?? null,
+        insideSrc: doc.querySelector("img[alt='inside']")?.getAttribute("src") ?? null,
+      };
+    });
+    assert.deepEqual(
+      { ...result, insideSrc: decodeURIComponent(result.insideSrc ?? "") },
+      {
+        escape: null,
+        webdav: null,
+        otherShare: null,
+        inside: "\\\\fileserver\\team\\images\\ok.png",
+        drive: null,
+        escapeSrc: null,
+        insideSrc: "http://preview.localhost/?p=\\\\fileserver\\team\\images\\ok.png&v=0",
+      },
+    );
+  });
+
+  await step("an online-only image in Markdown is not downloaded; the image itself asks first", async () => {
+    const folder = join(sandbox, "cloud");
+    mkdirSync(folder);
+    // The second spelling opens the same file: Windows drops a trailing dot.
+    writeFileSync(join(folder, "notes.md"), "# Cloud notes\n\n![cloud image](picture.png)\n\n![respelled](picture.png.)\n");
+    writeFileSync(join(folder, "picture.png"), files["photo.png"]);
+    // The attribute a cloud placeholder whose contents are elsewhere carries.
+    execFileSync("attrib", ["+O", join(folder, "picture.png")]);
+    await page.keyboard.press("Control+l");
+    await page.locator(".address-input").fill(folder);
+    await page.keyboard.press("Enter");
+    await row("notes.md").click();
+    const markdown = pane.locator(".preview-markdown");
+    await markdown.locator("h1", { hasText: "Cloud notes" }).waitFor();
+    for (const alt of ["cloud image", "respelled"]) {
+      const image = markdown.locator(`img[alt='${alt}']`);
+      await page.waitForFunction((el) => el.complete, await image.elementHandle());
+      assert.equal(await image.evaluate((el) => el.naturalWidth), 0, `the online-only image was read as ${alt}`);
+    }
+    await page.waitForTimeout(200);
+    assert(
+      responses.some((r) => r.status() === 403 && decodeURIComponent(r.url()).includes("\\cloud\\picture.png")),
+      "the protocol refused it",
+    );
+    await shot("pane-online-only-markdown");
+
+    await row("picture.png").click();
+    await pane.locator(".preview-message", { hasText: "stored online only" }).waitFor();
+    assert.equal(await pane.locator("img.preview-image").count(), 0);
+    await shot("pane-online-only");
+    await pane.locator(".preview-action", { hasText: "Download and preview" }).click();
+    const shown = pane.locator("img.preview-image");
+    await shown.waitFor();
+    await page.waitForFunction((el) => el.complete && el.naturalWidth === 160, await shown.elementHandle());
+    assert.match(await shown.getAttribute("src"), /&download=1$/);
+    await page.keyboard.press("Control+l");
+    await page.locator(".address-input").fill(sandbox);
+    await page.keyboard.press("Enter");
+    await row("photo.png").waitFor();
+  });
+
   await step("the page raised no uncaught errors", async () => {
     assert.deepEqual(pageErrors, []);
   });
@@ -625,6 +726,8 @@ try {
   if (pageErrors.length > 0) console.error("page errors:", pageErrors);
   throw error;
 } finally {
+  // Should something have taken the window away from the app, bring it back first.
+  if (!page.url().startsWith(devUrl)) await page.goto(devUrl).catch(() => {});
   await page.emulateMedia({ colorScheme: null }).catch(() => {});
   await page.keyboard.press("Escape").catch(() => {});
   // Leave the pane closed and the app somewhere that still exists, then remove the folder.

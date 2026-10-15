@@ -10,16 +10,18 @@
 //!
 //! Files without a thumbnail are answered with their icon. So are cloud-only files (OneDrive
 //! placeholders whose contents are not on this computer): a thumbnail handler would read them,
-//! and reading one downloads it.
+//! and reading one downloads it. Such a stand-in can change without the file's modification
+//! time changing (the file is downloaded, or a render that failed because the file was locked
+//! would now succeed), so it is remembered only briefly and never cached by the web view.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::mem::zeroed;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use kestrel_index::fold;
 use parking_lot::{Condvar, Mutex};
@@ -41,6 +43,7 @@ use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 
 use crate::icons::{IconKey, IconService, encode_png};
 use crate::indexer;
+use crate::lru::Lru;
 
 /// Rendering threads. Thumbnail handlers can be slow (video frames, large photos), so a few run
 /// side by side, but not so many that scrolling a folder of photos saturates the machine.
@@ -53,6 +56,10 @@ const DISK_CAP: u64 = 1 << 30;
 /// thumbnail written once the cache is full.
 const DISK_TARGET_PERCENT: u64 = 90;
 const MEMORY_CAP: usize = 64 << 20;
+/// How long a stand-in icon answers for a file before the shell is asked again. Long enough
+/// that scrolling back and forth over files without thumbnails asks the shell little, short
+/// enough that a file just downloaded from the cloud soon shows its thumbnail.
+const STAND_IN_LIFETIME: Duration = Duration::from_secs(15);
 /// Thumbnail sizes a request may ask for, in pixels.
 const MIN_SIZE: u32 = 16;
 const MAX_SIZE: u32 = 1024;
@@ -134,49 +141,39 @@ impl Thumb {
             _ => OVERHEAD,
         }
     }
+
+    /// Whether the answer stays right for as long as the file keeps its modification time,
+    /// which the URL names. Only a rendered thumbnail does; see the module's documentation.
+    fn lasting(&self) -> bool {
+        matches!(self, Thumb::Png(_))
+    }
 }
 
 /// The answers given most recently, up to a total size. Remembering that a file has no
 /// thumbnail matters as much as remembering one that does: it saves asking the shell again.
+/// But a stand-in is remembered only for `stand_in_lifetime`.
 struct MemoryCache {
-    cap: usize,
-    used: usize,
-    clock: u64,
-    entries: HashMap<Key, (Thumb, u64)>,
-    /// Keys by when they were last used, oldest first.
-    by_age: BTreeMap<u64, Key>,
+    lru: Lru<Key, (Thumb, Instant)>,
+    stand_in_lifetime: Duration,
 }
 
 impl MemoryCache {
-    fn new(cap: usize) -> Self {
-        Self { cap, used: 0, clock: 0, entries: HashMap::new(), by_age: BTreeMap::new() }
+    fn new(cap: usize, stand_in_lifetime: Duration) -> Self {
+        Self { lru: Lru::new(cap), stand_in_lifetime }
     }
 
     fn get(&mut self, key: &Key) -> Option<Thumb> {
-        let (thumb, stamp) = self.entries.get_mut(key)?;
-        self.by_age.remove(stamp);
-        self.clock += 1;
-        *stamp = self.clock;
-        self.by_age.insert(self.clock, key.clone());
-        Some(thumb.clone())
+        let (thumb, found) = self.lru.get(key)?;
+        if !thumb.lasting() && found.elapsed() >= self.stand_in_lifetime {
+            self.lru.remove(key);
+            return None;
+        }
+        Some(thumb)
     }
 
     fn put(&mut self, key: Key, thumb: Thumb) {
-        if let Some((old, stamp)) = self.entries.remove(&key) {
-            self.used -= old.cost();
-            self.by_age.remove(&stamp);
-        }
-        self.clock += 1;
-        self.used += thumb.cost();
-        self.by_age.insert(self.clock, key.clone());
-        self.entries.insert(key, (thumb, self.clock));
-        while self.used > self.cap
-            && let Some((_, oldest)) = self.by_age.pop_first()
-        {
-            if let Some((thumb, _)) = self.entries.remove(&oldest) {
-                self.used -= thumb.cost();
-            }
-        }
+        let cost = thumb.cost();
+        self.lru.put(key, (thumb, Instant::now()), cost);
     }
 }
 
@@ -490,17 +487,21 @@ pub fn parse(uri: &Uri) -> Option<Wanted> {
     Some(Wanted { path, size, mtime })
 }
 
-fn respond(responder: UriSchemeResponder, status: StatusCode, body: Vec<u8>) {
-    // The URL names the file's modification time, so an answer never goes stale; a failure
-    // may be temporary, so it is not kept.
-    let caching = if status == StatusCode::OK { "max-age=31536000, immutable" } else { "no-store" };
-    let response = Response::builder()
+/// An answer to the web view. `lasting` says it holds for this URL for good: the URL names the
+/// file's modification time, so a rendered thumbnail never goes stale and may be cached for a
+/// year. A stand-in or a failure may change at any time, so the web view keeps neither.
+fn response(status: StatusCode, body: Vec<u8>, lasting: bool) -> Response<Vec<u8>> {
+    let caching = if status == StatusCode::OK && lasting { "max-age=31536000, immutable" } else { "no-store" };
+    Response::builder()
         .status(status)
         .header("Content-Type", "image/png")
         .header("Cache-Control", caching)
         .body(body)
-        .expect("static response parts are valid");
-    responder.respond(response);
+        .expect("static response parts are valid")
+}
+
+fn respond(responder: UriSchemeResponder, status: StatusCode, body: Vec<u8>, lasting: bool) {
+    responder.respond(response(status, body, lasting));
 }
 
 pub struct ThumbService {
@@ -511,11 +512,17 @@ pub struct ThumbService {
 impl ThumbService {
     /// Starts the rendering threads. `icons` provides the icons that stand in for thumbnails.
     pub fn start(icons: Arc<IconService>) -> Self {
+        Self::with(icons, indexer::data_dir().join("thumbs"), STAND_IN_LIFETIME)
+    }
+
+    /// Starts the rendering threads with the disk cache in `cache_dir`, remembering stand-ins
+    /// for `stand_in_lifetime`.
+    fn with(icons: Arc<IconService>, cache_dir: PathBuf, stand_in_lifetime: Duration) -> Self {
         let shared = Arc::new(Shared {
             queue: Mutex::default(),
             work: Condvar::new(),
-            memory: Mutex::new(MemoryCache::new(MEMORY_CAP)),
-            disk: DiskCache::new(indexer::data_dir().join("thumbs"), DISK_CAP),
+            memory: Mutex::new(MemoryCache::new(MEMORY_CAP, stand_in_lifetime)),
+            disk: DiskCache::new(cache_dir, DISK_CAP),
         });
         for n in 0..WORKERS {
             let shared = shared.clone();
@@ -530,18 +537,18 @@ impl ThumbService {
     /// Answers a `thumb://` request.
     pub fn handle(&self, request: &Request<Vec<u8>>, responder: UriSchemeResponder) {
         let Some(wanted) = parse(request.uri()) else {
-            return respond(responder, StatusCode::BAD_REQUEST, Vec::new());
+            return respond(responder, StatusCode::BAD_REQUEST, Vec::new(), false);
         };
         let size = wanted.size;
         let icons = self.icons.clone();
         self.request(wanted, move |thumb| match thumb {
-            Thumb::Png(png) => respond(responder, StatusCode::OK, png.to_vec()),
+            Thumb::Png(png) => respond(responder, StatusCode::OK, png.to_vec(), true),
             Thumb::Icon(key) => icons.request(key, size, move |png| match png {
-                Some(png) => respond(responder, StatusCode::OK, png.to_vec()),
-                None => respond(responder, StatusCode::NOT_FOUND, Vec::new()),
+                Some(png) => respond(responder, StatusCode::OK, png.to_vec(), false),
+                None => respond(responder, StatusCode::NOT_FOUND, Vec::new(), false),
             }),
-            Thumb::Missing => respond(responder, StatusCode::NOT_FOUND, Vec::new()),
-            Thumb::Dropped => respond(responder, StatusCode::SERVICE_UNAVAILABLE, Vec::new()),
+            Thumb::Missing => respond(responder, StatusCode::NOT_FOUND, Vec::new(), false),
+            Thumb::Dropped => respond(responder, StatusCode::SERVICE_UNAVAILABLE, Vec::new(), false),
         });
     }
 
@@ -612,7 +619,7 @@ mod tests {
     #[test]
     fn the_memory_cache_keeps_the_most_recently_used() {
         let key = |n: i64| Key::new(r"C:\a.png", 64, n);
-        let mut cache = MemoryCache::new(3 * png(100).cost());
+        let mut cache = MemoryCache::new(3 * png(100).cost(), Duration::from_secs(3600));
         cache.put(key(1), png(100));
         cache.put(key(2), png(100));
         cache.put(key(3), png(100));
@@ -625,8 +632,67 @@ mod tests {
         // Replacing an entry does not count it twice, and icons are cheap to remember.
         cache.put(key(4), png(100));
         cache.put(key(5), Thumb::Icon(IconKey::Ext("txt".into())));
-        assert_eq!(cache.used, 3 * png(100).cost() - png(100).cost() + Thumb::Icon(IconKey::Folder).cost());
+        assert_eq!(cache.lru.used(), 3 * png(100).cost() - png(100).cost() + Thumb::Icon(IconKey::Folder).cost());
         assert!(cache.get(&key(1)).is_none());
+    }
+
+    #[test]
+    fn stand_ins_are_remembered_only_briefly() {
+        let key = |n: i64| Key::new(r"C:\a.png", 64, n);
+        let stand_in = || Thumb::Icon(IconKey::Ext("png".into()));
+        let mut briefly = MemoryCache::new(1 << 20, Duration::ZERO);
+        briefly.put(key(1), stand_in());
+        briefly.put(key(2), png(100));
+        assert!(briefly.get(&key(1)).is_none(), "a stand-in past its time is asked for again");
+        assert!(briefly.get(&key(2)).is_some(), "a thumbnail is kept for as long as there is room");
+        let mut longer = MemoryCache::new(1 << 20, Duration::from_secs(3600));
+        longer.put(key(1), stand_in());
+        assert!(matches!(longer.get(&key(1)), Some(Thumb::Icon(_))), "within its time, a stand-in answers");
+    }
+
+    #[test]
+    fn only_rendered_thumbnails_are_cached_by_the_web_view() {
+        let caching = |response: Response<Vec<u8>>| response.headers()["cache-control"].to_str().unwrap().to_owned();
+        assert_eq!(caching(response(StatusCode::OK, vec![1], true)), "max-age=31536000, immutable");
+        assert_eq!(caching(response(StatusCode::OK, vec![1], false)), "no-store", "a stand-in may change");
+        assert_eq!(caching(response(StatusCode::NOT_FOUND, Vec::new(), true)), "no-store");
+        assert!(png(1).lasting() && !Thumb::Icon(IconKey::Folder).lasting());
+    }
+
+    fn set_attributes(path: &Path, attributes: u32) {
+        let wide: Vec<u16> = path.to_str().unwrap().encode_utf16().chain([0]).collect();
+        // SAFETY: `wide` is NUL-terminated and outlives the call.
+        assert_ne!(unsafe { windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(wide.as_ptr(), attributes) }, 0);
+    }
+
+    #[test]
+    fn a_file_downloaded_from_the_cloud_gets_its_thumbnail() {
+        use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_OFFLINE};
+        let dir = scratch("downloaded");
+        let photo = dir.join("photo.png");
+        write_png(&photo, 120, 80);
+        // A cloud placeholder whose contents are elsewhere carries this attribute; setting it on
+        // a local file changes nothing but the flag.
+        set_attributes(&photo, FILE_ATTRIBUTE_OFFLINE);
+        let path = photo.to_str().unwrap().to_owned();
+        let mtime = FileState::read(&path).unwrap().mtime;
+        // Stand-ins expire at once here, so the second request is not answered from memory.
+        let service = ThumbService::with(Arc::new(IconService::start()), dir.join("cache"), Duration::ZERO);
+        let ask = || {
+            let (sender, answer) = std::sync::mpsc::channel();
+            service.request(Wanted { path: path.clone(), size: 64, mtime }, move |thumb| {
+                let _ = sender.send(thumb);
+            });
+            answer.recv_timeout(Duration::from_secs(60)).expect("an answer comes")
+        };
+        assert!(matches!(ask(), Thumb::Icon(IconKey::Ext(ext)) if ext == "png"), "an online-only file is not read");
+
+        // The file is downloaded: its attributes change, its modification time does not, so
+        // the web view asks for the same URL again.
+        set_attributes(&photo, FILE_ATTRIBUTE_NORMAL);
+        assert_eq!(FileState::read(&path).unwrap().mtime, mtime);
+        assert!(matches!(ask(), Thumb::Png(_)), "the thumbnail replaces the stand-in");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

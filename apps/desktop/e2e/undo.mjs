@@ -146,6 +146,40 @@ try {
     await page.keyboard.press("Escape");
   });
 
+  await step("an undo whose folder is gone says so, and older operations can still be undone", async () => {
+    await row("notes.txt").click();
+    await page.keyboard.press("F2");
+    await panel.locator("input.rename").waitFor();
+    await page.keyboard.type("agenda");
+    await page.keyboard.press("Enter");
+    await row("agenda.txt").waitFor();
+
+    // A move, as a drop makes it, from Drafts to Final.
+    mkdirSync(join(sandbox, "Drafts"));
+    mkdirSync(join(sandbox, "Final"));
+    writeFileSync(join(sandbox, "Drafts", "draft.txt"), "draft");
+    await row("Drafts").waitFor();
+    const dropped = await page.evaluate(
+      ({ paths, destination }) => window.__TAURI_INTERNALS__.invoke("drop_items", { paths, destination, keys: { shift: true } }),
+      { paths: [join(sandbox, "Drafts", "draft.txt")], destination: join(sandbox, "Final") },
+    );
+    assert.deepEqual(dropped, { effect: "move", names: ["draft.txt"] });
+    // Another program removes the folder the file came from.
+    rmSync(join(sandbox, "Drafts"), { recursive: true });
+    await row("Drafts").waitFor({ state: "detached" });
+
+    await list.focus();
+    await page.keyboard.press("Control+z");
+    await expectNotice(`Couldn't undo the move of draft.txt: ${join(sandbox, "Drafts")} no longer exists.`);
+    await captureBoth("undo-3-folder-gone");
+    assert(onDisk("Final", "draft.txt"), "the file stays where it is");
+    await list.focus();
+    await page.keyboard.press("Control+z");
+    await expectNotice("Undid rename of notes.txt");
+    await row("notes.txt").waitFor();
+    assert(onDisk("notes.txt") && !onDisk("agenda.txt"));
+  });
+
   if (recycling) {
     await step("undoing a new folder sends it to the Recycle Bin, and redo brings it back", async () => {
       await list.focus();

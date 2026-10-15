@@ -198,6 +198,47 @@ try {
     assert(existsSync(join(sandbox, "city.jpg")));
   });
 
+  await step("two thousand files renumbered from 2, each taking the next one's name, rename and undo promptly", async () => {
+    // Every rename but the last waits on the next: the longest chain there is. Planning it once
+    // took minutes for this many (with the fix, seconds), and its undo, which comes in the
+    // reverse order, as long.
+    const folder = join(sandbox, "Numbered");
+    mkdirSync(folder);
+    const number = (n) => `${String(n).padStart(4, "0")}.txt`;
+    const count = 2000;
+    for (let n = 1; n <= count; n++) writeFileSync(join(folder, number(n)), number(n));
+    const inFolder = () => readdirSync(folder).sort();
+    await page.keyboard.press("Control+l");
+    await page.locator(".address-input").fill(folder);
+    await page.keyboard.press("Enter");
+    await row(number(1)).waitFor();
+    await list.focus();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.press("F2");
+    await dialog.waitFor();
+    await field("Numbering").fill("####");
+    await field("Start at").fill("2");
+    await summary.filter({ hasText: `${count} of ${count} names change.` }).waitFor();
+    assert.deepEqual((await newNames()).slice(0, 2), [number(2), number(3)]);
+    assert(await renameButton.isEnabled(), "a chain is no conflict");
+
+    const started = Date.now();
+    await renameButton.click();
+    await page.locator(".notice span", { hasText: `Renamed ${count} items` }).waitFor({ timeout: 45_000 });
+    console.log(`    renamed in ${Date.now() - started} ms`);
+    assert.deepEqual(inFolder(), Array.from({ length: count }, (_, i) => number(i + 2)));
+    assert.equal(readFileSync(join(folder, number(2)), "utf8"), number(1));
+    assert.equal(readFileSync(join(folder, number(count + 1)), "utf8"), number(count));
+
+    const undoStarted = Date.now();
+    await list.focus();
+    await page.keyboard.press("Control+z");
+    await page.locator(".notice span", { hasText: `Undid rename of ${count} items` }).waitFor({ timeout: 45_000 });
+    console.log(`    undone in ${Date.now() - undoStarted} ms`);
+    assert.deepEqual(inFolder(), Array.from({ length: count }, (_, i) => number(i + 1)));
+    assert.equal(readFileSync(join(folder, number(1)), "utf8"), number(1));
+  });
+
   console.log("\nall checks passed");
 } finally {
   await page.emulateMedia({ colorScheme: null }).catch(() => {});

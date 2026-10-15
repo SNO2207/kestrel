@@ -156,10 +156,11 @@ export function languageOf(item: Pick<PreviewItem, "ext" | "name">): string | nu
 
 /**
  * The URL the `preview` protocol serves a file's bytes at. `version` changes when the file
- * does, so the web view never shows a stale copy.
+ * does, so the web view never shows a stale copy. The protocol serves an online-only file
+ * only with `download`, which says the user asked for this item to be fetched from the cloud.
  */
-export function previewUrl(path: string, version = 0): string {
-  return `http://preview.localhost/?p=${encodeURIComponent(path)}&v=${version}`;
+export function previewUrl(path: string, version = 0, download = false): string {
+  return `http://preview.localhost/?p=${encodeURIComponent(path)}&v=${version}${download ? "&download=1" : ""}`;
 }
 
 /**
@@ -246,8 +247,22 @@ export function folderOf(path: string): string {
 }
 
 /**
+ * How many of a folder's parts, split at backslashes, make up its root: 1 for a drive (`C:`),
+ * 4 for a share (`\\server\share` splits into "", "", "server", "share"), or null for anything
+ * else, such as a device path (`\\?\`, `\\.\`).
+ */
+function rootLength(parts: string[]): number | null {
+  if (/^[a-z]:$/i.test(parts[0])) return 1;
+  const [empty, alsoEmpty, server, share] = parts;
+  const isShare = empty === "" && alsoEmpty === "" && !!server && server !== "?" && server !== "." && !!share;
+  return isShare ? 4 : null;
+}
+
+/**
  * Resolves a relative link in a document against the document's folder, or returns null if it
- * is not a plain relative path (it has a scheme, starts at a root, or leaves the drive).
+ * is not a plain relative path: it has a scheme, starts at a root, or climbs out of the
+ * document's drive or share. So a document on `\\server\share` can never name another server,
+ * which merely opening a file there would send the user's credentials to.
  */
 export function resolveRelative(folder: string, link: string): string | null {
   if (link === "" || /^[a-z][a-z0-9+.-]*:/i.test(link) || /^[\\/]/.test(link)) return null;
@@ -258,10 +273,12 @@ export function resolveRelative(folder: string, link: string): string | null {
     return null;
   }
   const parts = folder.replace(/\\+$/, "").split("\\");
+  const root = rootLength(parts);
+  if (root === null || parts.length < root) return null;
   for (const part of decoded.split(/[\\/]+/)) {
     if (part === "" || part === ".") continue;
     if (part === "..") {
-      if (parts.length <= 1) return null;
+      if (parts.length <= root) return null;
       parts.pop();
     } else {
       parts.push(part);

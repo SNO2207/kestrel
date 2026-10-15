@@ -434,6 +434,29 @@ try {
     await viewIs("tiles");
   });
 
+  await step("items marked system but not hidden are shown, as Explorer shows C:\\Windows\\Fonts", async () => {
+    const folder = join(sandbox, "Attributes");
+    mkdirSync(join(folder, "system-folder"), { recursive: true });
+    for (const name of ["plain.txt", "system-only.txt", "hidden.txt", "protected.txt"]) writeFileSync(join(folder, name), name);
+    execFileSync("attrib", ["+s", join(folder, "system-folder")]);
+    execFileSync("attrib", ["+s", join(folder, "system-only.txt")]);
+    execFileSync("attrib", ["+h", join(folder, "hidden.txt")]);
+    // Hidden and system both: a protected operating system file.
+    execFileSync("attrib", ["+h", "+s", join(folder, "protected.txt")]);
+    await page.keyboard.press("Control+l");
+    await page.locator(".address-input").fill(folder);
+    await page.keyboard.press("Enter");
+    await item("plain.txt").waitFor();
+    assert.deepEqual(await labels(), ["system-folder", "plain.txt", "system-only.txt"]);
+    assert(!(await item("system-only.txt").evaluate((el) => el.classList.contains("dimmed"))), "only hidden items are dimmed");
+    await choose("Show hidden items");
+    await item("protected.txt").waitFor();
+    assert.deepEqual(await labels(), ["system-folder", "hidden.txt", "plain.txt", "protected.txt", "system-only.txt"]);
+    await choose("Show hidden items");
+    await item("hidden.txt").waitFor({ state: "detached" });
+    await shot("system-items");
+  });
+
   console.log("\nall checks passed; screenshots are in", out);
 } finally {
   await page.emulateMedia({ colorScheme: null }).catch(() => {});

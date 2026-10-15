@@ -132,7 +132,7 @@ export const setViewMode = (location: string, mode: ViewMode) => remember(locati
 // ---------- options that apply everywhere ----------
 
 interface Options {
-  /** Hidden and system items are listed. */
+  /** Hidden items are listed. */
   hidden: boolean;
   /** File names are shown with their extensions. */
   extensions: boolean;

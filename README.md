@@ -143,14 +143,17 @@ everything as one undoable operation.
 ## Views
 
 The View button in the toolbar picks the view (details, list, tiles, or icons from 32 to 256
-pixels), the sort order, and two options: "Show hidden items" (off by default; hidden and
-system files are then left out of folders and search results) and "Show file extensions".
+pixels), the sort order, and two options: "Show hidden items" (off by default; hidden files,
+protected system files among them, are then left out of folders and search results, while
+files only marked system, such as `C:\Windows\Fonts`, show as they do in Explorer) and "Show
+file extensions".
 Each folder remembers its own view and sort, and search results have one of their own.
 
 Icon and tile views show thumbnails rendered by the Windows shell, cached in
 `%LOCALAPPDATA%\Kestrel\thumbs` (up to about 1 GB; the oldest go first). Files whose contents
 are only in the cloud, such as OneDrive files not kept on this device, show their icon instead,
-so browsing never downloads them.
+so browsing never downloads them; once such a file is downloaded, its thumbnail appears the next
+time it comes into view.
 
 ## Preview pane and Quick Look
 
@@ -159,12 +162,15 @@ left edge to resize it. It shows the focused item, or the folder itself when not
 focused: images (SVG only through `<img>`), video, audio, PDF (the web view's own viewer), text
 and code with highlighting (the first megabyte), Markdown rendered and sanitised, JSON
 re-indented, and details for folders and everything else. Online-only cloud files are read
-only when you click to download them. Space opens the same preview large, as Quick Look; the
-arrow keys step through the items without closing it.
+only when you click to download them, and images in a Markdown file that are online only are
+never downloaded; a Markdown file's images come only from its own drive or share. Space opens
+the same preview large, as Quick Look; the arrow keys step through the items without closing
+it.
 
 File bytes reach the preview through the `preview` protocol (`src-tauri/src/preview.rs`),
 which serves regular files only, honours `Range`, shows HTML and other active content as
-text, and whose frames may not call the app's commands.
+text, and whose frames may not call the app's commands. The window itself never leaves the
+app's page (`src-tauri/src/navigation.rs`): web links open in the default browser.
 
 ## Locked folders
 

@@ -164,7 +164,7 @@ export const api = {
   indexStatus: () => invoke<IndexStatus>("index_status"),
   /**
    * Lists a folder. With `watch`, the folder is watched from then on, replacing any earlier
-   * watch, and `onDirChanged` fires when its contents change. Hidden and system items are
+   * watch, and `onDirChanged` fires when its contents change. Hidden items are
    * included only when `hidden` is true, which defaults to the "Show hidden items" option.
    */
   listDir: (path: string, sort: SortSpec, watch: boolean, hidden: boolean = showHidden()) =>

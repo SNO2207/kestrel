@@ -3,7 +3,9 @@
 //! - The `preview` protocol (`http://preview.localhost/?p=<path>`) streams a file's bytes to
 //!   the pane's `<img>`, `<video>`, `<audio>` and PDF viewer. It honours `Range`, which video
 //!   seeking and the PDF viewer rely on, and never holds more of a file in memory than one
-//!   [`MAX_CHUNK`], or [`MAX_WHOLE`] for a request without a range.
+//!   [`MAX_CHUNK`], or [`MAX_WHOLE`] for a request without a range. An online-only file, whose
+//!   reading downloads it, is served only to a request marked `download=1`, which the pane
+//!   adds once the user has asked for that item; images inside a document never are.
 //! - [`preview_text`] reads the start of a file as text, [`preview_details`] describes a file
 //!   or folder, and [`open_link`] opens a link from a rendered Markdown file in the browser.
 //!
@@ -194,6 +196,27 @@ fn requested_path(uri: &Uri) -> Option<String> {
     })
 }
 
+/// Whether a request carries `download=1`: the user agreed to fetch this item from the cloud
+/// if it is online only. The pane adds it to the previewed item's own URL after "Download and
+/// preview"; nothing else does, so an image a Markdown document refers to never downloads.
+fn download_agreed(uri: &Uri) -> bool {
+    uri.query().unwrap_or_default().split('&').any(|pair| pair == "download=1")
+}
+
+/// Whether reading a file's data would fetch it from elsewhere, judged from its directory
+/// entry alone, which never does. The path is first made whole the way opening it would be,
+/// so that another spelling of it (`photo.png.`) is judged as the file it opens.
+fn is_online_only(path: &str) -> bool {
+    let whole = std::path::absolute(path).ok().and_then(|whole| whole.to_str().map(str::to_owned));
+    attribute_data(whole.as_deref().unwrap_or(path)).is_ok_and(|data| data.dwFileAttributes & RECALL != 0)
+}
+
+/// Whether reading an opened file's data would fetch it from elsewhere. Asking the handle for
+/// its attributes reads none of the data.
+fn is_opened_online_only(file: &File) -> bool {
+    file.metadata().is_ok_and(|meta| meta.file_attributes() & RECALL != 0)
+}
+
 fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -271,10 +294,20 @@ pub fn serve(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         _ => return status_only(StatusCode::METHOD_NOT_ALLOWED),
     };
     let Some(path) = requested_path(request.uri()) else { return status_only(StatusCode::BAD_REQUEST) };
+    // Checked before the file is opened, since opening some online-only files downloads them.
+    let agreed = download_agreed(request.uri());
+    if is_plain_path(&path) && !agreed && is_online_only(&path) {
+        return status_only(StatusCode::FORBIDDEN);
+    }
     let (mut file, len, etag) = match open_regular(&path) {
         Ok(opened) => opened,
         Err(status) => return status_only(status),
     };
+    // And again on the file as opened, before anything is read from it: a link to an
+    // online-only file passes the check above with the link's own attributes.
+    if !agreed && is_opened_online_only(&file) {
+        return status_only(StatusCode::FORBIDDEN);
+    }
 
     let header = |name| request.headers().get(name).and_then(|value| value.to_str().ok());
     // A range only applies to the version of the file the client saw before.
@@ -968,6 +1001,40 @@ mod tests {
         assert_eq!(get("relative.txt", &[]).status(), StatusCode::BAD_REQUEST);
         let no_path = Request::builder().uri("http://preview.localhost/").body(Vec::new()).unwrap();
         assert_eq!(serve(&no_path).status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn online_only_files_are_served_only_once_the_user_agreed_to_download_them() {
+        use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_OFFLINE, SetFileAttributesW};
+        let scratch = Scratch::new("online-only");
+        let photo = scratch.file("photo.png", b"\x89PNG\r\n\x1a\n");
+        // Offline is the attribute a cloud placeholder whose data is elsewhere carries; setting
+        // it on a local file changes nothing but the flag.
+        let wide = wide(&photo);
+        // SAFETY: `wide` is NUL-terminated and outlives the call.
+        assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_OFFLINE) }, 0);
+
+        // An image a Markdown document refers to is asked for without that agreement, however
+        // its path is spelled.
+        assert_eq!(get(&photo, &[]).status(), StatusCode::FORBIDDEN);
+        assert_eq!(get(&format!("{photo}."), &[]).status(), StatusCode::FORBIDDEN, "a trailing dot opens the same file");
+        assert_eq!(get(&photo.replace('\\', "/"), &[]).status(), StatusCode::FORBIDDEN);
+        // A link carries attributes of its own; creating one needs a privilege or developer mode.
+        let link = scratch.0.join("link.png");
+        if std::os::windows::fs::symlink_file(&photo, &link).is_ok() {
+            assert_eq!(get(link.to_str().unwrap(), &[]).status(), StatusCode::FORBIDDEN, "a link to an online-only file");
+        }
+        // Which is why the file is checked again once open, where a link has led to its target.
+        assert!(is_opened_online_only(&File::open(&photo).unwrap()));
+        let head = Request::builder().method("HEAD").uri(url_for(&photo)).body(Vec::new()).unwrap();
+        assert_eq!(serve(&head).status(), StatusCode::FORBIDDEN);
+        // The pane's own request for the item, after "Download and preview".
+        let agreed = Request::builder().uri(format!("{}&download=1", url_for(&photo))).body(Vec::new()).unwrap();
+        assert_eq!(serve(&agreed).status(), StatusCode::OK);
+        // A file on this computer needs no agreement.
+        let local = scratch.file("local.png", b"\x89PNG\r\n\x1a\n");
+        assert_eq!(get(&local, &[]).status(), StatusCode::OK);
+        assert!(!is_opened_online_only(&File::open(&local).unwrap()));
     }
 
     #[test]
