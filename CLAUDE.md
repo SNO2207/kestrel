@@ -41,7 +41,9 @@ Done and verified:
   index and the result sets the UI pages through; `indexer.rs` keeps the index current and
   owns the data folder (`data_dir()`, overridable with `KESTREL_DATA_DIR`); `fileops.rs` runs
   file operations through the shell's copy engine; `clipboard.rs`, `watch.rs`, `icons.rs`,
-  `places.rs` do what their names say.
+  `places.rs` do what their names say. `shellmenu.rs` runs the Windows context menu and Open
+  With in `apps/shellhost` (`kestrel-shellhost.exe`), a helper process found next to
+  `kestrel.exe`, so third-party shell extensions never load into the app.
 - `apps/desktop/src`: the front end. `state.ts` holds tabs and every action; `lib/api.ts`
   wraps every backend command; `components/` has one file per piece of UI; `styles.css` holds
   the design tokens (slate surfaces, one ochre accent, light and dark) and all styles.
@@ -127,3 +129,10 @@ Git:
   why every test slot has its own build directory.
 - A folder listing reports the size NTFS last recorded in the directory entry, which lags
   for files held open for writing; the MFT's own size is current.
+- `pnpm dev` (and so `tauri dev` and every e2e slot) builds `kestrel-shellhost` before the
+  app, but the dev watcher does not rebuild it when its code changes: run
+  `cargo build -p kestrel-shellhost` (with the slot's `CARGO_TARGET_DIR`) yourself.
+- Shell commands outlive `InvokeCommand`: Properties opens its dialog on another thread
+  without taking the process reference, and Copy leaves an OLE data object on the clipboard.
+  The helper therefore waits for its windows to close and flushes the clipboard before it
+  exits (`apps/shellhost/src/process.rs`).

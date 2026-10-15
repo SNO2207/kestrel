@@ -67,6 +67,14 @@ export interface Places {
   drives: Drive[];
 }
 
+/** What the user chose from the Windows context menu. */
+export interface ShellChoice {
+  /** Canonical verb of the chosen command, such as "copy", if it has one. */
+  verb: string | null;
+  /** False if nothing was chosen, or if the command is Kestrel's to carry out (rename). */
+  invoked: boolean;
+}
+
 export const api = {
   indexStatus: () => invoke<IndexStatus>("index_status"),
   /**
@@ -106,6 +114,16 @@ export const api = {
   openPath: (path: string) => invoke<void>("open_path", { path }),
   onIndexStatus: (handler: (status: IndexStatus) => void) =>
     listen<IndexStatus>("index-status", (event) => handler(event.payload)),
+  /**
+   * Shows the Windows context menu for the rows at a point in the window, from a helper
+   * process, and resolves once the chosen command is done. `dark` matches it to the window.
+   */
+  shellMenu: (set: number, ranges: RowRange[], x: number, y: number, dark: boolean, extended: boolean) =>
+    invoke<ShellChoice>("shell_menu", { set, ranges, x, y, dark, extended }),
+  /** Shows the Windows context menu of the folder itself, as for a click on empty space. */
+  shellFolderMenu: (path: string, x: number, y: number, dark: boolean, extended: boolean) =>
+    invoke<ShellChoice>("shell_folder_menu", { path, x, y, dark, extended }),
+  openWith: (path: string) => invoke<void>("open_with", { path }),
 };
 
 /** Extensions whose files each carry their own icon rather than sharing one per type. */

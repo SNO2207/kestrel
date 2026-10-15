@@ -24,6 +24,7 @@ import {
   notice,
   notify,
   openTab,
+  openWith,
   paste,
   refresh,
   rename,
@@ -31,6 +32,7 @@ import {
   setRenaming,
   setSort,
   showProperties,
+  showShellMenu,
   start,
   tabs,
 } from "./state";
@@ -68,6 +70,8 @@ export function App() {
         return void showProperties(tabId, true);
       case "refresh":
         return refresh(tabId);
+      case "open-with":
+        return void openWith(tabId);
     }
   };
 
@@ -130,6 +134,7 @@ export function App() {
                 onRenaming={(active) => setRenaming(tab.id, active)}
                 onRename={(row, name) => rename(tab.id, row, name)}
                 onCommand={(command) => runCommand(tab.id, command)}
+                onShellMenu={(x, y, onItems, extended) => showShellMenu(tab.id, x, y, onItems, extended)}
                 focusRef={(focus) => {
                   listFocus.set(tab.id, focus);
                   onCleanup(() => listFocus.delete(tab.id));

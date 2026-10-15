@@ -7,6 +7,7 @@ mod fileops;
 mod icons;
 mod indexer;
 mod places;
+mod shellmenu;
 mod watch;
 
 use std::collections::HashSet;
@@ -299,6 +300,11 @@ fn main() {
             can_paste,
             paste_items,
             show_properties,
+            shellmenu::shell_menu,
+            shellmenu::shell_folder_menu,
+            shellmenu::open_with,
+            shellmenu::shell_probe,
+            shellmenu::shell_probe_take,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

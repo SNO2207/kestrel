@@ -16,6 +16,7 @@ project discovery.
 | `crates/kestrel-cli` | Command-line front end and benchmark harness |
 | `apps/desktop` | The app: Tauri 2 backend in `src-tauri`, SolidJS front end in `src` |
 | `apps/broker` | Optional Windows service that reads drives' file tables for the app |
+| `apps/shellhost` | Helper process that shows the Windows context menu and Open With dialog |
 
 ## Running
 
@@ -85,10 +86,29 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+Shift+N | New folder |
 | Ctrl+Shift+C | Copy as path |
 | Alt+Enter | Properties |
-| Right-click, Shift+F10 | Context menu |
+| Right-click, Menu key | Context menu |
+| Shift+right-click, Shift+F10 | The Windows context menu, with every shell extension's commands |
 
 File operations run through the Windows shell's own copy engine, so progress and conflict
 dialogs, the Recycle Bin and Explorer's undo behave exactly as they do in Explorer.
+
+## The Windows context menu
+
+"Show more options" at the end of Kestrel's context menu (or Shift+F10, or Shift+right-click)
+shows the menu Explorer would, with the commands shell extensions add (archivers, version
+control, cloud storage), and "Open with…" shows Windows' own app picker. Shell extensions
+load into whichever process shows the menu, and a faulty one can crash it, so Kestrel never
+loads them: `kestrel-shellhost.exe` does, once per menu, and Kestrel reports a crash as a
+notice and carries on. The helper is built next to `kestrel.exe` (`pnpm dev` builds it before
+the app). It has no console window, so pipe its output (`| Out-String`) when running it on
+its own:
+
+```powershell
+kestrel-shellhost verbs -- C:\Notes\todo.txt          # the menu's items as JSON
+kestrel-shellhost invoke --verb copy -- C:\Notes\todo.txt
+kestrel-shellhost menu --x 400 --y 300 -- C:\Notes\todo.txt
+kestrel-shellhost openwith C:\Notes\todo.txt
+```
 
 ## Testing
 
@@ -110,6 +130,7 @@ pnpm tauri dev          # in one terminal
 node e2e/smoke.mjs      # in another: navigation, search, sorting; read-only
 node e2e/fileops.mjs    # file operations, confined to a scratch folder under %TEMP%
 node e2e/live-index.mjs # files changed by another program show up in search
+node e2e/shellmenu.mjs  # Windows menu entries start the helper (shown menus are a manual check)
 ```
 
 `fileops.mjs` replaces the clipboard's contents, and with `KESTREL_E2E_RECYCLE=1` it also
