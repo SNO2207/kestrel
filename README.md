@@ -50,7 +50,24 @@ cargo build --release -p kestrel-broker
 It serves a named pipe that only the installing account (plus SYSTEM and Administrators) can
 open, accepts one kind of request (build an index of these drives), and never writes to disk.
 Note that it can see every file name on a drive, including in folders your account cannot
-open, and passes them to the app.
+open, and passes them to the app. The app shows such results dimmed, with a lock, and says
+"Your account can't open this folder" rather than failing when you open one.
+
+### A longer change journal
+
+The app catches up after a restart from each drive's change journal, which Windows keeps at
+32 MB by default; on a busy drive that can be used up within days, after which the drive is
+scanned again. The install can enlarge every fixed NTFS drive's journal at the same time:
+
+```powershell
+.\target\release\kestrel-broker.exe install --journal-mb 512
+```
+
+This sends `FSCTL_CREATE_USN_JOURNAL` to each drive with a maximum size of N MB and an
+allocation delta of an eighth of that (how much NTFS adds, and later trims from the oldest
+records, at a time). N may be 32 to 16384. A journal that is already at least that large is
+left as it is, so the option never shrinks one, and a drive that can't be changed is reported
+and skipped. It is the one change the install makes to drives; the service itself only reads.
 
 ## Search syntax
 
@@ -79,7 +96,8 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+T / Ctrl+W / Ctrl+Tab | New tab / close tab / next tab |
 | F5 | Refresh (folders also refresh themselves when their contents change) |
 | Type letters | Jump to a name |
-| F2 | Rename |
+| F2 | Rename; with several items selected, batch rename |
+| Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) | Undo / redo the last file operation |
 | Del / Shift+Del | Move to the Recycle Bin / delete permanently |
 | Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste, shared with Explorer's clipboard |
 | Ctrl+Shift+N | New folder |
@@ -91,7 +109,24 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+wheel | Larger or smaller icons |
 
 File operations run through the Windows shell's own copy engine, so progress and conflict
-dialogs, the Recycle Bin and Explorer's undo behave exactly as they do in Explorer.
+dialogs, the Recycle Bin and Explorer's undo behave exactly as they do in Explorer. A progress
+sink records what each operation actually did (the name a copy got, where a moved item went,
+what reached the Recycle Bin), which is what selects new items and what undo works from:
+
+- a rename is undone by renaming back, a move by moving back;
+- a copy or a new folder by sending what was created to the Recycle Bin, never erasing it;
+- a deletion to the Recycle Bin by restoring exactly those items, found in the shell's
+  Recycle Bin folder by original path and deletion time;
+- a permanent deletion can't be undone, and the app says so.
+
+Each undo or redo is one shell operation with the usual progress and conflict windows. Undo
+and redo are also on the folder background's context menu.
+
+Batch rename (F2 with several items selected) offers find and replace (plain or regular
+expression, optionally case-sensitive), a prefix and suffix, numbering (`Photo ###` from a
+start value; `*` stands for the current name) and case changes, applied to the name, the
+extension or both. A live preview flags conflicts and invalid names, and Apply renames
+everything as one undoable operation.
 
 ## Views
 
@@ -125,8 +160,17 @@ pnpm tauri dev          # in one terminal
 node e2e/smoke.mjs      # in another: navigation, search, sorting; read-only
 node e2e/fileops.mjs    # file operations, confined to a scratch folder under %TEMP%
 node e2e/live-index.mjs # files changed by another program show up in search
+node e2e/undo.mjs       # undo and redo, in a scratch folder
+node e2e/batchrename.mjs # batch rename and its preview, in a scratch folder
+node e2e/locked.mjs     # a scratch folder this account can't open shows locked
 ```
 
 `fileops.mjs` replaces the clipboard's contents, and with `KESTREL_E2E_RECYCLE=1` it also
-sends one small file to the Recycle Bin. One unit test does the same and is ignored by
-default: `cargo test -p kestrel-desktop -- --ignored recycles`.
+sends one small file to the Recycle Bin. `undo.mjs` and `batchrename.mjs` (undo, redo, batch
+rename) and `locked.mjs` (a folder the account can't open) work in scratch folders and leave
+the clipboard alone; with `KESTREL_E2E_RECYCLE=1`, `undo.mjs` also undoes a new folder and a
+deletion, which passes two items from a scratch folder named `kestrel-test-*` through the
+Recycle Bin and brings both back. The unit test
+`undo::tests::restores_recycled_items_from_the_recycle_bin` does the same with two tiny files
+named `kestrel-test-*` and runs by default; `locked.mjs` uses `icacls` to remove, then
+restore, the permissions of one scratch folder.

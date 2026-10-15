@@ -3,7 +3,9 @@ import { Show, createEffect, createSignal } from "solid-js";
 import { iconUrl, thumbUrl, type Row } from "../lib/api";
 import { formatSize } from "../lib/format";
 import { iconPixels, showsThumbnails, thumbPixels } from "../lib/viewLayout";
+import { LOCKED_MESSAGE } from "../lib/access";
 import { displayName, type ViewMode } from "../lib/views";
+import { LockGlyph } from "./LockGlyph";
 
 /** One file or folder in the icon, list or tile views. Details rows are drawn by the list. */
 export function ViewItem(props: {
@@ -17,6 +19,8 @@ export function ViewItem(props: {
   focused: boolean;
   renaming: boolean;
   showExtension: boolean;
+  /** The item is in, or is, a folder this account can't open. */
+  locked: boolean;
   /** Thumbnails may start loading: the view is not being scrolled. */
   loadThumbs: boolean;
   onMouseDown: (event: MouseEvent) => void;
@@ -47,11 +51,16 @@ export function ViewItem(props: {
   return (
     <div
       class="view-item"
-      classList={{ selected: props.selected, focused: props.focused, dimmed: props.row?.hidden }}
+      classList={{
+        selected: props.selected,
+        focused: props.focused,
+        dimmed: props.row?.hidden || props.locked,
+        locked: props.locked,
+      }}
       role="option"
       aria-selected={props.selected}
       data-index={props.index}
-      title={props.row && !props.renaming ? props.row.name : undefined}
+      title={props.row && !props.renaming ? (props.locked ? `${props.row.name}\n${LOCKED_MESSAGE}` : props.row.name) : undefined}
       onMouseDown={(event) => props.onMouseDown(event)}
       onDblClick={(event) => props.onDblClick(event)}
       onContextMenu={(event) => props.onContextMenu(event)}
@@ -84,6 +93,9 @@ export function ViewItem(props: {
             <span class="view-item-text">
               <Show when={props.renaming} fallback={<span class="label">{displayName(row(), props.showExtension)}</span>}>
                 <RenameField name={row().name} dir={row().dir} onDone={props.onRenameDone} />
+              </Show>
+              <Show when={props.locked}>
+                <LockGlyph />
               </Show>
               <Show when={props.mode === "tiles"}>
                 <span class="view-item-detail">{typeLabel(row())}</span>

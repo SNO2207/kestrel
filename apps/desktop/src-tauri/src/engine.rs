@@ -254,7 +254,10 @@ impl Engine {
     pub fn list_dir_with(&self, path: &str, spec: SortSpec, visibility: Visibility) -> Result<Listing, String> {
         let started = Instant::now();
         let path = normalize(path);
-        let items = walk::list(&path).map_err(|e| format!("Can't open {path}: {e}"))?;
+        let items = walk::list(&path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::PermissionDenied => crate::access::LOCKED.to_owned(),
+            _ => format!("Can't open {path}: {e}"),
+        })?;
         let sort_spec = spec.resolve(true);
 
         let mut index = self.index.write();

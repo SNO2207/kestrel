@@ -2,6 +2,8 @@ import { For, Show, onCleanup, onMount } from "solid-js";
 
 import { api, type Row } from "./lib/api";
 import { locationKey, setViewMode, shortcutView } from "./lib/views";
+import { LOCKED_MESSAGE, isLocked, recheckAccess } from "./lib/access";
+import { BatchRenameDialog, openBatchRename } from "./components/BatchRename";
 import { FileList, type ListCommand } from "./components/FileList";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -23,6 +25,7 @@ import {
   goUp,
   navigate,
   notice,
+  noticeTone,
   notify,
   openTab,
   paste,
@@ -35,6 +38,7 @@ import {
   start,
   tabs,
 } from "./state";
+import { redoLast, undoLast } from "./undo";
 
 export function App() {
   /** Focus functions for each tab's list, so shortcuts can hand focus back to the files. */
@@ -42,7 +46,8 @@ export function App() {
   const focusList = () => listFocus.get(activeId())?.();
 
   const open = (tabId: number, row: Row, inNewTab: boolean) => {
-    if (row.dir && inNewTab) openTab(row.path);
+    if (isLocked(row)) notify(LOCKED_MESSAGE, "info");
+    else if (row.dir && inNewTab) openTab(row.path);
     else if (row.dir) navigate(tabId, row.path);
     else void api.openPath(row.path).catch(notify);
   };
@@ -68,7 +73,14 @@ export function App() {
       case "folder-properties":
         return void showProperties(tabId, true);
       case "refresh":
+        recheckAccess();
         return refresh(tabId);
+      case "undo":
+        return undoLast(tabId);
+      case "redo":
+        return redoLast(tabId);
+      case "batch-rename":
+        return void openBatchRename(tabId);
     }
   };
 
@@ -87,10 +99,13 @@ export function App() {
     if (event.ctrlKey && key === "t") return handled(), openTab();
     if (event.ctrlKey && key === "w") return handled(), closeTab(tab.id);
     if (event.ctrlKey && key === "tab") return handled(), cycleTab(event.shiftKey ? -1 : 1);
-    if (key === "f5") return handled(), refresh(tab.id);
+    if (key === "f5") return handled(), recheckAccess(), refresh(tab.id);
     if (key === "backspace" && !typing) return handled(), goBack(tab.id);
     const view = shortcutView(event);
     if (view) return handled(), setViewMode(locationKey(tab), view);
+    // Text fields keep their own undo.
+    if (event.ctrlKey && !typing && key === "z" && !event.shiftKey) return handled(), undoLast(tab.id);
+    if (event.ctrlKey && !typing && (key === "y" || (key === "z" && event.shiftKey))) return handled(), redoLast(tab.id);
   };
 
   // The web view's own context menu has no place in a file manager; text fields keep theirs.
@@ -142,7 +157,7 @@ export function App() {
           )}
         </For>
         <Show when={notice()}>
-          <div class="notice" role="alert">
+          <div class="notice" classList={{ info: noticeTone() === "info" }} role="alert">
             <span>{notice()}</span>
             <button aria-label="Dismiss" onClick={dismissNotice}>
               Dismiss
@@ -151,6 +166,7 @@ export function App() {
         </Show>
       </main>
       <StatusBar />
+      <BatchRenameDialog onClose={focusList} />
     </div>
   );
 }
