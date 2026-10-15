@@ -349,6 +349,10 @@ function selected(tabId: number) {
   return { tab, set: tab.listing.set, selection: held.selection, ranges: held.selection.ranges as RowRange[] };
 }
 
+/** Selects an item once it is listed and starts renaming it, as after "Compress to ZIP file". */
+export const renameWhenListed = (tabId: number, name: string) =>
+  patch(tabId, (tab) => void (tab.pending = { names: [name], rename: true }));
+
 /** Fetches the selected rows, lowest first, up to `limit`. */
 export async function selectedRows(tabId: number, limit: number): Promise<Row[]> {
   const current = selected(tabId);

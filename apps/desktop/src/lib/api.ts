@@ -18,6 +18,8 @@ export interface Listing {
   path: string;
   max_size: number;
   took_us: number;
+  /** For a folder inside an archive, the archive's path on disk; such a listing is read-only. */
+  archive?: string;
 }
 
 /** An inclusive range of row positions. */

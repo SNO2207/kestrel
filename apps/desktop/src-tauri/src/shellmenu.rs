@@ -245,6 +245,9 @@ pub async fn shell_menu(
     if paths.is_empty() {
         return Ok(ShellChoice::default());
     }
+    if crate::archive::refuse_entries(&paths).is_err() {
+        return Err(NOT_IN_ARCHIVES.into());
+    }
     let geometry = Geometry::of(&window)?;
     let at = geometry.to_screen(x, y);
     let request = Request::Menu { paths, at, owner: owner(&window), dark, extended, background: false };
@@ -262,15 +265,24 @@ pub async fn shell_folder_menu(
     dark: bool,
     extended: bool,
 ) -> Result<ShellChoice, String> {
+    if crate::archive::refuse_location(&path).is_err() {
+        return Err(NOT_IN_ARCHIVES.into());
+    }
     let geometry = Geometry::of(&window)?;
     let at = geometry.to_screen(x, y);
     let request = Request::Menu { paths: vec![path], at, owner: owner(&window), dark, extended, background: true };
     show_blocking(request, Some(geometry)).await
 }
 
+/// Items inside an archive aren't files Windows can show a menu for (archive.rs).
+const NOT_IN_ARCHIVES: &str = "The Windows menu isn't available inside an archive. Extract the items first.";
+
 /// Shows Windows' Open With dialog for a file.
 #[tauri::command]
 pub async fn open_with(window: Window, path: String) -> Result<(), String> {
+    if crate::archive::is_entry(&path) {
+        return Err("Open with needs a file on disk. Extract the item first.".into());
+    }
     let geometry = Geometry::of(&window).ok();
     show_blocking(Request::OpenWith { path, owner: owner(&window) }, geometry).await.map(|_| ())
 }

@@ -308,6 +308,16 @@ impl Journal {
     /// Records what an operation did, so it can be undone. Operations that did nothing are not
     /// recorded; one that erased anything ends the history, since nothing brings that back.
     pub fn record(&self, outcome: &Outcome) {
+        self.record_labelled(outcome, None);
+    }
+
+    /// [`Journal::record`], under a name of the caller's, such as "extraction of photos.zip",
+    /// for operations Kestrel carries out itself rather than through the shell.
+    pub fn record_as(&self, outcome: &Outcome, label: String) {
+        self.record_labelled(outcome, Some(label));
+    }
+
+    fn record_labelled(&self, outcome: &Outcome, label: Option<String>) {
         let steps: Vec<Done> = outcome.results().cloned().collect();
         if steps.is_empty() {
             return;
@@ -327,7 +337,8 @@ impl Journal {
         let mut history = self.history.lock();
         history.redo.clear();
         history.erased = None;
-        let entry = history.entry(describe(&steps), steps, marks);
+        let label = label.unwrap_or_else(|| describe(&steps));
+        let entry = history.entry(label, steps, marks);
         history.undo.push(entry);
         if history.undo.len() > LIMIT {
             history.undo.remove(0);

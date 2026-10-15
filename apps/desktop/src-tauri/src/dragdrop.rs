@@ -119,6 +119,10 @@ fn comparable(path: &str) -> String {
 /// already in the destination stay where they are, and a folder can't go into itself or one of
 /// its own subfolders, so those are left out. `None` means nothing is left to do.
 pub fn plan(sources: &[String], destination: &str, keys: Keys) -> Option<(Transfer, Vec<String>)> {
+    // Archives are read-only: nothing is dropped into one, or a folder inside one.
+    if crate::archive::refuse_location(destination).is_err() {
+        return None;
+    }
     let target = comparable(destination);
     let taking_part = |source: &&String| {
         let source = comparable(source);
@@ -454,7 +458,8 @@ pub fn start_drag(
     if requested > MAX_DRAG_ITEMS {
         return Err(format!("Drag at most {MAX_DRAG_ITEMS} items at a time."));
     }
-    let paths = engine.paths(set, &ranges)?;
+    // Items inside an archive are dragged as copies taken out of it.
+    let paths = crate::archive::materialize(engine.paths(set, &ranges)?)?;
     if paths.is_empty() {
         return Ok(DragOut { effect: "none", items: 0 });
     }

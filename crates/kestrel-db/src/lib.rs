@@ -15,6 +15,7 @@ use serde::de::DeserializeOwned;
 
 pub use rusqlite;
 
+pub mod archives;
 pub mod palette;
 pub mod projects;
 pub mod shortcuts;

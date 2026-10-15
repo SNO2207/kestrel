@@ -8,6 +8,7 @@ import { formatDate, formatSize } from "../lib/format";
 import { Selection } from "../lib/selection";
 import { geometry, keyTarget, sameGeometry } from "../lib/viewLayout";
 import { VIEW_MODES, displayName, listingLocation, setViewMode, showExtensions, viewModeAt } from "../lib/views";
+import { archiveMenu, inArchive, notifyReadOnly, type ArchiveCommand } from "../archives";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import { GitGlyph } from "./GitGlyph";
 import { LockGlyph } from "./LockGlyph";
@@ -48,7 +49,8 @@ export type ListCommand =
   | "redo"
   | "batch-rename"
   | "open-with"
-  | ShortcutCommand;
+  | ShortcutCommand
+  | ArchiveCommand;
 
 interface Props {
   listing: Listing | null;
@@ -326,7 +328,8 @@ export function FileList(props: Props) {
   // Git badges, in a folder inside a repository, are likewise asked for the rows on screen only.
   createEffect(() => {
     const listing = props.listing;
-    if (!listing || isSearch()) return;
+    // Search results span repositories; items inside an archive are not git's.
+    if (!listing || isSearch() || inArchive(listing)) return;
     const shown: Row[] = [];
     for (const index of visibleRows()) {
       const data = rowAt(index);
@@ -456,6 +459,7 @@ export function FileList(props: Props) {
   const soleRow = () => (selection().count === 1 ? selection().first : -1);
 
   const startRename = () => {
+    if (inArchive(props.listing)) return notifyReadOnly();
     const row = soleRow();
     if (row >= 0 && rowAt(row)) {
       reveal(row);
@@ -525,10 +529,24 @@ export function FileList(props: Props) {
         run: () => props.onShellMenu(x, y, onItems, false),
       },
     ];
-    const forItems: MenuEntry[] = [
+    // Inside an archive the menus are its own read-only ones; elsewhere extract and compress
+    // entries join the item menu (archives.ts).
+    const archive = archiveMenu({
+      listing: props.listing,
+      sole,
+      count,
+      run: command,
+      open: () => open(soleRow()),
+      openInNewTab: () => open(soleRow(), true),
+      copy: command("copy"),
+      history: [undo, ...redo],
+      refresh: command("refresh"),
+    });
+    const forItems: MenuEntry[] = archive.items ?? [
       { label: "Open", hint: "Enter", disabled: !sole, run: () => open(soleRow()) },
       ...(sole?.dir ? [{ label: "Open in new tab", run: () => open(soleRow(), true) }] : []),
       ...(sole && !sole.dir ? [{ label: "Open with…", run: command("open-with") }] : []),
+      ...archive.extra,
       { label: "Pin to sidebar", hint: "Ctrl+D", run: command("pin") },
       { label: "Tags…", run: command("tags") },
       "separator",
@@ -544,7 +562,7 @@ export function FileList(props: Props) {
       { label: "Properties", hint: "Alt+Enter", disabled: !sole, run: command("properties") },
       ...moreOptions(true),
     ];
-    const forFolder: MenuEntry[] = [
+    const forFolder: MenuEntry[] = archive.folder ?? [
       { label: "New folder", hint: "Ctrl+Shift+N", disabled: !browsing, run: command("new-folder") },
       { label: "Paste", hint: "Ctrl+V", disabled: !canPaste, run: command("paste") },
       { label: "Pin this folder", hint: "Ctrl+D", disabled: !browsing, run: command("pin-folder") },

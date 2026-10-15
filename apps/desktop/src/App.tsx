@@ -4,6 +4,8 @@ import { api, type Row } from "./lib/api";
 import { locationKey, setViewMode, shortcutView } from "./lib/views";
 import { LOCKED_MESSAGE, isLocked, recheckAccess } from "./lib/access";
 import { BatchRenameDialog, openBatchRename } from "./components/BatchRename";
+import { copyFromArchive, isArchiveFile, openEntry, runArchiveCommand, tabInArchive } from "./archives";
+import { ArchiveDialogs, ArchiveJobs } from "./components/ArchiveDialogs";
 import { isDropFolder, listenForDrops } from "./dragdrop";
 import { DropHint } from "./components/DropHint";
 import { FileList, type ListCommand } from "./components/FileList";
@@ -57,9 +59,12 @@ export function App() {
   const focusList = () => listFocus.get(activeId())?.();
 
   const open = (tabId: number, row: Row, inNewTab: boolean) => {
+    // An archive opens as a folder, as in Explorer (archives.ts).
+    const folder = row.dir || isArchiveFile(row);
     if (isLocked(row)) notify(LOCKED_MESSAGE, "info");
-    else if (row.dir && inNewTab) openTab(row.path);
-    else if (row.dir) navigate(tabId, row.path);
+    else if (folder && inNewTab) openTab(row.path);
+    else if (folder) navigate(tabId, row.path);
+    else if (tabInArchive(tabId)) void openEntry(tabId, row);
     else void api.openPath(row.path).catch(notify);
   };
 
@@ -68,7 +73,7 @@ export function App() {
       case "cut":
         return void copySelection(tabId, true);
       case "copy":
-        return void copySelection(tabId, false);
+        return void (tabInArchive(tabId) ? copyFromArchive(tabId) : copySelection(tabId, false));
       case "paste":
         return paste(tabId);
       case "copy-path":
@@ -98,6 +103,12 @@ export function App() {
       case "pin-folder":
       case "tags":
         return runShortcutCommand(tabId, command);
+      case "extract-all":
+      case "extract-here":
+      case "extract-items":
+      case "compress-zip":
+      case "compress-to":
+        return runArchiveCommand(tabId, command);
     }
   };
 
@@ -181,6 +192,7 @@ export function App() {
         <PreviewPane />
         <ProjectsHub />
         <DropHint />
+        <ArchiveJobs />
         <Show when={notice()}>
           <div class="notice" classList={{ info: noticeTone() === "info" }} role="alert">
             <span>{notice()}</span>
@@ -196,6 +208,7 @@ export function App() {
       <ShortcutsLayer focusList={focusList} />
       <PaletteOverlay runCommand={(command) => runCommand(activeId(), command)} focusList={focusList} />
       <LauncherSettingsDialog onClose={focusList} />
+      <ArchiveDialogs focusList={focusList} />
     </div>
   );
 }

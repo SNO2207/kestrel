@@ -18,9 +18,11 @@ import { previewUrl } from "./preview";
 /**
  * The app's own things that can lie over the preview area: menus, dialogs, notices, Quick
  * Look over the pane when what it shows has no use for the webview, the command palette, Go to
- * folder, and the projects hub, which covers the pane while it is open.
+ * folder, the projects hub, which covers the pane while it is open, and the panel of running
+ * archive jobs (the archive dialogs are dialogs).
  */
-const OVERLAYS = ".menu, .dialog-backdrop, .notice, .quicklook-backdrop, .palette-backdrop, .goto-backdrop, .projects-hub";
+const OVERLAYS =
+  ".menu, .dialog-backdrop, .notice, .quicklook-backdrop, .palette-backdrop, .goto-backdrop, .projects-hub, .archive-jobs";
 
 export type SurfaceKind = "image" | "video" | "audio" | "pdf";
 

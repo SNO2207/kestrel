@@ -239,6 +239,7 @@ pub fn preview(paths: &[String], rules: &Rules) -> Result<Vec<Preview>, String> 
 
 #[tauri::command(async)]
 pub fn preview_renames(paths: Vec<String>, rules: Rules) -> Result<Vec<Preview>, String> {
+    crate::archive::refuse_entries(&paths)?;
     preview(&paths, &rules)
 }
 
@@ -246,6 +247,7 @@ pub fn preview_renames(paths: Vec<String>, rules: Rules) -> Result<Vec<Preview>,
 /// names. Nothing is renamed if any new name has a problem.
 #[tauri::command(async)]
 pub fn batch_rename(window: Window, journal: State<Journal>, paths: Vec<String>, rules: Rules) -> Result<Vec<String>, String> {
+    crate::archive::refuse_entries(&paths)?;
     let previews = preview(&paths, &rules)?;
     if let Some(bad) = previews.iter().find(|preview| preview.problem.is_some()) {
         return Err(format!("{}: {}", bad.old, bad.problem.as_deref().unwrap_or_default()));

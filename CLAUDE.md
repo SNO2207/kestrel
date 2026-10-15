@@ -73,6 +73,14 @@ Done and verified:
   cover the actions, the index, typed paths, `@` projects (`projects/provider.rs`), `#` tags,
   and the pins, frequent folders, saved searches and workspaces (`shortcuts/provider.rs`,
   front-end halves in `lib/paletteFeatures.ts`).
+- **Archives** (`src-tauri/src/archive/`, `kestrel_db::archives`, `archives.ts`,
+  `lib/archivesApi.ts`, `ArchiveDialogs.tsx`, `archives.css`): zip, 7z, RAR, tar (plain, gzip,
+  bzip2, xz) and single `.gz`/`.bz2`/`.xz` files browse as read-only folders (nested archives
+  too), with the preview, Quick Look, opening a file from a temp copy, Copy and drags out;
+  "Extract all…", "Extract here", "Extract…", "Compress to ZIP file" and "Compress to…" (zip,
+  7z, tar.gz), with progress, cancel, undo, and the zip-slip, link, device-name, bomb, Mark of the
+  Web and password rules, each unit tested (`archive/tests.rs`) and end to end
+  (`e2e/archives.mjs`).
 
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette. Every unit test and all 16 e2e suites pass there
@@ -138,6 +146,31 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and short
   its tables: it adds a module with its `Migration`s and lists them in `MIGRATIONS`. Migrations
   run once in name order, so name them `<yyyy_mm_dd>_<feature>_<what>` and never edit one that
   has shipped.
+- Archives (`src-tauri/src/archive/`, see its module documentation): `address.rs` (formats by
+  name, and addresses inside archives), `reader.rs` (one `Source` per format; RAR through
+  `System32\tar.exe`, converted to a tar stream, so the same checks apply), `names.rs` (paths
+  made safe or refused), `extract.rs` (plan, free-space check, a hidden staging folder beside
+  or inside the destination, then a rename into place, or a merge whose clashes go to the
+  shell's copy engine), `compress.rs`, `browse.rs` (archive trees cached by path, size and
+  date; items copied out to `data_dir()\archive-cache` for the preview, drags, Copy and nested
+  archives, and to `%TEMP%\Kestrel` for opening), `motw.rs`, `job.rs` (progress events
+  `archive-progress`, cancel, failures as `{ kind, message }`). Jobs record what they created
+  through `Journal::record_as`, so undo recycles it through the usual marks. Front end:
+  `archives.ts` (menus, jobs panel, dialogs' state), `ArchiveDialogs.tsx`.
+- Navigation into archives: an **archive address** is the archive's own path followed by the
+  path inside it (`C:\x\photos.zip\2024\beach.jpg`). Nothing on disk has that path:
+  `archive::address::split` walks up to the nearest item that exists, and if it is an archive
+  file the rest is the inner path. `list_dir` hands such paths to `archive::list` before the
+  engine (one `metadata` call for an ordinary folder), which lists them through
+  `Engine::show_items` as live rows, with `Listing.archive` set to the archive's path; the front
+  end treats such listings as read-only (`inArchive` in `archives.ts`). Rows inside carry
+  addresses as their paths, so every command that takes paths checks them:
+  `archive::refuse_entries`/`refuse_location` in delete, rename, batch rename, new folder,
+  paste, cut, drops (`dragdrop::plan`) and the Windows menu; `archive::materialize` in Copy and
+  drags out; `archive::open_entry` in `open_path`; `archive::preview_file`/`preview_details` in
+  the preview's commands and protocol; `archive::icon_key` for icons. A new place that lists
+  things (special locations, a second pane) keeps archives working by calling `list_dir` with
+  the address, and should run any new path-taking command past those checks.
 - Shortcuts: data in `kestrel_db::shortcuts` (pins and groups, frecency, saved searches, tags,
   workspaces), commands in `src-tauri/src/shortcuts/`, front end in `src/shortcuts.ts`,
   `lib/shortcutsApi.ts`, `shortcuts.css` and the `Pinned*`, `Shortcut*`, `GoToFolder`,
@@ -301,3 +334,18 @@ Git:
 - Undo checks before acting that each item is still what the operation left: `undo_entries`
   stores a mark (file id, and for deletions a content fingerprint) per step. A file replaced by
   another program in the meantime is left alone rather than recycled.
+- sevenz-rust2 0.20 (the newest that builds with the workspace's Rust 1.92) writes the 7z
+  anti-item flags inverted, which made every folder a deletion marker; `compress::write_7z`
+  sets `is_anti_item` on folders to cancel it, and a unit test checks with Windows' tar.exe.
+  Its `Coder` properties are private, so a 7z (or xz) that declares a huge dictionary can't be
+  refused before the decoder allocates it.
+- RAR goes through `System32\tar.exe -P --format pax -cf - @-` with the archive on standard
+  input (so no path is ever parsed by it, and `-P` keeps names as stored, to be judged by
+  `names.rs`). libarchive reports an encrypted RAR only as "(null)", so `reader::rar_encrypted`
+  reads the RAR 4/5 headers first. tar.exe prints names in the console code page, so tests that
+  read its listing use ASCII names.
+- Archive tests use a 64 MB expansion floor (`extract::MIN_BUDGET`) instead of 1 GB, and a
+  cache and temp folder per test thread (`browse::test_scratch`), never the data folder.
+- A dialog that stays open must not hold a result set's rows: any refresh of the folder meanwhile
+  releases the set (one did while the archive suite took its screenshots), and the command then
+  fails with "stale". The archive dialogs keep paths.
