@@ -289,6 +289,18 @@ fn parse_icon_request(uri: &tauri::http::Uri) -> Option<(IconKey, u32)> {
     Some((key, size))
 }
 
+/// Kestrel's own data (pins, projects, settings). Commands take it as `State<Arc<Db>>`. If the
+/// file cannot be opened the app still runs, on a temporary in-memory database, and says so on
+/// stderr: browsing must never depend on it.
+fn open_database() -> Arc<kestrel_db::Db> {
+    let path = indexer::data_dir().join("kestrel.db");
+    let db = kestrel_db::Db::open(&path).unwrap_or_else(|error| {
+        eprintln!("could not open {}: {error}; using a temporary database", path.display());
+        kestrel_db::Db::open_in_memory().expect("an in-memory database always opens")
+    });
+    Arc::new(db)
+}
+
 fn main() {
     let engine = Arc::new(Engine::default());
     let icons = Arc::new(IconService::start());
@@ -300,6 +312,7 @@ fn main() {
         .manage(engine.clone())
         .manage(Watcher::default())
         .manage(Journal::default())
+        .manage(open_database())
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
             thumbs.handle(&request, responder)

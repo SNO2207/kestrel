@@ -9,6 +9,7 @@ rust-version = "1.92"
 publish = false
 
 [workspace.dependencies]
+kestrel-db = { path = "crates/kestrel-db" }
 kestrel-index = { path = "crates/kestrel-index" }
 kestrel-ntfs = { path = "crates/kestrel-ntfs" }
 kestrel-query = { path = "crates/kestrel-query" }
@@ -20,6 +21,7 @@ memchr = "2.8"
 parking_lot = "0.12"
 rayon = "1.12"
 regex = "1.13"
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 windows-sys = "0.61"
