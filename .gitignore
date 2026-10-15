@@ -1,0 +1,15 @@
+/target
+node_modules
+dist
+*.log
+.DS_Store
+Thumbs.db
+
+# Tauri
+/apps/desktop/src-tauri/gen/schemas
+
+# Local data produced by the CLI
+*.kidx
+
+# End-to-end test screenshots
+/apps/desktop/e2e/out

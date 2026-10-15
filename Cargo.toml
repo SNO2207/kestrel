@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/broker", "apps/desktop/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[workspace.dependencies]
+kestrel-index = { path = "crates/kestrel-index" }
+kestrel-ntfs = { path = "crates/kestrel-ntfs" }
+kestrel-query = { path = "crates/kestrel-query" }
+
+anyhow = "1"
+bytemuck = "1.25"
+clap = { version = "4.6", features = ["derive"] }
+memchr = "2.8"
+parking_lot = "0.12"
+rayon = "1.12"
+regex = "1.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-sys = "0.61"
+
+# Dependencies are always optimised: the index and query engine are unusable at opt-level 0.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

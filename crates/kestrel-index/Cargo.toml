@@ -1,0 +1,23 @@
+[package]
+name = "kestrel-index"
+description = "In-memory index of every file on a volume"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytemuck = { workspace = true }
+parking_lot = { workspace = true }
+rayon = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+kestrel-ntfs = { workspace = true, features = ["testing"] }
+
+[target.'cfg(windows)'.dependencies]
+kestrel-ntfs = { workspace = true }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+] }

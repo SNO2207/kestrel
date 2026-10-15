@@ -1,0 +1,790 @@
+/*
+ * Kestrel's palette comes from the bird: slate blue-grey plumage for surfaces and the ochre
+ * of its talons as the single accent. Dark is the default; light follows the system setting.
+ */
+:root {
+  color-scheme: dark;
+  --chrome: #151a21;
+  --surface: #1b2129;
+  --raised: #242c37;
+  --line: #2c3541;
+  --text: #e3e7ed;
+  --muted: #8a95a5;
+  --faint: #5d6877;
+  --accent: #f0b429;
+  --accent-ink: #1a1300;
+  --select: rgb(240 180 41 / 0.13);
+  --select-line: rgb(240 180 41 / 0.6);
+  --weight: #c9962a;
+  --weight-folder: #6f93c4;
+  --danger: #e5484d;
+
+  --row: 28px;
+  --radius: 4px;
+  --scrollbar: 12px;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --chrome: #e6eaf0;
+    --surface: #fbfcfd;
+    --raised: #edf0f4;
+    --line: #d2d8e0;
+    --text: #1a2029;
+    --muted: #5a6473;
+    --faint: #8892a1;
+    --accent: #a06f00;
+    --accent-ink: #ffffff;
+    --select: rgb(240 180 41 / 0.2);
+    --select-line: #c28a00;
+    --weight: #d9a21f;
+    --weight-folder: #7399cf;
+    --danger: #c62828;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--surface);
+  color: var(--text);
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: default;
+}
+
+input {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.icon {
+  flex: none;
+}
+
+/* ---------- layout ---------- */
+
+.app {
+  display: grid;
+  grid-template-columns: 228px minmax(0, 1fr);
+  grid-template-rows: 38px 44px minmax(0, 1fr) 26px;
+  grid-template-areas:
+    "title title"
+    "tools tools"
+    "side main"
+    "status status";
+  height: 100%;
+}
+
+/* ---------- title bar ---------- */
+
+.titlebar {
+  grid-area: title;
+  display: flex;
+  align-items: stretch;
+  background: var(--chrome);
+  padding-left: 8px;
+}
+
+.tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  padding-top: 6px;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 72px;
+  max-width: 220px;
+  height: 32px;
+  padding: 0 6px 0 12px;
+  border-radius: 7px 7px 0 0;
+  color: var(--muted);
+}
+
+.tab:hover {
+  background: color-mix(in srgb, var(--surface) 50%, transparent);
+}
+
+.tab.active {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close,
+.tab-new {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+.tab-close {
+  visibility: hidden;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  visibility: visible;
+}
+
+.tab-new {
+  width: 28px;
+  height: 28px;
+  margin: 0 0 2px 2px;
+}
+
+.tab-close:hover,
+.tab-new:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.window-controls {
+  display: flex;
+  margin-left: auto;
+}
+
+.window-controls button {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  color: var(--muted);
+}
+
+.window-controls button:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.window-controls button.close:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ---------- toolbar ---------- */
+
+.toolbar {
+  grid-area: tools;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.nav {
+  display: flex;
+  gap: 2px;
+}
+
+.nav button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius);
+}
+
+.nav button:hover:not(:disabled) {
+  background: var(--raised);
+}
+
+.nav button:disabled {
+  color: var(--faint);
+}
+
+.address,
+.searchbox {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  background: var(--chrome);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.address {
+  flex: 1;
+  min-width: 0;
+  padding: 0 4px;
+  cursor: text;
+}
+
+.address.editing,
+.searchbox:focus-within {
+  border-color: var(--accent);
+}
+
+/*
+ * The box is only as wide as its crumbs until it runs out of room; then it clips from the
+ * left, so a long path keeps its deepest folders visible.
+ */
+.crumbs {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--faint);
+}
+
+.crumb {
+  flex: none;
+  padding: 3px 6px;
+  border-radius: 3px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.crumb:hover {
+  background: var(--raised);
+}
+
+.address-input,
+.searchbox input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: none;
+  border: 0;
+  outline: 0;
+  padding: 0 6px;
+  user-select: text;
+}
+
+.searchbox {
+  width: 300px;
+  padding-left: 9px;
+  color: var(--muted);
+}
+
+.searchbox input {
+  color: var(--text);
+}
+
+.searchbox input::placeholder {
+  color: var(--faint);
+}
+
+.scope {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 24px;
+  margin-right: 2px;
+  border-radius: 3px;
+  color: var(--muted);
+}
+
+.scope:hover {
+  background: var(--raised);
+}
+
+.scope.on {
+  color: var(--accent);
+}
+
+/* ---------- sidebar ---------- */
+
+.sidebar {
+  grid-area: side;
+  background: var(--chrome);
+  border-right: 1px solid var(--line);
+  padding: 10px 8px;
+  overflow-y: auto;
+}
+
+.sidebar section + section {
+  margin-top: 18px;
+}
+
+.sidebar h2 {
+  margin: 0 0 4px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--faint);
+}
+
+.place {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  text-align: left;
+  color: var(--muted);
+}
+
+.place span {
+  color: var(--text);
+}
+
+.place:hover {
+  background: var(--raised);
+}
+
+.place.current {
+  background: var(--select);
+  color: var(--accent);
+}
+
+.place.drive {
+  align-items: flex-start;
+  padding-block: 7px;
+}
+
+.drive-body {
+  display: grid;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.drive-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meter {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.meter span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.meter.full span {
+  background: var(--danger);
+}
+
+.place .drive-free {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- file list ---------- */
+
+.content {
+  grid-area: main;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tab-panel {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+.filelist {
+  --columns: minmax(180px, 1fr) 168px 128px 156px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.filelist.results {
+  --columns: minmax(180px, 2fr) minmax(140px, 3fr) 168px 156px;
+}
+
+.list-header,
+.row {
+  display: grid;
+  grid-template-columns: var(--columns);
+  padding: 0 14px 0 8px;
+}
+
+.list-header {
+  /* The rows sit inside a viewport that always reserves a scrollbar gutter; match it. */
+  padding-right: calc(14px + var(--scrollbar));
+  flex: none;
+  height: 30px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.column-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  text-align: left;
+}
+
+button.column-header:hover {
+  color: var(--text);
+}
+
+.column-header.sorted {
+  color: var(--text);
+}
+
+.column-header.numeric {
+  justify-content: flex-end;
+}
+
+.sort-arrow.desc {
+  transform: rotate(180deg);
+}
+
+.list-error {
+  flex: none;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--danger);
+  user-select: text;
+}
+
+.list-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  outline: 0;
+}
+
+.list-spacer {
+  position: relative;
+}
+
+.list-rows {
+  position: absolute;
+  inset: 0 0 auto;
+  will-change: transform;
+}
+
+.row {
+  height: var(--row);
+  align-items: center;
+  border-radius: 3px;
+  /* A transparent edge that the focus ring can occupy without shifting the content. */
+  box-shadow: inset 0 0 0 1px transparent;
+}
+
+.row:hover {
+  background: var(--raised);
+}
+
+.row.selected {
+  background: var(--select);
+}
+
+.list-viewport:focus-visible .row.focused,
+.list-viewport:focus .row.focused {
+  box-shadow: inset 0 0 0 1px var(--select-line);
+}
+
+.row.dimmed .name,
+.row.dimmed .cell {
+  opacity: 0.55;
+}
+
+.cell {
+  min-width: 0;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.cell.name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text);
+}
+
+.cell.name img {
+  flex: none;
+}
+
+.cell.name .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cell.modified,
+.cell.size {
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * The size column is the app's signature: every size, including folder totals the index
+ * already knows, is drawn as a bar scaled to the largest item in view, so a folder's weight
+ * distribution is visible without opening a separate tool.
+ */
+.cell.size {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px;
+  align-items: center;
+  gap: 10px;
+}
+
+.weight-track {
+  height: 5px;
+}
+
+.weight {
+  display: block;
+  height: 100%;
+  border-radius: 2.5px;
+  background: var(--weight);
+}
+
+.weight.folder {
+  background: var(--weight-folder);
+}
+
+.amount {
+  text-align: right;
+  color: var(--text);
+}
+
+.list-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.list-empty p {
+  margin: 0;
+}
+
+.list-empty .hint {
+  color: var(--faint);
+}
+
+code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--raised);
+  color: var(--text);
+}
+
+/* ---------- status bar ---------- */
+
+.statusbar {
+  grid-area: status;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 12px;
+  background: var(--chrome);
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.statusbar .spacer {
+  flex: 1;
+}
+
+.statusbar .timing {
+  color: var(--accent);
+}
+
+.index-state.busy::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .index-state.busy::before {
+    animation: none;
+  }
+}
+
+/* Scrollbars sized for a mouse, coloured to match. */
+::-webkit-scrollbar {
+  width: var(--scrollbar);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border: 3px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--faint);
+}
+
+/* ---------- inline rename ---------- */
+
+.rename {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  margin-left: -5px;
+  padding: 0 4px;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  outline: 0;
+  user-select: text;
+}
+
+/* ---------- context menu ---------- */
+
+.menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 220px;
+  padding: 4px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.28);
+  outline: 0;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  text-align: left;
+}
+
+.menu-item.active:not(:disabled) {
+  background: var(--select);
+}
+
+.menu-item:disabled {
+  color: var(--faint);
+}
+
+.menu-item.danger:not(:disabled) {
+  color: var(--danger);
+}
+
+.menu-hint {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
+}
+
+/* ---------- notices ---------- */
+
+.notice {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: min(640px, calc(100% - 32px));
+  padding: 9px 10px 9px 14px;
+  transform: translateX(-50%);
+  background: var(--raised);
+  border: 1px solid var(--danger);
+  border-radius: 7px;
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.28);
+  user-select: text;
+}
+
+.notice button {
+  flex: none;
+  padding: 3px 9px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+.notice button:hover {
+  background: var(--line);
+  color: var(--text);
+}
