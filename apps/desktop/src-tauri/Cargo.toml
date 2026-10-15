@@ -14,6 +14,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+kestrel-db = { workspace = true }
 kestrel-index = { workspace = true }
 kestrel-query = { workspace = true }
 parking_lot = { workspace = true }

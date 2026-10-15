@@ -47,6 +47,11 @@ Done and verified:
   the design tokens (slate surfaces, one ochre accent, light and dark) and all styles.
 - Result sets: a listing or search produces a set id; the UI fetches rows by range. The UI
   releases a set only after switching to its replacement (`show` in `state.ts`).
+- `crates/kestrel-db`: the app's own data (pins, projects, tags, history, settings) in one
+  SQLite file, `data_dir()/kestrel.db`, managed in Tauri as `State<Arc<Db>>`. A feature owns
+  its tables: it adds a module with its `Migration`s and lists them in `MIGRATIONS`. Migrations
+  run once in name order, so name them `<yyyy_mm_dd>_<feature>_<what>` and never edit one that
+  has shipped.
 
 ## Working on Kestrel (agents read this)
 
