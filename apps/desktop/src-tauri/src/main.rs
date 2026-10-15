@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod clipboard;
+mod dragdrop;
 mod engine;
 mod fileops;
 mod icons;
@@ -299,8 +300,17 @@ fn main() {
             can_paste,
             paste_items,
             show_properties,
+            dragdrop::start_drag,
+            dragdrop::drop_items,
+            dragdrop::drop_effect,
         ])
+        .on_window_event(|_window, event| dragdrop::on_window_event(event))
         .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main")
+                && let Err(error) = dragdrop::install(&window)
+            {
+                eprintln!("Dragging files out is unavailable: {error}");
+            }
             let handle = app.handle().clone();
             let engine = app.state::<Arc<Engine>>().inner().clone();
             std::thread::Builder::new()

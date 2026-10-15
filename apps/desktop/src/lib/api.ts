@@ -67,6 +67,16 @@ export interface Places {
   drives: Drive[];
 }
 
+/** Modifier keys held during a drag, which decide between copying and moving. */
+export interface DropKeys {
+  ctrl: boolean;
+  shift: boolean;
+}
+
+export type DropEffect = "copy" | "move" | "link" | "none";
+
+export type DragRehearsal = "prepare" | "cancel" | "hold";
+
 export const api = {
   indexStatus: () => invoke<IndexStatus>("index_status"),
   /**
@@ -106,6 +116,23 @@ export const api = {
   openPath: (path: string) => invoke<void>("open_path", { path }),
   onIndexStatus: (handler: (status: IndexStatus) => void) =>
     listen<IndexStatus>("index-status", (event) => handler(event.payload)),
+  /**
+   * Starts a native drag of the rows while the mouse button is down, resolving when it ends.
+   * A `rehearsal` (honoured by dev builds only) lets tests run it without a mouse: `prepare`
+   * stops short of the drag, `cancel` calls the drag off as it begins, and `hold` calls it
+   * off after a couple of seconds.
+   */
+  startDrag: (set: number, ranges: RowRange[], rehearsal?: DragRehearsal) =>
+    invoke<{ effect: DropEffect; items: number }>("start_drag", { set, ranges, rehearsal }),
+  /**
+   * Copies or moves dropped files into `destination`, by the keys held at the drop. `keys`
+   * (honoured by dev builds only) stands in for the keyboard in tests.
+   */
+  dropItems: (paths: string[], destination: string, keys?: DropKeys) =>
+    invoke<{ effect: DropEffect; names: string[] }>("drop_items", { paths, destination, keys }),
+  /** What dropping `paths` on `destination` would do with the keys held now. */
+  dropEffect: (paths: string[], destination: string, keys?: DropKeys) =>
+    invoke<DropEffect>("drop_effect", { paths, destination, keys }),
 };
 
 /** Extensions whose files each carry their own icon rather than sharing one per type. */

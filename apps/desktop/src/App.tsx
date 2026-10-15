@@ -1,6 +1,8 @@
 import { For, Show, onCleanup, onMount } from "solid-js";
 
 import { api, type Row } from "./lib/api";
+import { isDropFolder, listenForDrops } from "./dragdrop";
+import { DropHint } from "./components/DropHint";
 import { FileList, type ListCommand } from "./components/FileList";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -103,6 +105,8 @@ export function App() {
       window.removeEventListener("contextmenu", onContextMenu);
     });
     void start().then(focusList);
+    const stopDrops = listenForDrops();
+    onCleanup(() => void stopDrops.then((stop) => stop()));
   });
 
   return (
@@ -113,7 +117,7 @@ export function App() {
       <main class="content">
         <For each={tabs}>
           {(tab) => (
-            <div class="tab-panel" classList={{ active: tab.id === activeId() }}>
+            <div class="tab-panel" classList={{ active: tab.id === activeId(), "drop-target": isDropFolder(tab.id) }}>
               <FileList
                 listing={tab.listing}
                 revision={tab.revision}
@@ -138,6 +142,7 @@ export function App() {
             </div>
           )}
         </For>
+        <DropHint />
         <Show when={notice()}>
           <div class="notice" role="alert">
             <span>{notice()}</span>

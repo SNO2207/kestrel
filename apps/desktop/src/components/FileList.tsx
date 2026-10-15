@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 
-import { api, iconUrl, type Listing, type Marks, type Row, type SortKey, type SortSpec } from "../lib/api";
+import { api, iconUrl, type Listing, type Marks, type Row, type RowRange, type SortKey, type SortSpec } from "../lib/api";
+import { dragOut, followPress, isDropRow } from "../dragdrop";
 import { formatDate, formatSize } from "../lib/format";
 import { Selection } from "../lib/selection";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
@@ -513,14 +514,29 @@ export function FileList(props: Props) {
                       selected: selection().has(index),
                       focused: focused() === index,
                       dimmed: row()?.hidden,
+                      "drop-target": isDropRow(row()?.path),
                     }}
                     role="row"
                     aria-rowindex={index + 1}
                     aria-selected={selection().has(index)}
+                    data-path={row()?.path}
+                    data-folder={row()?.dir ? "" : undefined}
                     onMouseDown={(event) => {
                       if (event.button !== 0 || event.target instanceof HTMLInputElement) return;
                       resetTypeAhead();
-                      select(index, { extend: event.shiftKey, toggle: event.ctrlKey });
+                      const mode = { extend: event.shiftKey, toggle: event.ctrlKey };
+                      // A press on a selected row may start a drag of the whole selection, so
+                      // narrowing the selection to that row, or toggling it off, waits until
+                      // the button comes up without a drag.
+                      const deferred = selection().has(index) && !event.shiftKey;
+                      if (!deferred) select(index, mode);
+                      followPress(event, {
+                        drag: () => {
+                          const listing = props.listing;
+                          if (listing && selection().count > 0) void dragOut(listing.set, selection().ranges as RowRange[]);
+                        },
+                        click: () => deferred && select(index, mode),
+                      });
                     }}
                     onDblClick={(event) => {
                       if (!(event.target instanceof HTMLInputElement)) open(index);

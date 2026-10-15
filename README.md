@@ -90,6 +90,17 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 File operations run through the Windows shell's own copy engine, so progress and conflict
 dialogs, the Recycle Bin and Explorer's undo behave exactly as they do in Explorer.
 
+### Drag and drop
+
+Drag selected items out of the list to Explorer, the desktop, an email or any other program: it
+is a native Windows drag with the shell's drag image, and the target decides between copy,
+move and shortcut as it would for Explorer. Files dragged onto Kestrel, from anywhere or from
+Kestrel itself, go into the folder row, sidebar place or tab under the cursor, or into the open
+folder. As in Explorer, they move within a drive and are copied to another; hold Ctrl to copy
+or Shift to move. A hint at the bottom of the list says which will happen. Hovering a folder,
+place or tab for a second opens it, and the list scrolls when the cursor nears its top or
+bottom edge. Dropped items are selected where they land.
+
 ## Testing
 
 ```powershell
@@ -110,7 +121,12 @@ pnpm tauri dev          # in one terminal
 node e2e/smoke.mjs      # in another: navigation, search, sorting; read-only
 node e2e/fileops.mjs    # file operations, confined to a scratch folder under %TEMP%
 node e2e/live-index.mjs # files changed by another program show up in search
+node e2e/dragdrop.mjs   # drops driven by synthetic drag events, in a scratch folder under %TEMP%
 ```
+
+`dragdrop.mjs` needs a dev build: it drives drops through the test hook such a build exposes,
+since a real mouse drag can't be scripted. Drags out are rehearsed rather than performed, so
+nothing is ever dropped on another program.
 
 `fileops.mjs` replaces the clipboard's contents, and with `KESTREL_E2E_RECYCLE=1` it also
 sends one small file to the Recycle Bin. One unit test does the same and is ignored by

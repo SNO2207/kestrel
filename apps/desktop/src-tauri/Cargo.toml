@@ -28,7 +28,16 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_UI_Shell",
+    # Dragging files out: shell data objects, item id lists and OLE drag and drop. GDI and
+    # structured storage are needed for STGMEDIUM, which the tests read the files back from.
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell_Common",
 ] }
+# Named by the code `#[implement]` generates for COM objects written in Rust.
+windows-core = "0.62"
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -40,6 +49,7 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

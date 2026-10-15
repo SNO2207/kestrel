@@ -788,3 +788,49 @@ code {
   background: var(--line);
   color: var(--text);
 }
+
+/* ---------- drag and drop ---------- */
+
+/*
+ * Where dragged files would land: a folder row, a place, a tab, or the whole list when they
+ * would go into the folder on screen. An accent ring tells it apart from the selection.
+ */
+.row.drop-target,
+.place.drop-target,
+.tab.drop-target {
+  background: var(--select);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+.tab-panel.drop-target::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius);
+  pointer-events: none;
+}
+
+.drop-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  z-index: 11;
+  max-width: min(480px, calc(100% - 32px));
+  padding: 7px 14px;
+  overflow: hidden;
+  transform: translateX(-50%);
+  background: var(--raised);
+  border: 1px solid var(--select-line);
+  border-radius: 7px;
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.28);
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.drop-hint strong {
+  color: var(--text);
+  font-weight: 600;
+}

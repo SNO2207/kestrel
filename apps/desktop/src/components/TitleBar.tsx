@@ -1,6 +1,7 @@
 import { For, createSignal, onCleanup, onMount } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import { isDropTab } from "../dragdrop";
 import { baseName } from "../lib/format";
 import { activateTab, activeId, closeTab, isSearch, openTab, tabs, type Tab } from "../state";
 import { Icon } from "./Icon";
@@ -28,8 +29,9 @@ export function TitleBar() {
           {(tab) => (
             <div
               class="tab"
-              classList={{ active: tab.id === activeId() }}
+              classList={{ active: tab.id === activeId(), "drop-target": isDropTab(tab.id) }}
               role="tab"
+              data-tab-id={tab.id}
               aria-selected={tab.id === activeId()}
               title={isSearch(tab) ? tab.query : tab.path}
               onMouseDown={(event) => {
