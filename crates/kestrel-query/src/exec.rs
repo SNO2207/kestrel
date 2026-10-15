@@ -33,6 +33,8 @@ enum Test {
     Folders,
     Files,
     Under(EntryId),
+    /// One of these entries, sorted: a resolved tag.
+    Among(Vec<EntryId>),
     /// A filter that can match nothing, such as an extension that no file has.
     Never,
 }
@@ -43,7 +45,7 @@ impl Test {
         match self {
             Test::Never => 0,
             Test::Folders | Test::Files | Test::Size(..) | Test::Modified(..) | Test::Ext(_) => 1,
-            Test::Under(_) => 2,
+            Test::Under(_) | Test::Among(_) => 2,
             Test::Name(_) => 3,
             Test::Glob(_) => 4,
             Test::Regex(_) => 5,
@@ -105,12 +107,16 @@ pub struct Compiled {
     anchor: Option<Anchor>,
     /// Folder that results are restricted to, when the query names one.
     scope: Option<EntryId>,
+    /// Every possible match, when the query names a set of entries (a tag): then only those
+    /// are tested, rather than the whole index.
+    candidates: Option<Vec<EntryId>>,
 }
 
 /// Binds a parsed query to `index`, resolving extensions and folders to ids.
 pub fn compile(query: &Query, index: &Index) -> Result<Compiled, ParseError> {
     let mut clauses = Vec::with_capacity(query.clauses.len());
     let mut scope = None;
+    let mut candidates: Option<Vec<EntryId>> = None;
     for clause in &query.clauses {
         let test = match &clause.kind {
             ClauseKind::Name(text) => Test::Name(Finder::new(text.as_bytes()).into_owned()),
@@ -144,6 +150,15 @@ pub fn compile(query: &Query, index: &Index) -> Result<Compiled, ParseError> {
                 }
                 None => Test::Never,
             },
+            ClauseKind::Tag(name) => {
+                return Err(ParseError(format!("Tags must be resolved before searching (tag:{name})")));
+            }
+            ClauseKind::Entries(ids) => {
+                if !clause.negate && candidates.as_ref().is_none_or(|known: &Vec<EntryId>| ids.len() < known.len()) {
+                    candidates = Some(ids.clone());
+                }
+                Test::Among(ids.clone())
+            }
         };
         clauses.push(Clause { negate: clause.negate, test });
     }
@@ -165,7 +180,7 @@ pub fn compile(query: &Query, index: &Index) -> Result<Compiled, ParseError> {
     }
     let anchor = anchor
         .map(|(literal, proves)| Anchor { finder: Finder::new(literal).into_owned(), proves });
-    Ok(Compiled { clauses, anchor, scope })
+    Ok(Compiled { clauses, anchor, scope, candidates })
 }
 
 impl Compiled {
@@ -195,6 +210,7 @@ impl Compiled {
                 Test::Folders => index.is_dir(id),
                 Test::Files => !index.is_dir(id),
                 &Test::Under(dir) => index.is_under(id, dir),
+                Test::Among(ids) => ids.binary_search(&id).is_ok(),
                 Test::Never => false,
             };
             hit != clause.negate
@@ -247,6 +263,16 @@ impl Compiled {
 /// Runs a query and returns matching entries in ascending id order, or `None` if `cancel` was
 /// set while it ran.
 pub fn search(index: &Index, query: &Compiled, cancel: &AtomicBool) -> Option<Vec<EntryId>> {
+    // A tag names its few entries outright; testing just those beats scanning millions.
+    if let Some(candidates) = &query.candidates {
+        let mut path = PathScratch::default();
+        let found = candidates
+            .iter()
+            .copied()
+            .filter(|&id| id < index.len() && query.matches(index, id, None, &mut path))
+            .collect();
+        return (!cancel.load(Ordering::Relaxed)).then_some(found);
+    }
     let chunks: Vec<Range<EntryId>> = query
         .ranges(index)
         .into_iter()
@@ -362,6 +388,47 @@ mod tests {
 
         idx.remove(idx.lookup(r"C:\Projects\Kestrel\src\main.rs").unwrap());
         assert_eq!(run(&idx, r"in:C:\Projects main"), ["main_test.rs"]);
+    }
+
+    /// Runs `text` with `tag:` names resolved through `tags`, a list of (name, paths).
+    fn run_tagged(index: &Index, text: &str, tags: &[(&str, &[&str])]) -> Result<Vec<String>, ParseError> {
+        let mut query = crate::parse(text, CLOCK).unwrap();
+        crate::resolve_tags(&mut query, |name| {
+            let (_, paths) = tags
+                .iter()
+                .find(|(tag, _)| tag.eq_ignore_ascii_case(name))
+                .ok_or_else(|| ParseError(format!("No tag is named \"{name}\"")))?;
+            Ok(paths.iter().filter_map(|path| index.lookup(path)).collect())
+        })?;
+        let compiled = compile(&query, index)?;
+        let ids = search(index, &compiled, &AtomicBool::new(false)).unwrap();
+        assert!(ids.is_sorted(), "results must be in id order");
+        let mut names: Vec<String> = ids.iter().map(|&id| index.name(id).to_owned()).collect();
+        names.sort();
+        Ok(names)
+    }
+
+    #[test]
+    fn tag_clauses_match_the_tagged_entries() {
+        let mut idx = sample();
+        let work: &[&str] = &[r"C:\Projects\Kestrel\src\main.rs", r"C:\Projects\Kestrel\README.md", r"C:\Photos"];
+        let holiday: &[&str] = &[r"C:\Photos\IMG_0001.JPG", r"C:\Photos\holiday video.MP4"];
+        let tags = [("work", work), ("holiday", holiday)];
+
+        assert_eq!(run_tagged(&idx, "tag:work", &tags).unwrap(), ["Photos", "README.md", "main.rs"]);
+        // Tags combine with every other clause, and with each other.
+        assert_eq!(run_tagged(&idx, "tag:WORK type:file", &tags).unwrap(), ["README.md", "main.rs"]);
+        assert_eq!(run_tagged(&idx, "tag:work ext:rs", &tags).unwrap(), ["main.rs"]);
+        assert_eq!(run_tagged(&idx, r"tag:holiday in:C:\Photos size:>1gb", &tags).unwrap(), ["holiday video.MP4"]);
+        assert!(run_tagged(&idx, "tag:work tag:holiday", &tags).unwrap().is_empty());
+        assert_eq!(run_tagged(&idx, "type:image !tag:holiday", &tags).unwrap(), ["IMG_0002.jpg", "main street.png"]);
+        assert!(run_tagged(&idx, "tag:missing", &tags).is_err());
+
+        // A tagged entry that has since been deleted is not a result.
+        idx.remove(idx.lookup(r"C:\Projects\Kestrel\README.md").unwrap());
+        assert_eq!(run_tagged(&idx, "tag:work", &tags).unwrap(), ["Photos", "main.rs"]);
+        // Without resolving, a tag clause can't be compiled.
+        assert!(compile(&crate::parse("tag:work", CLOCK).unwrap(), &idx).is_err());
     }
 
     #[test]

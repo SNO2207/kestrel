@@ -9,6 +9,7 @@ import { DropHint } from "./components/DropHint";
 import { FileList, type ListCommand } from "./components/FileList";
 import { PreviewPane } from "./components/PreviewPane";
 import { QuickLook } from "./components/QuickLook";
+import { ShortcutsLayer, runShortcutCommand } from "./components/ShortcutsLayer";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { TitleBar } from "./components/TitleBar";
@@ -90,6 +91,10 @@ export function App() {
         return void openBatchRename(tabId);
       case "open-with":
         return void openWith(tabId);
+      case "pin":
+      case "pin-folder":
+      case "tags":
+        return runShortcutCommand(tabId, command);
     }
   };
 
@@ -184,6 +189,7 @@ export function App() {
       <StatusBar />
       <BatchRenameDialog onClose={focusList} />
       <QuickLook focusList={focusList} />
+      <ShortcutsLayer focusList={focusList} />
     </div>
   );
 }

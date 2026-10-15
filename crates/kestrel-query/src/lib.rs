@@ -14,6 +14,7 @@
 //! | `dm:today`, `dm:7d`, `dm:>2026-01`, `dm:2025` | date-modified filter |
 //! | `in:C:\Projects` | only beneath this folder |
 //! | `regex:^a.*\d$` | regular expression on the name |
+//! | `tag:urgent` | carries this tag (resolved by the caller with [`resolve_tags`]) |
 //! | `!clause` | negates any clause |
 
 mod exec;
@@ -23,6 +24,6 @@ mod sort;
 mod time;
 
 pub use exec::{Compiled, compile, search};
-pub use parse::{Clause, ClauseKind, ParseError, Query, parse};
+pub use parse::{Clause, ClauseKind, ParseError, Query, parse, resolve_tags};
 pub use sort::{Sort, SortKey, sort};
 pub use time::Clock;

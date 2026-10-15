@@ -17,6 +17,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { api, type DragRehearsal, type DropEffect, type DropKeys, type RowRange } from "./lib/api";
 import { baseName, parentPath } from "./lib/format";
 import { activateTab, activeTab, isSearch, navigate, notify, selectInFolder, tabs } from "./state";
+import { pinPaths } from "./shortcuts";
 
 export type DropTarget =
   /** A folder row in the list on screen. */
@@ -26,7 +27,9 @@ export type DropTarget =
   /** A place or drive in the sidebar, with the name it shows there. */
   | { kind: "place"; path: string; name?: string }
   /** A tab, standing for the folder it shows. */
-  | { kind: "tab"; path: string; tabId: number };
+  | { kind: "tab"; path: string; tabId: number }
+  /** The sidebar's pinned places, or one of their groups: a drop there pins the items. */
+  | { kind: "pin"; path: ""; group: number | null; name: string };
 
 export interface Dropped {
   effect: DropEffect;
@@ -73,9 +76,15 @@ let lastDragOut: { effect: DropEffect; items: number } | null = null;
 
 const comparable = (path: string) => path.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
 const tabIdOf = (target: DropTarget) => ("tabId" in target ? target.tabId : undefined);
+const groupOf = (target: DropTarget) => (target.kind === "pin" ? target.group : undefined);
 const sameTarget = (a: DropTarget | null, b: DropTarget | null) =>
   a === b ||
-  (a !== null && b !== null && a.kind === b.kind && comparable(a.path) === comparable(b.path) && tabIdOf(a) === tabIdOf(b));
+  (a !== null &&
+    b !== null &&
+    a.kind === b.kind &&
+    comparable(a.path) === comparable(b.path) &&
+    tabIdOf(a) === tabIdOf(b) &&
+    groupOf(a) === groupOf(b));
 
 /**
  * Whether the dragged items can be dropped into `path`: not into one of themselves or anything
@@ -104,6 +113,13 @@ function targetAt(x: number, y: number): DropTarget | null {
     const path = place.dataset.place ?? "";
     return accepts(path) ? { kind: "place", path, name: place.dataset.placeName } : null;
   }
+  // Pinned places take anything, to pin it, except over a pinned folder, which takes the
+  // files into it like any other place.
+  const pins = element.closest<HTMLElement>("[data-pin-zone]");
+  if (pins) {
+    const group = pins.dataset.pinGroup ? Number(pins.dataset.pinGroup) : null;
+    return { kind: "pin", path: "", group, name: pins.dataset.pinZone || "Pinned" };
+  }
 
   if (!element.closest(".tab-panel.active .filelist")) return null;
   // A details row, or an item of the icon, list and tile views.
@@ -128,8 +144,10 @@ function retarget() {
   setEffect("none");
   session.hintAt = 0;
   clearTimeout(session.spring);
-  // Hovering a folder, place or tab opens it; the open folder itself has nothing to open.
-  session.spring = next && next.kind !== "folder" ? window.setTimeout(() => springOpen(next), SPRING_MS) : undefined;
+  // Hovering a folder, place or tab opens it; the open folder itself and the pinned places
+  // as a whole have nothing to open.
+  const opens = next && next.kind !== "folder" && next.kind !== "pin";
+  session.spring = opens ? window.setTimeout(() => springOpen(next), SPRING_MS) : undefined;
 }
 
 function springOpen(opened: DropTarget) {
@@ -177,7 +195,7 @@ function autoScroll() {
 /** Asks what a drop on the current target would do, with the keys held now. */
 function refreshHint() {
   const current = target();
-  if (!session || !current) return;
+  if (!session || !current || current.kind === "pin") return;
   session.hintAt = performance.now();
   api
     .dropEffect(session.paths, current.path, testKeys)
@@ -236,6 +254,10 @@ async function drop(paths: string[], x: number, y: number): Promise<Dropped> {
   const destination = targetAt(x, y);
   end();
   if (!destination) return NOTHING;
+  if (destination.kind === "pin") {
+    await pinPaths(paths, destination.group);
+    return { effect: "link", names: [] };
+  }
   try {
     const result = await api.dropItems(paths, destination.path, testKeys);
     if (result.effect !== "none") selectInFolder(destination.path, result.names);
@@ -265,6 +287,7 @@ export function listenForDrops() {
 /** What a drop would do and where, for the hint shown during a drag. */
 export function dropHint(): { verb: string; name: string } | null {
   const current = target();
+  if (current?.kind === "pin") return { verb: "Pin", name: current.name };
   const verb = { copy: "Copy", move: "Move", link: null, none: null }[effect()];
   if (!current || !verb) return null;
   const name = (current.kind === "place" && current.name) || baseName(current.path) || current.path;
@@ -286,6 +309,11 @@ export const isDropTab = (tabId: number) => {
 export const isDropFolder = (tabId: number) => {
   const current = target();
   return current?.kind === "folder" && current.tabId === tabId;
+};
+/** Whether dropped files would be pinned to `group` (`null`: above every group). */
+export const isDropPin = (group: number | null) => {
+  const current = target();
+  return current?.kind === "pin" && current.group === group;
 };
 
 // ---------- dragging out ----------

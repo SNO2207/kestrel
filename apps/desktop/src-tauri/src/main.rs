@@ -15,6 +15,7 @@ mod places;
 mod preview;
 mod recycle;
 mod shellmenu;
+mod shortcuts;
 mod thumbs;
 mod undo;
 mod visibility;
@@ -69,15 +70,20 @@ fn list_dir(
     engine.list_dir_with(&path, sort, Visibility::from_request(show_hidden))
 }
 
+/// Runs a search. `tag:` clauses are resolved to the items carrying the tag.
 #[tauri::command(async)]
 fn search(
     engine: Shared,
+    db: shortcuts::Data,
     query: String,
     scope: Option<String>,
     sort: SortSpec,
     show_hidden: Option<bool>,
 ) -> Result<Listing, String> {
-    engine.search_with(&query, scope.as_deref(), sort, Visibility::from_request(show_hidden))
+    let visibility = Visibility::from_request(show_hidden);
+    engine.search_resolving(&query, scope.as_deref(), sort, visibility, |query, index| {
+        shortcuts::tags::resolve(&db, query, index)
+    })
 }
 
 /// Maps a selection from one result set to another showing the same files.
@@ -374,6 +380,34 @@ fn main() {
             shellmenu::open_with,
             shellmenu::shell_probe,
             shellmenu::shell_probe_take,
+            shortcuts::pins::pins_board,
+            shortcuts::pins::pins_add,
+            shortcuts::pins::pins_remove,
+            shortcuts::pins::pins_set_alias,
+            shortcuts::pins::pins_set_key,
+            shortcuts::pins::pins_move,
+            shortcuts::pins::pins_locate,
+            shortcuts::pins::pins_create_group,
+            shortcuts::pins::pins_update_group,
+            shortcuts::pins::pins_move_group,
+            shortcuts::pins::pins_delete_group,
+            shortcuts::frecency::frecency_visit,
+            shortcuts::frecency::frecency_top,
+            shortcuts::frecency::frecency_forget,
+            shortcuts::goto::goto_folders,
+            shortcuts::searches::searches_list,
+            shortcuts::searches::searches_save,
+            shortcuts::searches::searches_rename,
+            shortcuts::searches::searches_delete,
+            shortcuts::tags::tags_state,
+            shortcuts::tags::tags_create,
+            shortcuts::tags::tags_update,
+            shortcuts::tags::tags_delete,
+            shortcuts::tags::tags_assign,
+            shortcuts::workspaces::workspaces_list,
+            shortcuts::workspaces::workspaces_save,
+            shortcuts::workspaces::workspaces_rename,
+            shortcuts::workspaces::workspaces_delete,
         ]))
         .on_window_event(|_window, event| dragdrop::on_window_event(event))
         .setup(move |app| {

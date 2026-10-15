@@ -1,6 +1,6 @@
 use std::fmt;
 
-use kestrel_index::fold;
+use kestrel_index::{EntryId, fold};
 
 use crate::time::{
     Clock, civil_from_days, days_from_civil, month_start, unix_to_filetime, week_start,
@@ -37,6 +37,27 @@ pub enum ClauseKind {
     Files,
     /// Absolute path of a folder to search beneath.
     Within(String),
+    /// Items carrying the tag with this name. The index knows nothing of tags, so the caller
+    /// resolves this to [`ClauseKind::Entries`] with [`resolve_tags`] before compiling.
+    Tag(String),
+    /// Exactly these entries, in ascending id order: a tag, once resolved.
+    Entries(Vec<EntryId>),
+}
+
+/// Replaces every `tag:` clause with the entries `resolve` finds for its tag name, sorted.
+pub fn resolve_tags(
+    query: &mut Query,
+    mut resolve: impl FnMut(&str) -> Result<Vec<EntryId>, ParseError>,
+) -> Result<(), ParseError> {
+    for clause in &mut query.clauses {
+        if let ClauseKind::Tag(name) = &clause.kind {
+            let mut entries = resolve(name)?;
+            entries.sort_unstable();
+            entries.dedup();
+            clause.kind = ClauseKind::Entries(entries);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -113,6 +134,7 @@ fn clause(text: &str, clock: Clock) -> Result<Option<ClauseKind>, ParseError> {
             "regex" => Some(ClauseKind::Regex(value.to_owned())),
             "path" => Some(ClauseKind::Path(fold(value).replace('/', "\\"))),
             "name" => Some(ClauseKind::Name(fold(value))),
+            "tag" => Some(ClauseKind::Tag(value.to_owned())),
             // Anything else, such as the drive letter in `C:\Users`, is ordinary text.
             _ => None,
         };
@@ -376,6 +398,29 @@ mod tests {
         )]);
         assert!(matches!(&kinds("type:image")[0], ClauseKind::Ext(e) if e.contains(&"heic".to_owned())));
         assert!(parse("type:nonsense", CLOCK).is_err());
+    }
+
+    #[test]
+    fn tags_parse_and_resolve_to_entries() {
+        assert_eq!(kinds(r#"tag:Urgent tag:"two words" tag:"#), [
+            ClauseKind::Tag("Urgent".into()),
+            ClauseKind::Tag("two words".into())
+        ]);
+        let mut query = parse("report !tag:done tag:work", CLOCK).unwrap();
+        resolve_tags(&mut query, |name| match name {
+            "work" => Ok(vec![9, 3, 3, 7]),
+            "done" => Ok(vec![]),
+            other => Err(ParseError(format!("no tag {other}"))),
+        })
+        .unwrap();
+        let resolved: Vec<_> = query.clauses.iter().map(|c| (c.negate, c.kind.clone())).collect();
+        assert_eq!(resolved, [
+            (false, ClauseKind::Name("report".into())),
+            (true, ClauseKind::Entries(vec![])),
+            (false, ClauseKind::Entries(vec![3, 7, 9])),
+        ]);
+        let mut unknown = parse("tag:nope", CLOCK).unwrap();
+        assert!(resolve_tags(&mut unknown, |_| Err(ParseError("No tag is named \"nope\"".into()))).is_err());
     }
 
     #[test]

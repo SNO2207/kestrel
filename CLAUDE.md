@@ -87,6 +87,11 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection, shortcut
   its tables: it adds a module with its `Migration`s and lists them in `MIGRATIONS`. Migrations
   run once in name order, so name them `<yyyy_mm_dd>_<feature>_<what>` and never edit one that
   has shipped.
+- Shortcuts: data in `kestrel_db::shortcuts` (pins and groups, frecency, saved searches, tags,
+  workspaces), commands in `src-tauri/src/shortcuts/`, front end in `src/shortcuts.ts`,
+  `lib/shortcutsApi.ts`, `shortcuts.css` and the `Pinned*`, `Shortcut*`, `GoToFolder`,
+  `TagDots` components. Tagged items and pins are known by volume and file id, found again
+  through the index; `tag:` clauses are resolved to entries by `Engine::search_resolving`.
 
 ## Working on Kestrel (agents read this)
 

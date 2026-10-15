@@ -6,6 +6,7 @@ import { iconPixels, showsThumbnails, thumbPixels } from "../lib/viewLayout";
 import { LOCKED_MESSAGE } from "../lib/access";
 import { displayName, type ViewMode } from "../lib/views";
 import { LockGlyph } from "./LockGlyph";
+import { TagDots } from "./TagDots";
 
 /** One file or folder in the icon, list or tile views. Details rows are drawn by the list. */
 export function ViewItem(props: {
@@ -104,6 +105,7 @@ export function ViewItem(props: {
                     <Show when={props.locked}>
                       <LockGlyph />
                     </Show>
+                    <TagDots path={row().path} />
                   </span>
                 }
               >

@@ -86,6 +86,7 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | `dm:today`, `dm:7d`, `dm:>2026-01`, `dm:2025` | date modified |
 | `in:C:\Projects` | only beneath this folder |
 | `regex:^a.*\d$` | regular expression on the name |
+| `tag:urgent`, `tag:"two words"` | carries this tag |
 
 ## Keyboard
 
@@ -111,6 +112,9 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+wheel | Larger or smaller icons |
 | Alt+P | Show or hide the preview pane (drag its left edge to resize it) |
 | Space | Quick Look; Space or Esc closes it, the arrow keys move to the previous or next item |
+| Ctrl+D | Pin the selection to the sidebar, or the folder when nothing is selected |
+| Ctrl+1 … Ctrl+9 | Open the first nine pins, or the pins given those numbers |
+| Ctrl+G | Go to folder: the folders you visit most, then every folder in the index |
 
 Every view (details, list, tiles and icons) has the same mouse and keyboard handling: click,
 Ctrl+click and Shift+click to select, Ctrl+A, arrow keys, typing to jump to a name, rename in
@@ -191,6 +195,25 @@ place or tab for a second opens it, and the list scrolls when the cursor nears i
 bottom edge (its left or right edge in the list view, whose columns scroll sideways). Dropped
 items are selected where they land, and Ctrl+Z puts them back.
 
+## Pins, frequent folders, saved searches, tags and workspaces
+
+The sidebar starts with pinned places: any folder or file, pinned from its menu, with Ctrl+D,
+or by dropping it on the pinned places (dropping on a pinned folder moves into it, as on any
+place). Pins can go in named, coloured groups that collapse, be dragged into a new order (groups
+too), and be given a name of their own and a number key. A pin whose target was renamed or
+moved shows as missing; clicking it finds it again by its file id through the index.
+
+Every folder you open counts as a visit except in scratch folders such as `%TEMP%`. Folders are
+ranked by frecency, as zoxide ranks them, for the Frequent list and Go to folder (Ctrl+G), which
+also searches every folder in the index: type part of a name (`kstrl` finds `Kestrel`), with
+earlier words narrowing by path (`proj kes`).
+
+The bookmark button in the search box saves the search, and where it searches, to the sidebar.
+"Tags…" in an item's menu puts coloured tags on it; they show as dots in every view, follow the
+item through renames and moves (by file id), and `tag:name` finds everything carrying one.
+The + beside Workspaces saves the open tabs, with each folder's view and sort, to restore
+later. All of it is kept in `kestrel.db` in the app's data folder.
+
 ## The Windows context menu
 
 "Show more options" at the end of Kestrel's context menu (or Shift+F10, or Shift+right-click)
@@ -244,6 +267,7 @@ node e2e/locked.mjs         # a folder this account can't open shows locked
 node e2e/preview.mjs        # preview pane and Quick Look
 node e2e/dragdrop.mjs       # drops driven by synthetic drag events; drags out rehearsed
 node e2e/shellmenu.mjs      # Windows menu entries start the helper
+node e2e/shortcuts.mjs      # pins, groups, Go to folder, saved searches, tags, workspaces
 node e2e/integration.mjs    # the features together, in the icon, list and tile views
 node e2e/dev.mjs stop
 ```

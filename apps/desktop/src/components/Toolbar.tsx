@@ -19,6 +19,7 @@ import {
 import { Icon } from "./Icon";
 import { ViewMenu } from "./ViewMenu";
 import { PreviewToggle } from "./PreviewPane";
+import { SaveSearchButton } from "./SaveSearchButton";
 
 /** Lets the app's keyboard shortcuts focus the address and search fields. */
 export const focusTargets: { address?: () => void; search?: () => void } = {};
@@ -130,6 +131,7 @@ export function Toolbar(props: { focusList: () => void }) {
             }
           }}
         />
+        <SaveSearchButton />
         <button
           class="scope"
           classList={{ on: everywhere() }}

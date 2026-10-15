@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use kestrel_index::walk::{self, DirItem};
 use kestrel_index::{EntryId, Index, IndexBuilder, attr, fold, natural_cmp};
-use kestrel_query::{Clause, ClauseKind, Clock, Sort, SortKey, compile, parse, search, sort};
+use kestrel_query::{Clause, ClauseKind, Clock, Query, Sort, SortKey, compile, parse, search, sort};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
@@ -303,6 +303,19 @@ impl Engine {
         spec: SortSpec,
         visibility: Visibility,
     ) -> Result<Listing, String> {
+        self.search_resolving(text, scope, spec, visibility, |_, _| Ok(()))
+    }
+
+    /// [`Engine::search_with`], with `resolve` filling in, while the index is held, what the
+    /// index can't know by itself, such as which entries carry a tag.
+    pub fn search_resolving(
+        &self,
+        text: &str,
+        scope: Option<&str>,
+        spec: SortSpec,
+        visibility: Visibility,
+        resolve: impl FnOnce(&mut Query, &Index) -> Result<(), String>,
+    ) -> Result<Listing, String> {
         let started = Instant::now();
         let mut query = parse(text, Clock::local()).map_err(|e| e.to_string())?;
         if let Some(scope) = scope {
@@ -313,6 +326,7 @@ impl Engine {
         std::mem::replace(&mut *self.cancel.lock(), cancel.clone()).store(true, Atomic::Relaxed);
 
         let index = self.index.read();
+        resolve(&mut query, &index)?;
         let compiled = compile(&query, &index).map_err(|e| e.to_string())?;
         let mut ids = search(&index, &compiled, &cancel).ok_or("Superseded by a newer search")?;
         if !visibility.hidden {

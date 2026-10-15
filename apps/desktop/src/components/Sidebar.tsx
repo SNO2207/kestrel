@@ -4,6 +4,8 @@ import { isDropPlace } from "../dragdrop";
 import { formatSize } from "../lib/format";
 import { activeTab, navigate, openTab, places } from "../state";
 import { Icon, hasIcon } from "./Icon";
+import { PinnedPlaces } from "./PinnedPlaces";
+import { ShortcutLists } from "./ShortcutLists";
 
 export function Sidebar() {
   const current = () => activeTab()?.path.toLowerCase() ?? "";
@@ -16,6 +18,7 @@ export function Sidebar() {
 
   return (
     <nav class="sidebar" aria-label="Places">
+      <PinnedPlaces />
       <section>
         <h2>Places</h2>
         <Show when={places().home}>
@@ -80,6 +83,7 @@ export function Sidebar() {
           }}
         </For>
       </section>
+      <ShortcutLists />
     </nav>
   );
 }
