@@ -223,6 +223,12 @@ try {
       await expectNotice("Undid delete of kestrel-test-report.txt");
       await row("kestrel-test-report.txt").waitFor();
       assert.equal(readFileSync(join(sandbox, "kestrel-test-report.txt"), "utf8"), "report");
+      // The row can show a moment before the selection: it is found in the listing afterwards.
+      await page.waitForFunction(
+        () => document.querySelector(".tab-panel.active .row.selected .label")?.textContent === "kestrel-test-report.txt",
+        null,
+        { timeout: 5_000 },
+      );
       assert.deepEqual(await selectedNames(), ["kestrel-test-report.txt"]);
       assert.equal(recycledFromSandbox(), 0);
 
