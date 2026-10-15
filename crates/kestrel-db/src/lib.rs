@@ -15,6 +15,8 @@ use serde::de::DeserializeOwned;
 
 pub use rusqlite;
 
+pub mod projects;
+
 /// One schema change.
 pub struct Migration {
     pub name: &'static str,
@@ -22,7 +24,7 @@ pub struct Migration {
 }
 
 /// Every migration, from every feature. Order here does not matter; names decide.
-pub const MIGRATIONS: &[&[Migration]] = &[SETTINGS];
+pub const MIGRATIONS: &[&[Migration]] = &[SETTINGS, projects::MIGRATIONS];
 
 const SETTINGS: &[Migration] = &[Migration {
     name: "2026_10_15_core_settings",
@@ -186,7 +188,8 @@ mod tests {
         }
         let db = Db::open(&path).unwrap();
         let count: i64 = db.with(|c| c.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))).unwrap();
-        assert_eq!(count, 3, "the two test migrations and the settings table");
+        let features: usize = MIGRATIONS.iter().map(|set| set.len()).sum();
+        assert_eq!(count as usize, 2 + features, "the two test migrations and every feature's");
         drop(db);
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));

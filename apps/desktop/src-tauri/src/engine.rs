@@ -133,6 +133,9 @@ pub struct Engine {
     status: Mutex<IndexStatus>,
     /// The index has changed since it was last saved.
     dirty: AtomicBool,
+    /// Bumped whenever the index changes or is replaced, so features that derive data from
+    /// it (such as project discovery) can tell when to look again.
+    revision: AtomicU64,
 }
 
 impl Default for Engine {
@@ -149,6 +152,7 @@ impl Default for Engine {
                 generation: 0,
             }),
             dirty: AtomicBool::new(false),
+            revision: AtomicU64::new(0),
         }
     }
 }
@@ -197,7 +201,13 @@ impl Engine {
     pub fn install(&self, index: Index) {
         *self.index.write() = index;
         self.generation.fetch_add(1, Atomic::Relaxed);
+        self.revision.fetch_add(1, Atomic::Relaxed);
         self.sets.lock().map.clear();
+    }
+
+    /// Changes whenever the index does; see [`Engine::mark_dirty`] and [`Engine::install`].
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Atomic::Relaxed)
     }
 
     #[cfg(test)]
@@ -216,6 +226,7 @@ impl Engine {
 
     pub fn mark_dirty(&self) {
         self.dirty.store(true, Atomic::Relaxed);
+        self.revision.fetch_add(1, Atomic::Relaxed);
     }
 
     /// Whether the index changed since this was last asked, clearing the flag.

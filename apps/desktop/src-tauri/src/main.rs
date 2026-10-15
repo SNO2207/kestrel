@@ -13,6 +13,7 @@ mod lru;
 mod navigation;
 mod places;
 mod preview;
+mod projects;
 mod recycle;
 mod shellmenu;
 mod thumbs;
@@ -305,6 +306,8 @@ fn main() {
     let engine = Arc::new(Engine::default());
     let icons = Arc::new(IconService::start());
     let thumbs = ThumbService::start(icons.clone());
+    let database = open_database();
+    let projects = projects::Projects::new(engine.clone(), database.clone());
 
     tauri::Builder::default()
         // The window never leaves the app's own page; see navigation.rs.
@@ -312,7 +315,8 @@ fn main() {
         .manage(engine.clone())
         .manage(Watcher::default())
         .manage(Journal::default())
-        .manage(open_database())
+        .manage(database)
+        .manage(projects.clone())
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
             thumbs.handle(&request, responder)
@@ -374,6 +378,18 @@ fn main() {
             shellmenu::open_with,
             shellmenu::shell_probe,
             shellmenu::shell_probe_take,
+            projects::projects_list,
+            projects::project_detail,
+            projects::project_set_status,
+            projects::project_set_tags,
+            projects::project_set_notes,
+            projects::project_set_pinned,
+            projects::project_set_dismissed,
+            projects::project_launch,
+            projects::project_run_script,
+            projects::git_badges,
+            projects::projects_probe,
+            projects::projects_probe_take,
         ]))
         .on_window_event(|_window, event| dragdrop::on_window_event(event))
         .setup(move |app| {
@@ -382,6 +398,7 @@ fn main() {
             {
                 eprintln!("Dragging files out is unavailable: {error}");
             }
+            projects.start(app.handle().clone());
             let handle = app.handle().clone();
             let engine = app.state::<Arc<Engine>>().inner().clone();
             std::thread::Builder::new()

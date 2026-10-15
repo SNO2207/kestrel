@@ -8,6 +8,7 @@ import { isDropFolder, listenForDrops } from "./dragdrop";
 import { DropHint } from "./components/DropHint";
 import { FileList, type ListCommand } from "./components/FileList";
 import { PreviewPane } from "./components/PreviewPane";
+import { ProjectsHub } from "./components/ProjectsHub";
 import { QuickLook } from "./components/QuickLook";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -171,6 +172,7 @@ export function App() {
           )}
         </For>
         <PreviewPane />
+        <ProjectsHub />
         <DropHint />
         <Show when={notice()}>
           <div class="notice" classList={{ info: noticeTone() === "info" }} role="alert">

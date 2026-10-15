@@ -2,12 +2,14 @@ import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup
 
 import { api, iconUrl, type Listing, type Marks, type Row, type RowRange, type SortKey, type SortSpec } from "../lib/api";
 import { LOCKED_MESSAGE, checkFolders, foldersOf, isLocked } from "../lib/access";
+import { checkGitBadges, gitBadge } from "../lib/gitBadges";
 import { dragOut, followPress, isDropRow } from "../dragdrop";
 import { formatDate, formatSize } from "../lib/format";
 import { Selection } from "../lib/selection";
 import { geometry, keyTarget, sameGeometry } from "../lib/viewLayout";
 import { VIEW_MODES, displayName, listingLocation, setViewMode, showExtensions, viewModeAt } from "../lib/views";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
+import { GitGlyph } from "./GitGlyph";
 import { LockGlyph } from "./LockGlyph";
 import { ViewItem } from "./ViewItem";
 
@@ -317,6 +319,20 @@ export function FileList(props: Props) {
     }
     checkFolders(folders);
   });
+
+  // Git badges, in a folder inside a repository, are likewise asked for the rows on screen only.
+  createEffect(() => {
+    const listing = props.listing;
+    if (!listing || isSearch()) return;
+    const shown: Row[] = [];
+    for (const index of visibleRows()) {
+      const data = rowAt(index);
+      if (data) shown.push(data);
+    }
+    if (shown.length > 0) checkGitBadges(listing.path, listing.set, shown);
+  });
+  /** The row's git badge, in folder views only. */
+  const badgeOf = (row: Row | undefined) => (isSearch() ? undefined : gitBadge(row));
 
   createEffect(() => {
     const listing = props.listing;
@@ -738,7 +754,7 @@ export function FileList(props: Props) {
                     classList={{
                       selected: selection().has(index),
                       focused: focused() === index,
-                      dimmed: row()?.hidden || locked(),
+                      dimmed: row()?.hidden || locked() || badgeOf(row())?.ignored,
                       locked: locked(),
                       "drop-target": isDropRow(row()?.path),
                     }}
@@ -782,6 +798,7 @@ export function FileList(props: Props) {
                             <Show when={locked()}>
                               <LockGlyph />
                             </Show>
+                            <Show when={badgeOf(data())?.change}>{(change) => <GitGlyph change={change()} dir={data().dir} />}</Show>
                           </div>
                           <Show when={isSearch()}>
                             <div class="cell location" title={data().location ?? ""}>{data().location}</div>
@@ -819,6 +836,7 @@ export function FileList(props: Props) {
                     return data !== undefined && isLocked(data);
                   })()}
                   dropTarget={isDropRow(rowAt(index)?.path)}
+                  git={badgeOf(rowAt(index))}
                   loadThumbs={!scrolling()}
                   onMouseDown={(event) => onItemMouseDown(index, event)}
                   onDblClick={(event) => onItemDblClick(index, event)}
