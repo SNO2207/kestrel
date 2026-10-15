@@ -445,11 +445,14 @@ pub fn serve(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
 
 // ---------- commands ----------
 
-/// The label of the app's own webview, the only one whose page may call the app's commands.
+/// The label of the main window's own webview, where the app's page runs.
 pub const APP_WEBVIEW: &str = "main";
+/// The webviews that show the app's own pages, and the only ones whose pages may call the
+/// app's commands: the main window's and the quick launcher's (`launcher.rs`).
+pub const APP_WEBVIEWS: [&str; 2] = [APP_WEBVIEW, crate::launcher::QUICK];
 
 /// Refuses app commands to every webview but the app's own (the preview's webview above all,
-/// see `previewview.rs`), and to any frame in it whose origin is not the app's own.
+/// see `previewview.rs`), and to any frame in them whose origin is not the app's own.
 ///
 /// Tauri lets every local page call the app's commands, and counts `preview.localhost` as
 /// local, so the label is what tells the preview's webview apart. Requests over Tauri's IPC
@@ -460,7 +463,7 @@ pub fn guard<R: Runtime>(
 ) -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'static {
     move |invoke: Invoke<R>| {
         let label = invoke.message.webview_ref().label().to_owned();
-        if label != APP_WEBVIEW {
+        if !APP_WEBVIEWS.contains(&label.as_str()) {
             invoke.resolver.reject(format!("Commands are not available to the {label} view"));
             return true;
         }

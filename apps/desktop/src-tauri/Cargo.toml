@@ -17,6 +17,9 @@ tauri-build = { version = "2", features = [] }
 kestrel-db = { workspace = true }
 kestrel-index = { workspace = true }
 kestrel-query = { workspace = true }
+memchr = { workspace = true }
+# The command palette's fuzzy ranking (palette.rs).
+nucleo-matcher = "0.3"
 parking_lot = { workspace = true }
 png = "0.18"
 rayon = { workspace = true }
@@ -24,8 +27,11 @@ regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # `unstable` brings Tauri's multiwebview API: previewed content is shown in a webview of its
-# own laid over the preview area (`previewview.rs`).
-tauri = { version = "2", features = ["unstable"] }
+# own laid over the preview area (`previewview.rs`). `tray-icon`: the notification area icon
+# (launcher.rs).
+tauri = { version = "2", features = ["unstable", "tray-icon"] }
+# The quick launcher's system-wide shortcut (launcher.rs).
+tauri-plugin-global-shortcut = "2"
 # COM interfaces (IFileOperation and friends) need the full bindings; plain functions use
 # the lighter windows-sys. The progress sink is a COM object written in Rust: the `implement`
 # macro (built into windows 0.62) expands to paths in `windows-core`, hence that dependency.
@@ -54,6 +60,8 @@ windows-sys = { workspace = true, features = [
     "Win32_System_IO",
     "Win32_System_Memory",
     "Win32_System_Ole",
+    # The optional "start with Windows" entry under HKCU\...\Run (launcher.rs).
+    "Win32_System_Registry",
     "Win32_UI_Controls",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

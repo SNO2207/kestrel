@@ -10,5 +10,9 @@ export default defineConfig({
     strictPort: true,
     watch: { ignored: ["**/src-tauri/**"] },
   },
-  build: { target: "esnext" },
+  build: {
+    target: "esnext",
+    // Two pages: the app's window, and the quick launcher's (launcher.rs).
+    rolldownOptions: { input: { main: "index.html", quick: "quick.html" } },
+  },
 });
