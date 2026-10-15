@@ -1003,6 +1003,25 @@ code {
   color: var(--muted);
 }
 
+/* In the icon, list and tile views the padlock follows the name, as in a details row. */
+.view-item-name {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.view-item-name > .label {
+  min-width: 0;
+}
+
+.filelist[data-view="list"] .view-item-name,
+.filelist[data-view="tiles"] .view-item-name {
+  justify-content: flex-start;
+}
+
 /* ---------- long menu labels ---------- */
 
 /* "Undo rename of …" can name a long file; the label is cut rather than widening the menu. */

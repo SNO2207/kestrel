@@ -96,11 +96,18 @@ export function ViewItem(props: {
               </Show>
             </span>
             <span class="view-item-text">
-              <Show when={props.renaming} fallback={<span class="label">{displayName(row(), props.showExtension)}</span>}>
+              <Show
+                when={props.renaming}
+                fallback={
+                  <span class="view-item-name">
+                    <span class="label">{displayName(row(), props.showExtension)}</span>
+                    <Show when={props.locked}>
+                      <LockGlyph />
+                    </Show>
+                  </span>
+                }
+              >
                 <RenameField name={row().name} dir={row().dir} onDone={props.onRenameDone} />
-              </Show>
-              <Show when={props.locked}>
-                <LockGlyph />
               </Show>
               <Show when={props.mode === "tiles"}>
                 <span class="view-item-detail">{typeLabel(row())}</span>

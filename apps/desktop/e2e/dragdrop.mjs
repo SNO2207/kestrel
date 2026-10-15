@@ -37,6 +37,16 @@ for (const name of ["report.txt", "moveme.txt", "photo.txt", "first.txt", "secon
 }
 for (let i = 0; i < 80; i++) writeFileSync(join(long, `file-${String(i).padStart(2, "0")}.txt`), "x");
 const onDisk = (...parts) => existsSync(join(...parts));
+/**
+ * Waits up to two seconds for `check` to hold. The shell has finished a move when the drop
+ * returns, yet a check made at that very moment has been seen to fail in integration runs and
+ * pass a moment later (this script and the app may see %TEMP% through different file system
+ * views; see the MSIX container note in CLAUDE.md).
+ */
+async function settles(check) {
+  for (let waited = 0; !check() && waited < 2000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  return check();
+}
 
 const { browser, page } = await connectToKestrel();
 await page.reload();
@@ -222,7 +232,7 @@ try {
     await hook.enter([moveme], await centre(row("Archive")));
     const result = await hook.drop([moveme], await centre(row("Archive")));
     assert.deepEqual(result, { effect: "move", names: ["moveme.txt"] });
-    assert(onDisk(archive, "moveme.txt") && !onDisk(moveme));
+    assert(await settles(() => onDisk(archive, "moveme.txt") && !onDisk(moveme)));
     // The folder on screen is not where the file went, so nothing new appears here.
     await page.waitForTimeout(300);
     assert.equal(await row("moveme.txt").count(), 0);
