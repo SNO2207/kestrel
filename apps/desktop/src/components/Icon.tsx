@@ -20,6 +20,10 @@ const PATHS = {
   minimize: "M3.5 8h9",
   maximize: "M3.5 3.5h9v9h-9Z",
   restore: "M5.5 5.5v-2h7v7h-2M3.5 5.5h7v7h-7Z",
+  check: "M3.5 8.5 6.5 11.5 12.5 4.5",
+  "view-details": "M2.5 4h11M2.5 8h11M2.5 12h11",
+  "view-icons": "M2.5 2.5h4v4h-4ZM9.5 2.5h4v4h-4ZM2.5 9.5h4v4h-4ZM9.5 9.5h4v4h-4Z",
+  "view-tiles": "M2.5 3h4v4h-4ZM8.5 4h5M8.5 6h3M2.5 9h4v4h-4ZM8.5 10h5M8.5 12h3",
 } as const;
 
 export type IconName = keyof typeof PATHS;

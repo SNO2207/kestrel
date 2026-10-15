@@ -7,6 +7,8 @@ mod fileops;
 mod icons;
 mod indexer;
 mod places;
+mod thumbs;
+mod visibility;
 mod watch;
 
 use std::collections::HashSet;
@@ -22,6 +24,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use engine::{Engine, IndexStatus, Listing, Marks, Row, SortSpec};
 use fileops::{Options, Request, Transfer};
 use icons::{IconKey, IconService};
+use thumbs::ThumbService;
+use visibility::Visibility;
 use watch::Watcher;
 
 /// `SHOP_FILEPATH`: the object name passed to `SHObjectProperties` is a file system path.
@@ -36,7 +40,8 @@ fn index_status(engine: Shared) -> IndexStatus {
 
 /// Lists a folder. With `watch`, the folder is also watched from now on and `dir-changed`
 /// is emitted whenever its contents change; the watch is armed before the folder is read, so
-/// no change can fall between the two.
+/// no change can fall between the two. Hidden and system items are left out when
+/// `show_hidden` is false.
 #[tauri::command(async)]
 fn list_dir(
     app: AppHandle,
@@ -45,6 +50,7 @@ fn list_dir(
     path: String,
     sort: SortSpec,
     watch: bool,
+    show_hidden: Option<bool>,
 ) -> Result<Listing, String> {
     if watch {
         let path = engine::normalize(&path);
@@ -52,12 +58,18 @@ fn list_dir(
             let _ = app.emit("dir-changed", changed);
         });
     }
-    engine.list_dir(&path, sort)
+    engine.list_dir_with(&path, sort, Visibility::from_request(show_hidden))
 }
 
 #[tauri::command(async)]
-fn search(engine: Shared, query: String, scope: Option<String>, sort: SortSpec) -> Result<Listing, String> {
-    engine.search(&query, scope.as_deref(), sort)
+fn search(
+    engine: Shared,
+    query: String,
+    scope: Option<String>,
+    sort: SortSpec,
+    show_hidden: Option<bool>,
+) -> Result<Listing, String> {
+    engine.search_with(&query, scope.as_deref(), sort, Visibility::from_request(show_hidden))
 }
 
 /// Maps a selection from one result set to another showing the same files.
@@ -257,11 +269,16 @@ fn parse_icon_request(uri: &tauri::http::Uri) -> Option<(IconKey, u32)> {
 
 fn main() {
     let engine = Arc::new(Engine::default());
-    let icons = IconService::start();
+    let icons = Arc::new(IconService::start());
+    let thumbs = ThumbService::start(icons.clone());
 
     tauri::Builder::default()
         .manage(engine.clone())
         .manage(Watcher::default())
+        // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
+        .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
+            thumbs.handle(&request, responder)
+        })
         .register_asynchronous_uri_scheme_protocol("icon", move |_context, request, responder| {
             let respond = move |status: StatusCode, body: Vec<u8>| {
                 let response = Response::builder()

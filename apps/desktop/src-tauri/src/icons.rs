@@ -19,7 +19,7 @@ use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows_sys::Win32::UI::Controls::{ILD_TRANSPARENT, ImageList_GetIcon};
 use windows_sys::Win32::UI::Shell::{
     SHFILEINFOW, SHGFI_SYSICONINDEX, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW, SHGetImageList,
-    SHIL_EXTRALARGE, SHIL_LARGE, SHIL_SMALL,
+    SHIL_EXTRALARGE, SHIL_JUMBO, SHIL_LARGE, SHIL_SMALL,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
 use windows_sys::core::GUID;
@@ -98,7 +98,9 @@ unsafe fn render(key: &IconKey, size: u32) -> Option<Vec<u8>> {
     let list_kind = match size {
         0..=16 => SHIL_SMALL,
         17..=32 => SHIL_LARGE,
-        _ => SHIL_EXTRALARGE,
+        33..=48 => SHIL_EXTRALARGE,
+        // 256 pixels, for the large icon views.
+        _ => SHIL_JUMBO,
     };
     // SAFETY: all pointers passed below are valid for the duration of each call, and every
     // handle or interface obtained is released before returning.
@@ -127,8 +129,35 @@ unsafe fn render(key: &IconKey, size: u32) -> Option<Vec<u8>> {
         let image = icon_pixels(icon);
         DestroyIcon(icon);
         let (width, height, rgba) = image?;
+        if list_kind == SHIL_JUMBO
+            && let Some(small) = shrink_small_jumbo(width, height, &rgba)
+        {
+            return encode_png(SMALL_JUMBO, SMALL_JUMBO, &small);
+        }
         encode_png(width, height, &rgba)
     }
+}
+
+/// The largest icon size many older programs provide.
+const SMALL_JUMBO: u32 = 48;
+
+/// Types whose icons stop at 48 pixels appear in the 256-pixel list as a small icon in the
+/// top-left corner of an empty square. Returns just that corner, so the view centres it.
+fn shrink_small_jumbo(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    if width <= SMALL_JUMBO || height <= SMALL_JUMBO {
+        return None;
+    }
+    let row_len = width as usize * 4;
+    let outside_corner = rgba.chunks_exact(row_len).enumerate().any(|(y, row)| {
+        row.chunks_exact(4).enumerate().any(|(x, pixel)| {
+            pixel[3] != 0 && (x as u32 >= SMALL_JUMBO || y as u32 >= SMALL_JUMBO)
+        })
+    });
+    if outside_corner {
+        return None;
+    }
+    let corner = SMALL_JUMBO as usize * 4;
+    Some(rgba.chunks_exact(row_len).take(SMALL_JUMBO as usize).flat_map(|row| &row[..corner]).copied().collect())
 }
 
 /// Reads an icon's pixels as straight-alpha RGBA.
@@ -180,7 +209,7 @@ unsafe fn icon_pixels(icon: HICON) -> Option<(u32, u32, Vec<u8>)> {
     }
 }
 
-fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let mut encoder = png::Encoder::new(&mut out, width, height);
     encoder.set_color(png::ColorType::Rgba);
@@ -190,4 +219,26 @@ fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     writer.write_image_data(rgba).ok()?;
     writer.finish().ok()?;
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 256-pixel square with one opaque pixel at (x, y).
+    fn jumbo_with_pixel_at(x: usize, y: usize) -> Vec<u8> {
+        let mut rgba = vec![0u8; 256 * 256 * 4];
+        rgba[(y * 256 + x) * 4..][..4].copy_from_slice(&[1, 2, 3, 255]);
+        rgba
+    }
+
+    #[test]
+    fn small_icons_in_the_jumbo_list_are_cut_out() {
+        let small = shrink_small_jumbo(256, 256, &jumbo_with_pixel_at(47, 10)).unwrap();
+        assert_eq!(small.len(), 48 * 48 * 4);
+        assert_eq!(&small[(10 * 48 + 47) * 4..][..4], [1, 2, 3, 255]);
+        assert!(shrink_small_jumbo(256, 256, &jumbo_with_pixel_at(48, 10)).is_none(), "a real jumbo icon stays");
+        assert!(shrink_small_jumbo(256, 256, &jumbo_with_pixel_at(3, 200)).is_none());
+        assert!(shrink_small_jumbo(48, 48, &vec![0; 48 * 48 * 4]).is_none());
+    }
 }

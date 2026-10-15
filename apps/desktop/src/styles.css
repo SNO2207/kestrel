@@ -680,6 +680,7 @@ code {
 /* Scrollbars sized for a mouse, coloured to match. */
 ::-webkit-scrollbar {
   width: var(--scrollbar);
+  height: var(--scrollbar);
 }
 
 ::-webkit-scrollbar-thumb {
@@ -787,4 +788,206 @@ code {
 .notice button:hover {
   background: var(--line);
   color: var(--text);
+}
+
+/* ---------- view menu ---------- */
+
+.view-button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 10px 0 8px;
+  border-radius: var(--radius);
+  color: var(--text);
+}
+
+.view-button:hover:not(:disabled),
+.view-button[aria-expanded="true"] {
+  background: var(--raised);
+}
+
+.view-button:disabled {
+  color: var(--faint);
+}
+
+.menu-check {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  /* Pulls the label in from the menu item's gap, which is sized for hints. */
+  margin-right: -18px;
+  color: var(--accent);
+}
+
+/* Labels never wrap, so a menu opened near the window's edge keeps its width and moves in. */
+.menu-label {
+  flex: 1;
+  white-space: nowrap;
+}
+
+/* ---------- icon, list and tile views ---------- */
+
+/* Only details has columns; the other views sort from the View menu. */
+.filelist:not([data-view="details"]) .list-header {
+  display: none;
+}
+
+.list-rows.view-cells {
+  display: grid;
+  padding: 0 8px;
+}
+
+/*
+ * The list view's columns run across the page and scroll sideways. No gutter is kept for a
+ * vertical scrollbar it never has: the browser would stop the scroll that much short of the end.
+ */
+.filelist[data-view="list"] .list-viewport {
+  overflow-x: scroll;
+  overflow-y: hidden;
+  scrollbar-gutter: auto;
+}
+
+.list-rows.view-columns {
+  display: grid;
+  grid-auto-flow: column;
+  top: 4px;
+  right: auto;
+}
+
+.view-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 2px;
+  padding: 8px 6px 4px;
+  overflow: hidden;
+  border-radius: var(--radius);
+  /* A transparent edge that the focus ring can occupy without shifting the content. */
+  box-shadow: inset 0 0 0 1px transparent;
+}
+
+.view-item:hover {
+  background: var(--raised);
+}
+
+.view-item.selected {
+  background: var(--select);
+}
+
+.list-viewport:focus .view-item.focused {
+  box-shadow: inset 0 0 0 1px var(--select-line);
+}
+
+.view-item.dimmed .view-item-visual,
+.view-item.dimmed .view-item-text {
+  opacity: 0.55;
+}
+
+.view-item-visual {
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+/* The icon holds the place until the thumbnail has loaded, then the thumbnail covers it. */
+.view-item-visual img {
+  grid-area: 1 / 1;
+}
+
+.view-item-icon {
+  width: 100%;
+  height: 100%;
+  object-fit: scale-down;
+}
+
+.view-item-icon.covered {
+  visibility: hidden;
+}
+
+/* Undecorated: files without a thumbnail are answered with their icon, which must look the same. */
+.view-item-thumb {
+  max-width: 100%;
+  max-height: 100%;
+  opacity: 0;
+}
+
+.view-item-thumb.shown {
+  opacity: 1;
+}
+
+.view-item-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  text-align: center;
+}
+
+.view-item .label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  max-width: 100%;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  line-height: 16px;
+}
+
+.view-item .rename {
+  width: 100%;
+  margin: 0;
+  text-align: center;
+}
+
+.view-item-detail {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* List and tiles put the name beside the icon rather than under it. */
+.filelist[data-view="list"] .view-item,
+.filelist[data-view="tiles"] .view-item {
+  flex-direction: row;
+  justify-content: flex-start;
+}
+
+.filelist[data-view="list"] .view-item {
+  gap: 8px;
+  margin: 0 4px;
+  padding: 0 8px;
+}
+
+.filelist[data-view="tiles"] .view-item {
+  gap: 12px;
+  padding: 6px 12px;
+}
+
+.filelist[data-view="list"] .view-item-text,
+.filelist[data-view="tiles"] .view-item-text {
+  align-items: flex-start;
+  text-align: left;
+}
+
+.filelist[data-view="list"] .view-item .label,
+.filelist[data-view="tiles"] .view-item .label {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.filelist[data-view="list"] .view-item .rename,
+.filelist[data-view="tiles"] .view-item .rename {
+  height: 22px;
+  margin-left: -5px;
+  text-align: left;
 }

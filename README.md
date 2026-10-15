@@ -86,9 +86,24 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+Shift+C | Copy as path |
 | Alt+Enter | Properties |
 | Right-click, Shift+F10 | Context menu |
+| Ctrl+Shift+1 / 2 / 3 / 4 | Extra large / large / medium / small icons |
+| Ctrl+Shift+5 / 6 / 8 | List / details / tiles |
+| Ctrl+wheel | Larger or smaller icons |
 
 File operations run through the Windows shell's own copy engine, so progress and conflict
 dialogs, the Recycle Bin and Explorer's undo behave exactly as they do in Explorer.
+
+## Views
+
+The View button in the toolbar picks the view (details, list, tiles, or icons from 32 to 256
+pixels), the sort order, and two options: "Show hidden items" (off by default; hidden and
+system files are then left out of folders and search results) and "Show file extensions".
+Each folder remembers its own view and sort, and search results have one of their own.
+
+Icon and tile views show thumbnails rendered by the Windows shell, cached in
+`%LOCALAPPDATA%\Kestrel\thumbs` (up to about 1 GB; the oldest go first). Files whose contents
+are only in the cloud, such as OneDrive files not kept on this device, show their icon instead,
+so browsing never downloads them.
 
 ## Testing
 
