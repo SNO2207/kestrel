@@ -1,0 +1,6 @@
+# Keep every text file LF in the repository and the working tree, so branches made by
+# different tools merge without line-ending noise.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.icns binary
