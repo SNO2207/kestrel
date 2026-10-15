@@ -42,7 +42,8 @@ export type ListCommand =
   | "refresh"
   | "undo"
   | "redo"
-  | "batch-rename";
+  | "batch-rename"
+  | "open-with";
 
 interface Props {
   listing: Listing | null;
@@ -62,6 +63,11 @@ interface Props {
   onRenaming: (active: boolean) => void;
   onRename: (row: Row, name: string) => void;
   onCommand: (command: ListCommand) => void;
+  /**
+   * Shows the Windows context menu at a point in the window: for the selection, or for the
+   * folder when `onItems` is false. `extended` adds the commands Shift reveals in Explorer.
+   */
+  onShellMenu: (x: number, y: number, onItems: boolean, extended: boolean) => void;
   focusRef: (focus: () => void) => void;
   /** Reports the focused row once its data has loaded, or null when no row has focus. */
   onFocusRow?: (row: Row | null) => void;
@@ -491,9 +497,19 @@ export function FileList(props: Props) {
       ? [{ label: `Redo ${history.redo}`, hint: "Ctrl+Y", run: command("redo") }]
       : [];
 
+    const moreOptions = (onItems: boolean): MenuEntry[] => [
+      "separator",
+      {
+        label: "Show more options",
+        hint: "Shift+F10",
+        disabled: !onItems && !browsing,
+        run: () => props.onShellMenu(x, y, onItems, false),
+      },
+    ];
     const forItems: MenuEntry[] = [
       { label: "Open", hint: "Enter", disabled: !sole, run: () => open(soleRow()) },
       ...(sole?.dir ? [{ label: "Open in new tab", run: () => open(soleRow(), true) }] : []),
+      ...(sole && !sole.dir ? [{ label: "Open with…", run: command("open-with") }] : []),
       "separator",
       { label: "Cut", hint: "Ctrl+X", run: command("cut") },
       { label: "Copy", hint: "Ctrl+C", run: command("copy") },
@@ -505,6 +521,7 @@ export function FileList(props: Props) {
       { label: "Delete", hint: "Del", danger: true, run: command("delete") },
       "separator",
       { label: "Properties", hint: "Alt+Enter", disabled: !sole, run: command("properties") },
+      ...moreOptions(true),
     ];
     const forFolder: MenuEntry[] = [
       { label: "New folder", hint: "Ctrl+Shift+N", disabled: !browsing, run: command("new-folder") },
@@ -516,6 +533,7 @@ export function FileList(props: Props) {
       { label: "Refresh", hint: "F5", run: command("refresh") },
       "separator",
       { label: "Properties", disabled: !browsing, run: command("folder-properties") },
+      ...moreOptions(false),
     ];
     setMenu({ x, y, entries: onItems && count > 0 ? forItems : forFolder });
   };
@@ -541,9 +559,15 @@ export function FileList(props: Props) {
     if (key === "contextmenu" || (event.shiftKey && key === "f10")) {
       const row = Math.max(0, focused());
       reveal(row);
-      // The menu opens over the item, below its icon and the start of its name.
-      const box = (viewport.querySelector(`[data-index="${row}"]`) ?? viewport).getBoundingClientRect();
-      void openMenu(box.left + Math.min(40, box.width / 2), box.top + Math.min(box.height, layout().lineSize), true);
+      const list = viewport.getBoundingClientRect();
+      // The menu opens over the item, below its icon and the start of its name, kept inside the
+      // list.
+      const item = viewport.querySelector(`[data-index="${row}"]`)?.getBoundingClientRect() ?? list;
+      const x = item.left + Math.min(40, item.width / 2);
+      const y = Math.min(Math.max(item.top + Math.min(item.height, layout().lineSize), list.top + 8), list.bottom - 8);
+      // Shift+F10 goes straight to the Windows menu, as in Explorer; the Menu key opens Kestrel's.
+      if (event.shiftKey && (has || !isSearch())) props.onShellMenu(x, has ? y : list.top + 8, has, true);
+      else void openMenu(x, y, true);
       return true;
     }
     return false;
@@ -628,7 +652,9 @@ export function FileList(props: Props) {
     event.stopPropagation();
     // Right-clicking outside the selection acts on that one item instead.
     if (!selection().has(index)) select(index);
-    void openMenu(event.clientX, event.clientY, true);
+    // Shift+right-click goes straight to the Windows menu, as in Explorer.
+    if (event.shiftKey) props.onShellMenu(event.clientX, event.clientY, true, true);
+    else void openMenu(event.clientX, event.clientY, true);
   };
 
   return (
@@ -684,7 +710,10 @@ export function FileList(props: Props) {
           event.preventDefault();
           if (!isBackground(event.target)) return;
           setSelection(Selection.empty);
-          void openMenu(event.clientX, event.clientY, false);
+          // Shift+right-click goes straight to the Windows menu, as in Explorer. Search results
+          // have no folder of their own, so they keep Kestrel's.
+          if (event.shiftKey && !isSearch()) props.onShellMenu(event.clientX, event.clientY, false, true);
+          else void openMenu(event.clientX, event.clientY, false);
         }}
       >
         <div

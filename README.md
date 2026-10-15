@@ -16,6 +16,7 @@ project discovery.
 | `crates/kestrel-cli` | Command-line front end and benchmark harness |
 | `apps/desktop` | The app: Tauri 2 backend in `src-tauri`, SolidJS front end in `src` |
 | `apps/broker` | Optional Windows service that reads drives' file tables for the app |
+| `apps/shellhost` | Helper process that shows the Windows context menu and Open With dialog |
 
 ## Running
 
@@ -103,7 +104,8 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+Shift+N | New folder |
 | Ctrl+Shift+C | Copy as path |
 | Alt+Enter | Properties |
-| Right-click, Shift+F10 | Context menu |
+| Right-click, Menu key | Context menu |
+| Shift+right-click, Shift+F10 | The Windows context menu, with every shell extension's commands |
 | Ctrl+Shift+1 / 2 / 3 / 4 | Extra large / large / medium / small icons |
 | Ctrl+Shift+5 / 6 / 8 | List / details / tiles |
 | Ctrl+wheel | Larger or smaller icons |
@@ -153,6 +155,24 @@ or Shift to move. A hint at the bottom of the list says which will happen. Hover
 place or tab for a second opens it, and the list scrolls when the cursor nears its top or
 bottom edge. Dropped items are selected where they land.
 
+## The Windows context menu
+
+"Show more options" at the end of Kestrel's context menu (or Shift+F10, or Shift+right-click)
+shows the menu Explorer would, with the commands shell extensions add (archivers, version
+control, cloud storage), and "Open with…" shows Windows' own app picker. Shell extensions
+load into whichever process shows the menu, and a faulty one can crash it, so Kestrel never
+loads them: `kestrel-shellhost.exe` does, once per menu, and Kestrel reports a crash as a
+notice and carries on. The helper is built next to `kestrel.exe` (`pnpm dev` builds it before
+the app). It has no console window, so pipe its output (`| Out-String`) when running it on
+its own:
+
+```powershell
+kestrel-shellhost verbs -- C:\Notes\todo.txt          # the menu's items as JSON
+kestrel-shellhost invoke --verb copy -- C:\Notes\todo.txt
+kestrel-shellhost menu --x 400 --y 300 -- C:\Notes\todo.txt
+kestrel-shellhost openwith C:\Notes\todo.txt
+```
+
 ## Testing
 
 ```powershell
@@ -178,6 +198,7 @@ node e2e/batchrename.mjs # batch rename and its preview, in a scratch folder
 node e2e/locked.mjs     # a scratch folder this account can't open shows locked
 node e2e/preview.mjs    # preview pane and Quick Look, confined to a scratch folder under %TEMP%
 node e2e/dragdrop.mjs   # drops driven by synthetic drag events, in a scratch folder under %TEMP%
+node e2e/shellmenu.mjs  # Windows menu entries start the helper (shown menus are a manual check)
 ```
 
 The preview pane shows images (SVG only through `<img>`), video, audio, PDF (the web view's own

@@ -407,6 +407,35 @@ export async function showProperties(tabId: number, ofFolder: boolean) {
   if (path) await api.showProperties(path).catch(notify);
 }
 
+/**
+ * Shows the Windows context menu, with every shell extension's commands, for the selection
+ * or, when `onItems` is false, for the folder itself. `x` and `y` are where in the window.
+ * The tab refreshes once the chosen command is done.
+ */
+export function showShellMenu(tabId: number, x: number, y: number, onItems: boolean, extended: boolean) {
+  const tab = find(tabId);
+  const current = onItems ? selected(tabId) : null;
+  if (!tab || (onItems ? !current : isSearch(tab))) return;
+  // The menu matches the window, which is dark unless the system asks for light (styles.css).
+  const dark = !window.matchMedia("(prefers-color-scheme: light)").matches;
+  void operate(tabId, async () => {
+    const choice = current
+      ? await api.shellMenu(current.set, current.ranges, x, y, dark, extended)
+      : await api.shellFolderMenu(tab.path, x, y, dark, extended);
+    // Rename edits the name in place, which only Kestrel can do.
+    if (choice.verb === "rename" && !choice.invoked && current?.selection.count === 1) {
+      const [row] = await selectedRows(tabId, 1);
+      if (row) patch(tabId, (tab) => void (tab.pending = { names: [row.name], rename: true }));
+    }
+  });
+}
+
+/** Shows Windows' Open With dialog for the selected file. */
+export async function openWith(tabId: number) {
+  const [row] = await selectedRows(tabId, 1);
+  if (row && !row.dir) void operate(tabId, async () => api.openWith(row.path));
+}
+
 // ---------- tabs ----------
 
 export function openTab(path?: string) {

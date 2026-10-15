@@ -12,6 +12,7 @@ mod indexer;
 mod places;
 mod preview;
 mod recycle;
+mod shellmenu;
 mod thumbs;
 mod undo;
 mod visibility;
@@ -351,6 +352,11 @@ fn main() {
             dragdrop::start_drag,
             dragdrop::drop_items,
             dragdrop::drop_effect,
+            shellmenu::shell_menu,
+            shellmenu::shell_folder_menu,
+            shellmenu::open_with,
+            shellmenu::shell_probe,
+            shellmenu::shell_probe_take,
         ]))
         .on_window_event(|_window, event| dragdrop::on_window_event(event))
         .setup(move |app| {
