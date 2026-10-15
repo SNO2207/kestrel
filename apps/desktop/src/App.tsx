@@ -7,6 +7,8 @@ import { BatchRenameDialog, openBatchRename } from "./components/BatchRename";
 import { isDropFolder, listenForDrops } from "./dragdrop";
 import { DropHint } from "./components/DropHint";
 import { FileList, type ListCommand } from "./components/FileList";
+import { LauncherSettingsDialog } from "./components/LauncherSettings";
+import { PaletteOverlay } from "./components/PaletteOverlay";
 import { PreviewPane } from "./components/PreviewPane";
 import { QuickLook } from "./components/QuickLook";
 import { Sidebar } from "./components/Sidebar";
@@ -184,6 +186,8 @@ export function App() {
       <StatusBar />
       <BatchRenameDialog onClose={focusList} />
       <QuickLook focusList={focusList} />
+      <PaletteOverlay runCommand={(command) => runCommand(activeId(), command)} focusList={focusList} />
+      <LauncherSettingsDialog onClose={focusList} />
     </div>
   );
 }

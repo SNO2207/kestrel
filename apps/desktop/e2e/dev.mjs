@@ -93,6 +93,9 @@ async function start() {
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${cdpPort}`,
     CARGO_TARGET_DIR: targetDir,
     ...(dataDir ? { KESTREL_DATA_DIR: dataDir } : {}),
+    // Test instances run side by side and must not fight over (or take from the owner) the
+    // quick launcher's system-wide shortcut. Set it yourself to test the real one.
+    KESTREL_GLOBAL_HOTKEY: process.env.KESTREL_GLOBAL_HOTKEY ?? "off",
   };
   const log = openSync(logFile, "w");
   const child = spawn(process.execPath, [join(app, "node_modules", "@tauri-apps", "cli", "tauri.js"), "dev", "--config", JSON.stringify(config)], {

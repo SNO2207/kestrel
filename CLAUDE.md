@@ -47,6 +47,11 @@ Done and verified:
   folder, with Explorer's copy and move rules.
 - **Windows context menu and Open With** (`shellmenu.rs`, `apps/shellhost`): in a
   crash-isolated helper process.
+- **Command palette, quick launcher, tray** (`palette.rs` and `palette/`, `launcher.rs` and
+  `launcher/`, `lib/palette*.ts`, `CommandPalette.tsx`, `PaletteOverlay.tsx`,
+  `QuickLauncher.tsx`, `LauncherSettings.tsx`, `quick.html`): Ctrl+K, the Ctrl+Alt+Space
+  launcher window, the tray icon and "keep running in the tray"; recency in kestrel-db
+  (`kestrel_db::palette`), the shortcut and tray option in its settings table.
 
 All five feature branches (views, undo, preview, dragdrop, shellmenu) are merged on `main`,
 and every unit test and e2e suite passes there, `integration.mjs` covering where they meet.
@@ -82,6 +87,12 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection, shortcut
   how items respond to the mouse is made once and holds in every view.
 - Result sets: a listing or search produces a set id; the UI fetches rows by range. The UI
   releases a set only after switching to its replacement (`show` in `state.ts`).
+- The command palette ranks items from *providers* in one place, `palette.rs` (nucleo-matcher,
+  boosted by recency). A provider has a backend half (`palette::Provider`, registered in
+  `main.rs`) when its items come from backend data, and always a front end half
+  (`registerPaletteProvider` in `lib/palette.ts`, registered in `PaletteOverlay.tsx` and
+  `QuickLauncher.tsx`) that says what choosing an item does. Both files' module documentation
+  says how to add one; prefixes `>` `/` `@` `#` narrow the list to one provider.
 - `crates/kestrel-db`: the app's own data (pins, projects, tags, history, settings) in one
   SQLite file, `data_dir()/kestrel.db`, managed in Tauri as `State<Arc<Db>>`. A feature owns
   its tables: it adds a module with its `Migration`s and lists them in `MIGRATIONS`. Migrations
@@ -136,6 +147,16 @@ Git:
   rewrite history, never commit build output (`target/`, `node_modules/`, `e2e/out/`).
 
 ## Gotchas
+
+- The quick launcher is a second window (`quick`, `quick.html`, titled "Kestrel quick
+  launcher") that exists, hidden, from startup, so closing the main window would not end the
+  process: `launcher::on_window_event` exits when the main window is destroyed. Test instances
+  get `KESTREL_GLOBAL_HOTKEY=off` from `e2e/dev.mjs`, so they never register the system-wide
+  shortcut; the launcher's development commands (`launcher_dev_*`) summon it, register a
+  shortcut and stand in for tray clicks.
+- After a Rust change, `tauri dev` once failed to link (`LNK2019` on a serde_json symbol); an
+  incremental build gone stale. `cargo clean -p kestrel-desktop` with the slot's
+  `CARGO_TARGET_DIR` fixed it.
 
 - Result sets live in the backend and the UI holds handles to them. A set is released only
   after the tab has switched to its replacement (`show` in `src/state.ts`); releasing earlier

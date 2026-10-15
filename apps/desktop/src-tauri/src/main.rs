@@ -9,8 +9,10 @@ mod engine;
 mod fileops;
 mod icons;
 mod indexer;
+mod launcher;
 mod lru;
 mod navigation;
+mod palette;
 mod places;
 mod preview;
 mod recycle;
@@ -305,14 +307,22 @@ fn main() {
     let engine = Arc::new(Engine::default());
     let icons = Arc::new(IconService::start());
     let thumbs = ThumbService::start(icons.clone());
+    let database = open_database();
+    // The command palette's providers; other features register theirs in `setup` (palette.rs).
+    let palette = Arc::new(palette::Palette::new(database.clone()));
+    palette.register(Arc::new(palette::files::FilesProvider::new(engine.clone())));
+    palette.register(Arc::new(palette::paths::PathsProvider::default()));
 
     tauri::Builder::default()
         // The window never leaves the app's own page; see navigation.rs.
         .plugin(navigation::guard())
+        // The quick launcher's system-wide shortcut; see launcher.rs.
+        .plugin(launcher::shortcut_plugin())
         .manage(engine.clone())
         .manage(Watcher::default())
         .manage(Journal::default())
-        .manage(open_database())
+        .manage(database.clone())
+        .manage(palette)
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
             thumbs.handle(&request, responder)
@@ -374,14 +384,33 @@ fn main() {
             shellmenu::open_with,
             shellmenu::shell_probe,
             shellmenu::shell_probe_take,
+            palette::palette_query,
+            palette::palette_record,
+            palette::palette_forget,
+            launcher::launcher_settings,
+            launcher::set_launcher_hotkey,
+            launcher::set_keep_in_tray,
+            launcher::set_start_with_windows,
+            launcher::show_main_window,
+            launcher::hide_quick_window,
+            launcher::quit_app,
+            launcher::launcher_dev_summon,
+            launcher::launcher_dev_hotkey,
+            launcher::launcher_dev_windows,
+            launcher::launcher_dev_tray,
         ]))
-        .on_window_event(|_window, event| dragdrop::on_window_event(event))
+        .on_window_event(|window, event| {
+            dragdrop::on_window_event(event);
+            launcher::on_window_event(window, event);
+        })
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main")
                 && let Err(error) = dragdrop::install(&window)
             {
                 eprintln!("Dragging files out is unavailable: {error}");
             }
+            // The quick launcher, its shortcut and the tray icon; never fatal.
+            launcher::setup(app.handle(), database.clone());
             let handle = app.handle().clone();
             let engine = app.state::<Arc<Engine>>().inner().clone();
             std::thread::Builder::new()

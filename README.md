@@ -111,6 +111,8 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+wheel | Larger or smaller icons |
 | Alt+P | Show or hide the preview pane (drag its left edge to resize it) |
 | Space | Quick Look; Space or Esc closes it, the arrow keys move to the previous or next item |
+| Ctrl+K | Command palette: every action, and folders and files from the index |
+| Ctrl+Alt+Space | The quick launcher, from anywhere in Windows (changeable) |
 
 Every view (details, list, tiles and icons) has the same mouse and keyboard handling: click,
 Ctrl+click and Shift+click to select, Ctrl+A, arrow keys, typing to jump to a name, rename in
@@ -215,6 +217,39 @@ kestrel-shellhost openwith C:\Notes\todo.txt
 `"externalBin": ["binaries/kestrel-shellhost"]` under `bundle` in `tauri.conf.json`, and sign
 it with the app; Tauri puts sidecars next to the main executable, where the app looks.
 
+## Command palette and quick launcher
+
+Ctrl+K opens the command palette over the window: one list, ranked by a fuzzy match as you
+type, of every action the app has (with its shortcut), the folders and files in the index, and
+whatever else other features add. Matched letters are highlighted, and what you open often and
+lately ranks higher (folders you stay in count too). Start with a prefix to narrow it:
+
+| Prefix | Lists |
+|---|---|
+| `>` | actions |
+| `/` | a path: `/C:\Users\me\Doc` lists the folder typed so far, narrowed by the name after it; `/` alone offers drives, your folders and recent ones; `~` is your user folder |
+| `@` | projects |
+| `#` | tags |
+
+Up and Down pick a result. Enter opens a folder in the current tab, a file in its default app,
+or runs an action; Ctrl+Enter opens a folder in a new tab; Shift+Enter shows the item in its
+folder, selected; Tab completes the chosen folder or file into the path, so its contents can be
+listed. Words separated by spaces must all match, and `^word`, `word$`, `'word` and `!word`
+work as in fzf.
+
+The quick launcher is the same palette in a small window of its own, above every other app.
+Ctrl+Alt+Space summons it from anywhere in Windows (change or turn off the shortcut with
+"Quick launcher settings" in the palette, or from the tray icon); Enter acts and hides it,
+Escape or a click elsewhere hides it. Folders and actions open in Kestrel's window, which comes
+forward; files open in their own apps. If another app already owns the shortcut, the settings
+say so and Kestrel carries on without it.
+
+Kestrel has an icon in the notification area with Show Kestrel, the quick launcher, the
+settings and Quit. "Keep running in the tray when the window is closed" (off by default) keeps
+the index current and the shortcut working after the window closes. "Start Kestrel when you
+sign in to Windows" (off by default) adds an entry to your account's startup programs; with the
+tray option on, Kestrel then starts in the tray.
+
 ## Testing
 
 ```powershell
@@ -245,6 +280,7 @@ node e2e/preview.mjs        # preview pane and Quick Look
 node e2e/dragdrop.mjs       # drops driven by synthetic drag events; drags out rehearsed
 node e2e/shellmenu.mjs      # Windows menu entries start the helper
 node e2e/integration.mjs    # the features together, in the icon, list and tile views
+node e2e/palette.mjs        # command palette, quick launcher, shortcut settings and tray option
 node e2e/dev.mjs stop
 ```
 

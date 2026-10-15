@@ -1798,3 +1798,313 @@ code {
   color: var(--text);
   font-weight: 600;
 }
+
+/* ---------- command palette and quick launcher ---------- */
+
+/* Ctrl+K: the palette over the window, near the top, as in an editor. */
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 72px 24px 24px;
+  background: rgb(0 0 0 / 0.32);
+}
+
+.palette {
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 100%);
+  max-height: min(540px, 100%);
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 24px 64px rgb(0 0 0 / 0.4);
+}
+
+/* The quick launcher's window is the palette: Windows draws its edge and shadow. */
+.palette.quick {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.quick-launcher {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.quick-launcher .palette {
+  flex: 1;
+  min-height: 0;
+}
+
+.palette-input {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  height: 50px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.palette-input input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  outline: 0;
+  font-size: 15px;
+  color: var(--text);
+  user-select: text;
+}
+
+.palette-input input::placeholder {
+  color: var(--faint);
+}
+
+.palette-busy {
+  flex: none;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.palette-list {
+  flex: 1;
+  min-height: 0;
+  padding: 6px;
+  overflow-y: auto;
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 42px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+}
+
+.palette-item.active {
+  background: var(--select);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.palette-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  color: var(--muted);
+}
+
+.palette-item.active .palette-icon {
+  color: var(--text);
+}
+
+.palette-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.palette-title,
+.palette-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-title mark {
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.palette-subtitle {
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.palette-kind {
+  flex: none;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.palette-hint,
+.palette-footer kbd {
+  flex: none;
+  padding: 1px 6px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.palette-empty {
+  padding: 22px 12px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.palette-footer {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 8px 12px;
+  background: var(--chrome);
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.palette-footer kbd {
+  padding: 0 4px;
+}
+
+.palette-prefixes {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.palette-failure {
+  flex: none;
+  padding: 8px 16px;
+  background: var(--raised);
+  border-top: 1px solid var(--danger);
+  color: var(--danger);
+  user-select: text;
+}
+
+/* The launcher settings dialog. */
+.launcher-dialog {
+  width: min(560px, 100%);
+  outline: 0;
+}
+
+.launcher-body {
+  display: grid;
+  gap: 12px;
+  padding: 8px 20px 4px;
+}
+
+.launcher-intro {
+  margin: 0;
+  color: var(--muted);
+}
+
+.launcher-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.launcher-label {
+  flex: none;
+  width: 64px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.shortcut-field {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  background: var(--chrome);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  text-align: left;
+}
+
+.shortcut-field.recording,
+.shortcut-field:focus-visible {
+  border-color: var(--accent);
+  outline: 0;
+}
+
+.shortcut-field.changed {
+  color: var(--accent);
+}
+
+.shortcut-prompt {
+  color: var(--faint);
+}
+
+.launcher-actions {
+  display: flex;
+  gap: 16px;
+  margin-top: -4px;
+  padding-left: 74px;
+}
+
+.link-button {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.link-button:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.link-button:disabled {
+  color: var(--faint);
+}
+
+.launcher-status {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--raised);
+  border-left: 2px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--muted);
+  user-select: text;
+}
+
+.launcher-status.ok {
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+
+.launcher-status.problem {
+  border-left-color: var(--danger);
+  color: var(--danger);
+}
+
+.launcher-check {
+  align-items: flex-start;
+}
+
+.launcher-check input {
+  margin-top: 2px;
+}
+
+.launcher-check small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.launcher-dialog .dialog-footer {
+  justify-content: flex-end;
+}
