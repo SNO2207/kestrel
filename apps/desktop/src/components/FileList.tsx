@@ -9,6 +9,8 @@ import { geometry, keyTarget, sameGeometry } from "../lib/viewLayout";
 import { VIEW_MODES, displayName, listingLocation, setViewMode, showExtensions, viewModeAt } from "../lib/views";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import { LockGlyph } from "./LockGlyph";
+import type { ShortcutCommand } from "./ShortcutsLayer";
+import { TagDots } from "./TagDots";
 import { ViewItem } from "./ViewItem";
 
 const PAGE_SIZE = 128;
@@ -43,7 +45,8 @@ export type ListCommand =
   | "undo"
   | "redo"
   | "batch-rename"
-  | "open-with";
+  | "open-with"
+  | ShortcutCommand;
 
 interface Props {
   listing: Listing | null;
@@ -510,6 +513,8 @@ export function FileList(props: Props) {
       { label: "Open", hint: "Enter", disabled: !sole, run: () => open(soleRow()) },
       ...(sole?.dir ? [{ label: "Open in new tab", run: () => open(soleRow(), true) }] : []),
       ...(sole && !sole.dir ? [{ label: "Open with…", run: command("open-with") }] : []),
+      { label: "Pin to sidebar", hint: "Ctrl+D", run: command("pin") },
+      { label: "Tags…", run: command("tags") },
       "separator",
       { label: "Cut", hint: "Ctrl+X", run: command("cut") },
       { label: "Copy", hint: "Ctrl+C", run: command("copy") },
@@ -526,6 +531,7 @@ export function FileList(props: Props) {
     const forFolder: MenuEntry[] = [
       { label: "New folder", hint: "Ctrl+Shift+N", disabled: !browsing, run: command("new-folder") },
       { label: "Paste", hint: "Ctrl+V", disabled: !canPaste, run: command("paste") },
+      { label: "Pin this folder", hint: "Ctrl+D", disabled: !browsing, run: command("pin-folder") },
       "separator",
       undo,
       ...redo,
@@ -782,6 +788,7 @@ export function FileList(props: Props) {
                             <Show when={locked()}>
                               <LockGlyph />
                             </Show>
+                            <TagDots path={data().path} />
                           </div>
                           <Show when={isSearch()}>
                             <div class="cell location" title={data().location ?? ""}>{data().location}</div>

@@ -1,0 +1,561 @@
+/*
+ * Shortcuts: pinned places, frequent folders, saved searches, tags and workspaces in the
+ * sidebar, tag dots on items, Go to folder and the shortcuts' dialogs. Loaded after
+ * styles.css, whose tokens it uses; the only colours of its own are the tag swatches, which
+ * are user data and keep their hue in both themes.
+ */
+:root {
+  --tag-red: #e5676b;
+  --tag-orange: #e8904a;
+  --tag-yellow: #e3c04f;
+  --tag-green: #5fb37a;
+  --tag-teal: #4fb3b0;
+  --tag-blue: #6f9fe0;
+  --tag-purple: #a487de;
+  --tag-pink: #df7fb4;
+  --tag-gray: #8a95a5;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --tag-red: #d14b4f;
+    --tag-orange: #d97a2b;
+    --tag-yellow: #c99a12;
+    --tag-green: #3f9a5c;
+    --tag-teal: #2f9693;
+    --tag-blue: #3f78c9;
+    --tag-purple: #8463c9;
+    --tag-pink: #c95b98;
+    --tag-gray: #7d8796;
+  }
+}
+
+[data-color="red"] { --tag-color: var(--tag-red); }
+[data-color="orange"] { --tag-color: var(--tag-orange); }
+[data-color="yellow"] { --tag-color: var(--tag-yellow); }
+[data-color="green"] { --tag-color: var(--tag-green); }
+[data-color="teal"] { --tag-color: var(--tag-teal); }
+[data-color="blue"] { --tag-color: var(--tag-blue); }
+[data-color="purple"] { --tag-color: var(--tag-purple); }
+[data-color="pink"] { --tag-color: var(--tag-pink); }
+[data-color="gray"] { --tag-color: var(--tag-gray); }
+
+/* ---------- sidebar sections ---------- */
+
+.sidebar .shelf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 22px;
+  margin-bottom: 2px;
+}
+
+.sidebar .shelf-head h2 {
+  margin: 0;
+}
+
+.shelf-add {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 3px;
+  border-radius: var(--radius);
+  color: var(--faint);
+}
+
+.shelf-add:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.shelf-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  text-align: left;
+  color: var(--muted);
+  /* A transparent edge the reorder marker can occupy without shifting anything. */
+  box-shadow: inset 0 0 0 transparent;
+}
+
+.shelf-item:hover {
+  background: var(--raised);
+}
+
+.shelf-item.current {
+  background: var(--select);
+  color: var(--accent);
+}
+
+.shelf-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.shelf-key {
+  flex: none;
+  min-width: 17px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 15px;
+  text-align: center;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-count {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-note {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--danger);
+}
+
+.shelf-hint {
+  margin: 0;
+  padding: 3px 8px 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--faint);
+}
+
+.shelf-item.missing .icon {
+  color: var(--danger);
+}
+
+.shelf-item.missing .shelf-label {
+  color: var(--muted);
+}
+
+/* Where dragged files would go into a pinned or frequent folder, or be pinned: the whole
+   pinned section, or one group of it. */
+.shelf-item.drop-target,
+.pinned.drop-target,
+.pin-group.drop-target {
+  background: var(--select);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+  border-radius: var(--radius);
+}
+
+/* ---------- pinned groups ---------- */
+
+.pin-group {
+  margin-top: 6px;
+  border-radius: var(--radius);
+}
+
+.pin-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  padding: 0 8px 0 4px;
+  border-radius: var(--radius);
+  text-align: left;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pin-group-head:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.pin-group-chevron {
+  color: var(--faint);
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+
+.pin-group-head[aria-expanded="false"] .pin-group-chevron {
+  transform: none;
+}
+
+.pin-group-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tag-color, transparent);
+  box-shadow: inset 0 0 0 1px var(--tag-color, var(--faint));
+}
+
+.pin-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin-group-count {
+  font-weight: 400;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A group's colour also marks its pins, with a thin rule down their left side. */
+.pin-group-body {
+  margin-left: 10px;
+  padding-left: 4px;
+  border-left: 1px solid var(--line);
+}
+
+.pin-group[data-color] > .pin-group-body {
+  border-left-color: var(--tag-color);
+}
+
+/* ---------- reordering pins and groups ---------- */
+
+.pinned.reordering,
+.pinned.reordering * {
+  cursor: grabbing;
+}
+
+.shelf-item.dragging,
+.pin-group.dragging {
+  opacity: 0.45;
+}
+
+.shelf-item.insert-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.shelf-item.insert-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.pin-group.insert-before {
+  box-shadow: 0 -2px 0 var(--accent);
+}
+
+.pin-group.insert-after {
+  box-shadow: 0 2px 0 var(--accent);
+}
+
+.pin-group-head.drop-into {
+  background: var(--select);
+  box-shadow: inset 0 0 0 1.5px var(--select-line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pin-group-chevron {
+    transition: none;
+  }
+}
+
+/* ---------- tags ---------- */
+
+.tag-dot {
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tag-color, var(--tag-gray));
+}
+
+.tag-dots {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+}
+
+/* Tags in the sidebar line their dots up with the icons above them. */
+.shelf-item.tag-item .tag-dot {
+  width: 10px;
+  height: 10px;
+  margin: 0 3px;
+}
+
+/* ---------- saving a search ---------- */
+
+.save-search {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 24px;
+  border-radius: 3px;
+  color: var(--muted);
+}
+
+.save-search:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+/* ---------- dialogs ---------- */
+
+.dialog.shortcut-dialog {
+  width: min(400px, 100%);
+}
+
+.shortcut-dialog-body {
+  display: grid;
+  gap: 12px;
+  padding: 12px 20px 4px;
+}
+
+.shortcut-dialog-note {
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.dialog-spacer {
+  flex: 1;
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--tag-color);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15);
+}
+
+.swatch.none {
+  background: none;
+  box-shadow: inset 0 0 0 1.5px var(--line);
+  position: relative;
+  overflow: hidden;
+}
+
+.swatch.none::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  bottom: 2px;
+  width: 1.5px;
+  background: var(--faint);
+  transform: rotate(45deg);
+}
+
+.swatch[aria-checked="true"] {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 3.5px var(--text);
+}
+
+.tag-choices {
+  display: grid;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.tag-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  text-align: left;
+}
+
+.tag-choice:hover {
+  background: var(--raised);
+}
+
+.tag-choice-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A check box drawn to match the app: empty, ticked, or a bar when only some items have it. */
+.tag-check {
+  position: relative;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--faint);
+  border-radius: 3px;
+}
+
+.tag-choice[aria-checked="true"] .tag-check,
+.tag-choice[aria-checked="mixed"] .tag-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.tag-choice[aria-checked="true"] .tag-check::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--accent-ink);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.tag-choice[aria-checked="mixed"] .tag-check::after {
+  content: "";
+  position: absolute;
+  left: 2.5px;
+  right: 2.5px;
+  top: 5.5px;
+  height: 2px;
+  background: var(--accent-ink);
+}
+
+.tag-new {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- Go to folder ---------- */
+
+.goto-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 72px 24px 24px;
+  background: rgb(0 0 0 / 0.28);
+}
+
+.goto {
+  display: flex;
+  flex-direction: column;
+  width: min(620px, 100%);
+  max-height: min(520px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 0.35);
+  overflow: hidden;
+}
+
+.goto-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.goto-field input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: none;
+  border: 0;
+  outline: 0;
+  font-size: 15px;
+  color: var(--text);
+  user-select: text;
+}
+
+.goto-field input::placeholder {
+  color: var(--faint);
+}
+
+.goto-results {
+  flex: 1;
+  min-height: 0;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.goto-hit {
+  display: grid;
+  grid-template-columns: 16px minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+.goto-hit.active {
+  background: var(--select);
+}
+
+.goto-hit.active .icon {
+  color: var(--accent);
+}
+
+.goto-name {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.goto-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.goto-empty {
+  margin: 0;
+  padding: 14px 12px;
+  color: var(--muted);
+}
+
+.goto-footer {
+  display: flex;
+  gap: 18px;
+  padding: 7px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--chrome);
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.goto-footer kbd {
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: inherit;
+  color: var(--muted);
+}

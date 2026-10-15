@@ -215,6 +215,27 @@ export function setQuery(tabId: number, text: string) {
   runSearch(tabId);
 }
 
+/**
+ * Searches for `query` beneath the folder `scope`, or everywhere when it is null, as a saved
+ * search does. The tab moves to that folder, so leaving the search lands there.
+ */
+export function openSearch(tabId: number, query: string, scope: string | null) {
+  if (!find(tabId) || query.trim() === "") return;
+  setEverywhereSignal(scope === null);
+  localStorage.setItem("search-scope", scope === null ? "everywhere" : "folder");
+  patch(tabId, (tab) => {
+    tab.query = query;
+    if (scope !== null && !samePath(tab.path, scope)) {
+      tab.history.splice(tab.cursor + 1);
+      tab.history.push(scope);
+      tab.cursor = tab.history.length - 1;
+      tab.path = scope;
+      tab.pending = null;
+    }
+  });
+  runSearch(tabId);
+}
+
 export function refresh(tabId: number) {
   const tab = find(tabId);
   if (!tab) return;
