@@ -13,3 +13,6 @@ Thumbs.db
 
 # End-to-end test screenshots
 /apps/desktop/e2e/out
+
+# Agent worktrees
+/.claude/
