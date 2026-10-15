@@ -288,3 +288,16 @@ Git:
   without taking the process reference, and Copy leaves an OLE data object on the clipboard.
   The helper therefore waits for its windows to close and flushes the clipboard before it
   exits (`apps/shellhost/src/process.rs`).
+- Junctions and directory symbolic links are indexed as entries but never read through
+  (`DirItem::alias`, `walk::is_alias`). Reading through one would make the folders it leads to
+  look like moves and re-parent them under the link. Any new crawl or listing must keep that.
+- Any git command that reads the working tree's files (status, check-ignore, diff) goes through
+  `git::run_on_worktree`, which switches off the filter drivers the repository's own config
+  defines (every command already has the fsmonitor hook off): a repository must never run a
+  program just because Kestrel looked at it.
+- One process per data folder (`instance.rs`): a second launch of a slot's `kestrel.exe` asks
+  the running one to show its window and exits. Stop a slot before starting it again with a
+  new build, or the old binary keeps running.
+- Undo checks before acting that each item is still what the operation left: `undo_entries`
+  stores a mark (file id, and for deletions a content fingerprint) per step. A file replaced by
+  another program in the meantime is left alone rather than recycled.
