@@ -1,8 +1,9 @@
 # Kestrel
 
 A fast file explorer for Windows 11. One in-memory index of every file on the drive powers
-instant search, instant folder listings with folder sizes, and (later) disk analysis and
-project discovery.
+instant search, instant folder listings with folder sizes, a command palette that reaches
+every folder and file, and the projects on the drive with their git status; disk analysis is
+to come.
 
 *Kestrel is a working name.*
 
@@ -127,7 +128,7 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+D | Pin the selection to the sidebar, or the folder when nothing is selected |
 | Ctrl+1 … Ctrl+9 | Open the first nine pins, or the pins given those numbers |
 | Ctrl+G | Go to folder: the folders you visit most, then every folder in the index |
-| Ctrl+K | Command palette: every action, and folders and files from the index |
+| Ctrl+K | Command palette: every action, folders and files, pins, saved searches, workspaces, `@` projects, `#` tags |
 | Ctrl+Alt+Space | The quick launcher, from anywhere in Windows (changeable) |
 
 Every view (details, list, tiles and icons) has the same mouse and keyboard handling: click,
@@ -193,8 +194,9 @@ which serves regular files only, honours `Range`, and shows HTML and other activ
 text. Images, video, sound and PDF documents are shown in a webview of their own, laid over the
 preview area (`src-tauri/src/previewview.rs`), which has no capabilities: nothing shown there
 can call any of the app's commands or Tauri's own (window, event, app, webview). It steps
-aside while one of Kestrel's menus, dialogs or notices lies over it. The window itself never
-leaves the app's page (`src-tauri/src/navigation.rs`): web links open in the default browser.
+aside while one of Kestrel's menus, dialogs or notices, the command palette, Go to folder or
+the projects hub lies over it. The window itself never leaves the app's page
+(`src-tauri/src/navigation.rs`): web links open in the default browser.
 
 ## Locked folders
 
@@ -232,7 +234,9 @@ The bookmark button in the search box saves the search, and where it searches, t
 "Tags…" in an item's menu puts coloured tags on it; they show as dots in every view, follow the
 item through renames and moves (by file id), and `tag:name` finds everything carrying one.
 The + beside Workspaces saves the open tabs, with each folder's view and sort, to restore
-later. All of it is kept in `kestrel.db` in the app's data folder.
+later. All of it is kept in `kestrel.db` in the app's data folder, and all of it is in the
+command palette too (see below): pins with their number keys, frequent folders, saved
+searches and workspaces in every query, and the tags under `#`.
 
 ## The Windows context menu
 
@@ -289,7 +293,13 @@ files per day) and the files changed most recently that git does not ignore.
 
 In a folder inside a repository, every view marks items git sees as modified (a dot), added
 (a plus), untracked (a ring) or conflicted (a warning sign), a folder showing the most pressing
-change inside it, and dims what git ignores. Only the items on screen are asked about.
+change inside it, and dims what git ignores. Only the items on screen are asked about. Search
+results show no git marks: they can span any number of repositories, and git would have to run
+in each.
+
+`@` in the command palette lists the projects too, matched by name, or by stack, tag, status
+or branch (`@rust`, `@paused`): Enter opens the project's folder, Shift+Enter its page in the
+hub. Typing `@` looks for projects as opening the hub does.
 
 Git runs commands named by a repository's own configuration in some cases (filter drivers, for
 instance); like any git client, the hub's `git status` does too. The file system monitor hook
@@ -298,22 +308,27 @@ is switched off.
 ## Command palette and quick launcher
 
 Ctrl+K opens the command palette over the window: one list, ranked by a fuzzy match as you
-type, of every action the app has (with its shortcut), the folders and files in the index, and
-whatever else other features add. Matched letters are highlighted, and what you open often and
-lately ranks higher (folders you stay in count too). Start with a prefix to narrow it:
+type, of every action the app has (with its shortcut), the folders and files in the index, the
+pinned places (with their number keys), the frequent folders, saved searches and workspaces,
+and the projects already found. A folder that comes from several of these is listed once.
+Matched letters are highlighted, and what you open often and lately ranks higher (folders you
+stay in count too). Start with a prefix to narrow it:
 
 | Prefix | Lists |
 |---|---|
 | `>` | actions |
 | `/` | a path: `/C:\Users\me\Doc` lists the folder typed so far, narrowed by the name after it; `/` alone offers drives, your folders and recent ones; `~` is your user folder |
-| `@` | projects |
-| `#` | tags |
+| `@` | projects, by name, stack, tag, status or branch; `@` alone lists them all, pinned first |
+| `#` | tags; Enter shows everything carrying one |
 
 Up and Down pick a result. Enter opens a folder in the current tab, a file in its default app,
 or runs an action; Ctrl+Enter opens a folder in a new tab; Shift+Enter shows the item in its
-folder, selected; Tab completes the chosen folder or file into the path, so its contents can be
-listed. Words separated by spaces must all match, and `^word`, `word$`, `'word` and `!word`
-work as in fzf.
+folder, selected (a project's page in the projects hub); Tab completes the chosen folder or
+file into the path, so its contents can be listed. Words separated by spaces must all match,
+and `^word`, `word$`, `'word` and `!word` work as in fzf. Keys typed into the palette stay in
+it: the window's own shortcuts wait until it closes. With nothing typed, the palette lists what
+you used lately, as it is now (a renamed pin under its new name; a deleted saved search not at
+all), then the actions.
 
 The quick launcher is the same palette in a small window of its own, above every other app.
 Ctrl+Alt+Space summons it from anywhere in Windows (change or turn off the shortcut with
@@ -362,15 +377,18 @@ node e2e/shortcuts.mjs      # pins, groups, Go to folder, saved searches, tags, 
 node e2e/integration.mjs    # the features together, in the icon, list and tile views
 node e2e/projects.mjs       # the projects hub and git badges, with repositories it makes
 node e2e/palette.mjs        # command palette, quick launcher, shortcut settings and tray option
+node e2e/connections.mjs    # where the palette, shortcuts, projects and preview meet
 node e2e/dev.mjs stop
 ```
 
 With `$env:KESTREL_RELEASE = 1` set as well, `dev.mjs start` makes the slot a release build
 instead: it runs `tauri build` (no installer) with the slot's identity and starts the
-`kestrel.exe` that produced, whose front end is built in. `smoke.mjs`, `views.mjs`,
-`shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs` and
-`integration.mjs` need a dev build. A release build has the Windows menu's test hook only when
-started with `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
+`kestrel.exe` that produced, whose front end is built in. `smoke.mjs`, `fileops.mjs`,
+`live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
+`shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`,
+`integration.mjs`, `shortcuts.mjs`, `projects.mjs`, `palette.mjs` and `connections.mjs` need a
+dev build, whose test hooks they use. A release build has the Windows menu's test hook only
+when started with `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
 Run the suites one after another, not side by side: several use the clipboard or the window's
 settings. Every suite works in its own scratch folder under `%TEMP%` and removes it afterwards;
@@ -384,6 +402,12 @@ than performed, so nothing is ever dropped on another program. `shellmenu.mjs` a
 `integration.mjs` switch the app's development hook on, which makes the Windows menu helper
 list the menu instead of showing it; showing the real menu and the Open With dialog are manual
 checks.
+
+`connections.mjs` checks the padlock, git marks and tag dots together in all seven views, the
+palette's projects, tags, pins, frequent folders, saved searches and workspaces, the projects
+hub closing when a pin opens, and the preview's webview hiding under the palette, Go to folder
+and the hub. It makes a repository in its scratch folder, locks one folder in it with `icacls`
+for a moment, and removes the pins, tags, saved search and workspace it makes.
 
 `projects.mjs` makes repositories in its scratch folder with the git command line and needs
 a dev build: projects are found by the location rules, which leave out the temp folder, so it

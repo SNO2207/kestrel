@@ -54,18 +54,31 @@ Done and verified:
   folder, with Explorer's copy and move rules.
 - **Windows context menu and Open With** (`shellmenu.rs`, `apps/shellhost`): in a
   crash-isolated helper process.
+- **Live index and drop fixes** (hardening): journal changes inside a folder moved in the same
+  batch are applied (folders listed by file id), and a drop on a row still loading waits for it.
+- **Shortcuts** (`src-tauri/src/shortcuts/`, `kestrel_db::shortcuts`, `shortcuts.ts`,
+  `PinnedPlaces.tsx`, `ShortcutLists.tsx`, `GoToFolder.tsx`, `TagDots.tsx`): pinned places in
+  groups with Ctrl+1 to Ctrl+9, frecent folders and Go to folder (Ctrl+G), saved searches,
+  coloured tags that follow items by file id (`tag:` in queries), and workspaces of tabs.
 - **Projects** (`src-tauri/src/projects/`, `kestrel-db::projects`, `ProjectsHub.tsx`,
   `ProjectDetail.tsx`, `projects.ts`, `lib/gitBadges.ts`, `projects.css`): discovery from the
-  index, git facts from a read-only git pool, the hub (Ctrl+Shift+P) and git badges in every
-  view. `e2e/projects.mjs`; branch `feature/projects`.
+  index, git facts from a read-only git pool, the hub (Ctrl+Shift+P), and git badges in every
+  view of a folder inside a repository (not in search results, which would run git in every
+  repository a search touches).
 - **Command palette, quick launcher, tray** (`palette.rs` and `palette/`, `launcher.rs` and
   `launcher/`, `lib/palette*.ts`, `CommandPalette.tsx`, `PaletteOverlay.tsx`,
   `QuickLauncher.tsx`, `LauncherSettings.tsx`, `quick.html`): Ctrl+K, the Ctrl+Alt+Space
   launcher window, the tray icon and "keep running in the tray"; recency in kestrel-db
-  (`kestrel_db::palette`), the shortcut and tray option in its settings table.
+  (`kestrel_db::palette`), the shortcut and tray option in its settings table. Its providers
+  cover the actions, the index, typed paths, `@` projects (`projects/provider.rs`), `#` tags,
+  and the pins, frequent folders, saved searches and workspaces (`shortcuts/provider.rs`,
+  front-end halves in `lib/paletteFeatures.ts`).
 
-All five feature branches (views, undo, preview, dragdrop, shellmenu) are merged on `main`,
-and every unit test and e2e suite passes there, `integration.mjs` covering where they meet.
+Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
+hardening, shortcuts, projects and palette. Every unit test and all 16 e2e suites pass there
+in a dev build, and the ten that need no development hook (smoke, fileops, live-index, views,
+undo, batchrename, locked, preview, shellmenu, undo-restart) in a release build too;
+`integration.mjs` and `connections.mjs` cover where the features meet.
 
 Not done yet: an installer (bundling is off; the helper would then need a Tauri sidecar entry,
 see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and shortcuts on drop
@@ -92,7 +105,10 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and short
   shell extensions never load into the app. The main window holds two webviews: `main`, the
   app's page, and `preview` (`previewview.rs`), so commands take a `tauri::Window`, never a
   `WebviewWindow` (Tauri refuses to hand one to a command from a window with two webviews),
-  and capabilities name webviews (`"webviews": ["main"]`), not windows.
+  the main window is looked up with `get_window`, never `get_webview_window` (which returns
+  nothing once the preview's webview exists), and capabilities name webviews
+  (`"webviews": ["main"]`), not windows. `preview::guard` admits the app's own two pages,
+  `main` and the quick launcher's `quick` (`preview::APP_WEBVIEWS`), and nothing else.
 - `apps/desktop/src`: the front end. `state.ts` holds tabs and every action; `lib/api.ts`
   wraps every backend command; `components/` has one file per piece of UI; `styles.css` holds
   the design tokens (slate surfaces, one ochre accent, light and dark) and all styles.
@@ -113,7 +129,10 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and short
   `main.rs`) when its items come from backend data, and always a front end half
   (`registerPaletteProvider` in `lib/palette.ts`, registered in `PaletteOverlay.tsx` and
   `QuickLauncher.tsx`) that says what choosing an item does. Both files' module documentation
-  says how to add one; prefixes `>` `/` `@` `#` narrow the list to one provider.
+  says how to add one; prefixes `>` `/` `@` `#` narrow the list to one provider. The same file
+  or folder from several providers is listed once (`one_per_path`), and a provider whose
+  items can be renamed or deleted implements `Provider::current`, which the empty palette's
+  remembered items go through.
 - `crates/kestrel-db`: the app's own data (pins, projects, tags, history, settings) in one
   SQLite file, `data_dir()/kestrel.db`, managed in Tauri as `State<Arc<Db>>`. A feature owns
   its tables: it adds a module with its `Migration`s and lists them in `MIGRATIONS`. Migrations
@@ -183,7 +202,16 @@ Git:
 - After a Rust change, `tauri dev` once failed to link (`LNK2019` on a serde_json symbol); an
   incremental build gone stale. `cargo clean -p kestrel-desktop` with the slot's
   `CARGO_TARGET_DIR` fixed it.
-
+- The preview's webview is drawn above the page, so anything of the app's that can lie over
+  the preview area must be in `OVERLAYS` (`lib/previewSurface.ts`), or it ends up underneath
+  the image or video: menus, dialogs, notices, Quick Look, the palette, Go to folder and the
+  projects hub are.
+- Every key typed into the palette stops there (`CommandPalette.tsx`), so the window's own
+  shortcuts never act behind it; window-wide keys that must work over it listen in the capture
+  phase, as Ctrl+K does.
+- A navigation that fails leaves the tab in its folder with the message in place of the rows
+  (`Tab.failed` in `state.ts`), and Back shows that folder again rather than stepping through
+  the history; tests that check a failed address should wait for the message to go.
 - Result sets live in the backend and the UI holds handles to them. A set is released only
   after the tab has switched to its replacement (`show` in `src/state.ts`); releasing earlier
   makes in-flight row requests look like a stale index.
@@ -206,9 +234,10 @@ Git:
   `%LOCALAPPDATA%` land in `AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local`,
   and a crawl from inside sees that merged view. `%TEMP%` is not redirected (checked: a folder
   made there from inside is not in `LocalCache\Local\Temp`, and the journal names it by the
-  same file ids a listing reports), so scratch folders there are on the real disk. An index or snapshot made there is not the
-  one the owner's own launches use. The broker (a service, outside the container) sees the
-  real disk, which makes it the way to check where files really are.
+  same file ids a listing reports), so scratch folders there are on the real disk. An index
+  or snapshot made from inside is not the one the owner's own launches use. The broker (a
+  service, outside the container) sees the real disk, which makes it the way to check where
+  files really are.
 - Another of the owner's WebView2 apps (AI Binary Workbench) holds debugging port 9222, so
   the e2e harness uses 9333 and up, and `e2e/connect.mjs` refuses any page not titled
   Kestrel. Never point automation at a page without that check.
