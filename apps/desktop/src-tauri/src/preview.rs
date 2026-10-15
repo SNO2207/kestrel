@@ -12,22 +12,25 @@
 //! Security. Tauri counts every custom protocol, `preview.localhost` included, as part of the
 //! app, and on Windows the web view injects Tauri's IPC bridge, invoke key and all, into every
 //! frame. A document served by this protocol that could run script could therefore call
-//! commands. Three layers keep that from happening:
-//! 1. Only regular files are served, each with a media type fixed by its extension. Anything
+//! commands. Four layers keep that from happening:
+//! 1. Images, video, audio and PDF documents are shown in a webview of their own
+//!    (`previewview.rs`), which has no capability at all, so neither the app's commands nor
+//!    Tauri's plugin commands (window, event, app, webview) answer anything in it.
+//! 2. Only regular files are served, each with a media type fixed by its extension. Anything
 //!    that is not an image, audio, video or PDF is served as `text/plain`, so HTML and other
-//!    active content are never rendered as documents. SVG is served as an image, and the pane
-//!    shows it only through `<img>`, where scripts never run.
-//! 2. Every response except a PDF carries `Content-Security-Policy: sandbox`, so even if one
+//!    active content are never rendered as documents. SVG is served as an image and only ever
+//!    shown through `<img>`, where scripts never run.
+//! 3. Every response except a PDF carries `Content-Security-Policy: sandbox`, so even if one
 //!    were opened as a document it would get an opaque origin and run no script, and Tauri
-//!    rejects IPC from an opaque origin outright.
-//! 3. [`guard`] refuses app commands to every frame whose origin is not the app's own.
+//!    rejects IPC from an opaque origin outright. So does [`viewer`], the page the preview's
+//!    webview shows media in.
+//! 4. [`guard`] refuses app commands to every webview but the app's own, and to every frame in
+//!    it whose origin is not the app's own.
 //!
-//! The PDF frame is the one document from this protocol that is not sandboxed: Chromium will
-//! not show a PDF in a sandboxed frame and ignores CSP on the viewer's document. Its content
-//! cannot run script in that document (a PDF's own scripts run inside the viewer), and [`guard`]
-//! refuses app commands from it. Tauri's built-in plugin commands (window, event, app) do not
-//! pass through the app's handler, so script that somehow ran in that frame could still call
-//! those.
+//! A PDF is the one document from this protocol that is not sandboxed: Chromium will not show
+//! a PDF in a sandboxed frame and ignores CSP on the viewer's document. Its content cannot run
+//! script in that document (a PDF's own scripts run inside the viewer), and the webview it is
+//! shown in can call nothing.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -286,6 +289,79 @@ fn read_span(file: &mut File, start: u64, count: u64) -> io::Result<Vec<u8>> {
     Ok(body)
 }
 
+/// The policy of the viewer page: no script, and nothing loaded but the one file it shows.
+const VIEWER_POLICY: &str = "sandbox; default-src 'none'; img-src http://preview.localhost; \
+     media-src http://preview.localhost; style-src 'unsafe-inline'";
+
+/// Percent-encodes everything but unreserved characters, so the result is safe in a query,
+/// and in HTML, as it stands.
+fn encode_component(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (byte as char).to_string(),
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+/// A colour given as `#rrggbb`, the only form the viewer takes from its address.
+fn hex_colour(text: &str) -> Option<&str> {
+    let digits = text.strip_prefix('#')?;
+    (digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_hexdigit())).then_some(text)
+}
+
+/// The page the preview's own webview (`previewview.rs`) shows an image, a video or a sound
+/// in: the file, centred, on the app's colours, which the address carries as `bg`, `raised`,
+/// `line` and `chrome`. The page has no script and its policy forbids any; it names the file
+/// again on this protocol, so everything `serve` checks still applies to the file itself.
+pub fn viewer(uri: &Uri) -> Response<Vec<u8>> {
+    let query = uri.query().unwrap_or_default();
+    let param = |name: &str| {
+        query.split('&').find_map(|pair| pair.split_once('=').filter(|(key, _)| *key == name).map(|(_, value)| value))
+    };
+    let Some(path) = requested_path(uri) else { return status_only(StatusCode::BAD_REQUEST) };
+    let version: i64 = param("v").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let download = if download_agreed(uri) { "&amp;download=1" } else { "" };
+    let src = format!("/?p={}&amp;v={version}{download}", encode_component(&path));
+    let colour = |name: &str, fallback: &'static str| {
+        param(name).map(percent_decode).filter(|value| hex_colour(value).is_some()).unwrap_or_else(|| fallback.to_owned())
+    };
+    // The dark theme's values from styles.css, for an address without colours.
+    let (bg, raised, line, chrome) =
+        (colour("bg", "#1b2129"), colour("raised", "#242c37"), colour("line", "#2c3541"), colour("chrome", "#151a21"));
+    let scheme = if param("scheme") == Some("light") { "light" } else { "dark" };
+    let (element, background) = match param("kind") {
+        Some("image") => (format!(r#"<img src="{src}" alt="">"#), &bg),
+        Some("video") => (format!(r#"<video src="{src}" controls preload="metadata"></video>"#), &chrome),
+        Some("audio") => (format!(r#"<audio src="{src}" controls preload="metadata"></audio>"#), &bg),
+        _ => return status_only(StatusCode::BAD_REQUEST),
+    };
+    let page = format!(
+        r#"<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="color-scheme" content="{scheme}">
+<title>Preview</title>
+<style>
+html, body {{ width: 100%; height: 100%; margin: 0; overflow: hidden; background: {background}; }}
+body {{ display: flex; align-items: center; justify-content: center; }}
+img {{ max-width: calc(100% - 2px); max-height: calc(100% - 2px); background: repeating-conic-gradient({raised} 0 25%, {bg} 0 50%) 0 0 / 16px 16px; box-shadow: 0 0 0 1px {line}; }}
+video {{ width: 100%; height: 100%; object-fit: contain; background: {chrome}; }}
+audio {{ width: 100%; }}
+</style>
+{element}
+"#
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(CONTENT_SECURITY_POLICY, VIEWER_POLICY)
+        .header(X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(CACHE_CONTROL, "no-store")
+        .body(page.into_bytes())
+        .unwrap_or_else(|_| status_only(StatusCode::INTERNAL_SERVER_ERROR))
+}
+
 /// Answers one request to the `preview` protocol.
 pub fn serve(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     let head = match *request.method() {
@@ -293,6 +369,9 @@ pub fn serve(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         Method::HEAD => true,
         _ => return status_only(StatusCode::METHOD_NOT_ALLOWED),
     };
+    if request.uri().path() == "/view" {
+        return viewer(request.uri());
+    }
     let Some(path) = requested_path(request.uri()) else { return status_only(StatusCode::BAD_REQUEST) };
     // Checked before the file is opened, since opening some online-only files downloads them.
     let agreed = download_agreed(request.uri());
@@ -366,15 +445,25 @@ pub fn serve(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
 
 // ---------- commands ----------
 
-/// Refuses app commands to any frame whose origin is not the app's own, such as the PDF frame
-/// the pane loads from `preview.localhost`.
+/// The label of the app's own webview, the only one whose page may call the app's commands.
+pub const APP_WEBVIEW: &str = "main";
+
+/// Refuses app commands to every webview but the app's own (the preview's webview above all,
+/// see `previewview.rs`), and to any frame in it whose origin is not the app's own.
 ///
-/// Requests over Tauri's IPC protocol always carry the browser-set `Origin` of the frame that
-/// made them; the fallback channel is open to the top-level document only and carries none.
+/// Tauri lets every local page call the app's commands, and counts `preview.localhost` as
+/// local, so the label is what tells the preview's webview apart. Requests over Tauri's IPC
+/// protocol always carry the browser-set `Origin` of the frame that made them; the fallback
+/// channel is open to the top-level document only and carries none.
 pub fn guard<R: Runtime>(
     handler: impl Fn(Invoke<R>) -> bool + Send + Sync + 'static,
 ) -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'static {
     move |invoke: Invoke<R>| {
+        let label = invoke.message.webview_ref().label().to_owned();
+        if label != APP_WEBVIEW {
+            invoke.resolver.reject(format!("Commands are not available to the {label} view"));
+            return true;
+        }
         let origin = invoke.message.headers().get(ORIGIN).and_then(|value| value.to_str().ok()).map(str::to_owned);
         if let Some(origin) = origin {
             let app = invoke.message.webview_ref().url().ok();
@@ -1035,6 +1124,36 @@ mod tests {
         let local = scratch.file("local.png", b"\x89PNG\r\n\x1a\n");
         assert_eq!(get(&local, &[]).status(), StatusCode::OK);
         assert!(!is_opened_online_only(&File::open(&local).unwrap()));
+    }
+
+    #[test]
+    fn the_viewer_page_names_the_file_and_runs_nothing() {
+        let page = |query: &str| {
+            let request = Request::builder().uri(format!("http://preview.localhost/view?{query}")).body(Vec::new()).unwrap();
+            serve(&request)
+        };
+        let path = url_for(r#"C:\a "b" <c> & d.png"#);
+        let query = path.split_once('?').unwrap().1;
+        let image = page(&format!("kind=image&{query}&bg=%23fbfcfd&raised=%23edf0f4&line=red&scheme=light"));
+        assert_eq!(image.status(), StatusCode::OK);
+        assert_eq!(header(&image, "content-type"), Some("text/html; charset=utf-8"));
+        let policy = header(&image, "content-security-policy").unwrap();
+        assert!(policy.starts_with("sandbox;") && policy.contains("default-src 'none'") && !policy.contains("script"), "{policy}");
+        let html = String::from_utf8(image.body().clone()).unwrap();
+        // The path reaches the page only percent-encoded, so it can't close the attribute.
+        assert!(html.contains(r#"<img src="/?p=C%3A%5Ca%20%22b%22%20%3Cc%3E%20%26%20d.png&amp;v=1" alt="">"#), "{html}");
+        assert!(!html.contains("<script") && !html.contains("download"));
+        assert!(html.contains("#fbfcfd") && html.contains("#edf0f4"));
+        assert!(!html.contains("red"), "a colour that isn't #rrggbb is replaced");
+        assert!(html.contains(r#"content="light""#));
+
+        let video = String::from_utf8(page("kind=video&p=C%3A%5Cclip.webm&v=7&download=1").body().clone()).unwrap();
+        assert!(video.contains(r#"<video src="/?p=C%3A%5Cclip.webm&amp;v=7&amp;download=1" controls preload="metadata">"#), "{video}");
+        let audio = String::from_utf8(page("kind=audio&p=C%3A%5Ctone.wav").body().clone()).unwrap();
+        assert!(audio.contains(r#"<audio src="/?p=C%3A%5Ctone.wav&amp;v=0" controls"#), "{audio}");
+
+        assert_eq!(page("kind=page&p=C%3A%5Cx.html").status(), StatusCode::BAD_REQUEST, "only images, video and sound");
+        assert_eq!(page("kind=image").status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

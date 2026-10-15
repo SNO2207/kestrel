@@ -7,7 +7,7 @@ use std::path::Path;
 
 use regex::{NoExpand, Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
-use tauri::{State, WebviewWindow};
+use tauri::{State, Window};
 
 use crate::fileops::{self, Done, file_name, key, parent, validate_name};
 use crate::undo::Journal;
@@ -245,7 +245,7 @@ pub fn preview_renames(paths: Vec<String>, rules: Rules) -> Result<Vec<Preview>,
 /// Renames every item at `paths` by `rules`, as one undoable operation, and returns the new
 /// names. Nothing is renamed if any new name has a problem.
 #[tauri::command(async)]
-pub fn batch_rename(window: WebviewWindow, journal: State<Journal>, paths: Vec<String>, rules: Rules) -> Result<Vec<String>, String> {
+pub fn batch_rename(window: Window, journal: State<Journal>, paths: Vec<String>, rules: Rules) -> Result<Vec<String>, String> {
     let previews = preview(&paths, &rules)?;
     if let Some(bad) = previews.iter().find(|preview| preview.problem.is_some()) {
         return Err(format!("{}: {}", bad.old, bad.problem.as_deref().unwrap_or_default()));

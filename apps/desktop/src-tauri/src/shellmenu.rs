@@ -14,7 +14,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{State, WebviewWindow};
+use tauri::{State, Window};
 use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
 
 use crate::engine::Engine;
@@ -48,7 +48,7 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    fn of(window: &WebviewWindow) -> Result<Self, String> {
+    fn of(window: &Window) -> Result<Self, String> {
         let origin = window.inner_position().map_err(|e| e.to_string())?;
         let size = window.inner_size().map_err(|e| e.to_string())?;
         let scale = window.scale_factor().map_err(|e| e.to_string())?;
@@ -200,7 +200,7 @@ fn interpret(title: &str, code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> Re
 fn show(request: &Request, geometry: Option<Geometry>) -> Result<ShellChoice, String> {
     let helper = helper_path()?;
     let mode = PROBE.lock().mode;
-    if cfg!(debug_assertions) && mode != ProbeMode::Off {
+    if test_hooks() && mode != ProbeMode::Off {
         return probe(&helper, request, geometry, mode);
     }
     let output = run_helper(&helper, request, false, false)?;
@@ -218,7 +218,7 @@ async fn show_blocking(request: Request, geometry: Option<Geometry>) -> Result<S
 }
 
 /// The window's handle, which owns the menu and any dialog its commands show.
-fn owner(window: &WebviewWindow) -> Option<isize> {
+fn owner(window: &Window) -> Option<isize> {
     window.hwnd().ok().map(|hwnd| hwnd.0 as isize)
 }
 
@@ -228,7 +228,7 @@ fn owner(window: &WebviewWindow) -> Option<isize> {
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn shell_menu(
-    window: WebviewWindow,
+    window: Window,
     engine: State<'_, Arc<Engine>>,
     set: u32,
     ranges: Vec<(u32, u32)>,
@@ -255,7 +255,7 @@ pub async fn shell_menu(
 /// for a click on empty space in it.
 #[tauri::command]
 pub async fn shell_folder_menu(
-    window: WebviewWindow,
+    window: Window,
     path: String,
     x: f64,
     y: f64,
@@ -270,7 +270,7 @@ pub async fn shell_folder_menu(
 
 /// Shows Windows' Open With dialog for a file.
 #[tauri::command]
-pub async fn open_with(window: WebviewWindow, path: String) -> Result<(), String> {
+pub async fn open_with(window: Window, path: String) -> Result<(), String> {
     let geometry = Geometry::of(&window).ok();
     show_blocking(Request::OpenWith { path, owner: owner(&window) }, geometry).await.map(|_| ())
 }
@@ -329,11 +329,20 @@ fn probe(helper: &Path, request: &Request, window: Option<Geometry>, mode: Probe
     result.map(|_| ShellChoice::default())
 }
 
-fn development_only() -> Result<(), String> {
-    if cfg!(debug_assertions) { Ok(()) } else { Err("Only development builds have this hook".into()) }
+/// Whether the end-to-end tests' hook is on: always in development builds, and in a release
+/// build started with `KESTREL_TEST_HOOKS=1`, as `e2e/dev.mjs` starts the release build it
+/// tests. The hook only ever makes menus list their items instead of showing them.
+fn test_hooks() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(debug_assertions) || *ON.get_or_init(|| std::env::var_os("KESTREL_TEST_HOOKS").is_some_and(|value| value == "1"))
 }
 
-/// Sets how menus and dialogs are shown, and forgets the last record. Development builds only.
+fn development_only() -> Result<(), String> {
+    if test_hooks() { Ok(()) } else { Err("Only development builds have this hook".into()) }
+}
+
+/// Sets how menus and dialogs are shown, and forgets the last record. Development builds, and
+/// release builds under test, only.
 #[tauri::command]
 pub fn shell_probe(mode: ProbeMode) -> Result<(), String> {
     development_only()?;

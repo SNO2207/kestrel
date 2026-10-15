@@ -26,6 +26,17 @@ pnpm install
 pnpm tauri dev
 ```
 
+A release build, without an installer (bundling is off):
+
+```powershell
+cd apps\desktop
+pnpm tauri build       # target\release\kestrel.exe, with kestrel-shellhost.exe beside it
+```
+
+The build also builds `kestrel-shellhost.exe` (`scripts/shellhost.mjs`, run before the front
+end is built) into the same folder as `kestrel.exe`, which is where Kestrel looks for it. The
+front end is built into the executable, so the folder's two programs are all it needs.
+
 The first launch builds an index of every fixed drive and saves it to
 `%LOCALAPPDATA%\Kestrel\index.kidx`: by crawling (25–40 seconds for 3 million files), or, with
 the broker installed, by reading each drive's file table.
@@ -131,8 +142,11 @@ what reached the Recycle Bin), which is what selects new items and what undo wor
 
 Each undo or redo is one shell operation with the usual progress and conflict windows. Undo
 and redo are also on the folder background's context menu. New folders, renames, deletions,
-pastes, batch renames and drops all go into the history (up to 100 operations, kept while the
-app runs); commands chosen from the Windows context menu are carried out by Windows and do not.
+pastes, batch renames and drops all go into the history (the newest 100 operations); commands
+chosen from the Windows context menu are carried out by Windows and do not. The history is
+kept in the app's database as it changes, so it survives a restart, or a crash; when the app
+starts again, operations none of whose items are still where they were left (renamed or
+deleted since, or gone from the Recycle Bin) are dropped without a word.
 
 Batch rename (F2 with several items selected) offers find and replace (plain or regular
 expression, optionally case-sensitive), a prefix and suffix, numbering (`Photo ###` from a
@@ -168,9 +182,12 @@ the same preview large, as Quick Look; the arrow keys step through the items wit
 it.
 
 File bytes reach the preview through the `preview` protocol (`src-tauri/src/preview.rs`),
-which serves regular files only, honours `Range`, shows HTML and other active content as
-text, and whose frames may not call the app's commands. The window itself never leaves the
-app's page (`src-tauri/src/navigation.rs`): web links open in the default browser.
+which serves regular files only, honours `Range`, and shows HTML and other active content as
+text. Images, video, sound and PDF documents are shown in a webview of their own, laid over the
+preview area (`src-tauri/src/previewview.rs`), which has no capabilities: nothing shown there
+can call any of the app's commands or Tauri's own (window, event, app, webview). It steps
+aside while one of Kestrel's menus, dialogs or notices lies over it. The window itself never
+leaves the app's page (`src-tauri/src/navigation.rs`): web links open in the default browser.
 
 ## Locked folders
 
@@ -209,11 +226,12 @@ kestrel-shellhost menu --x 400 --y 300 -- C:\Notes\todo.txt
 kestrel-shellhost openwith C:\Notes\todo.txt
 ```
 
-`tauri build` does not build or bundle the helper yet. For a release, build it with
-`cargo build --release -p kestrel-shellhost`, copy it to
+`pnpm tauri build` builds the helper next to `kestrel.exe` (see Running). An installer, when
+bundling is turned on, has to carry it too: copy the built helper to
 `apps/desktop/src-tauri/binaries/kestrel-shellhost-x86_64-pc-windows-msvc.exe`, add
 `"externalBin": ["binaries/kestrel-shellhost"]` under `bundle` in `tauri.conf.json`, and sign
-it with the app; Tauri puts sidecars next to the main executable, where the app looks.
+it with the app; Tauri puts sidecars next to the main executable, where the app looks. (With
+`externalBin` set, every build of the app needs that file first, which is why it isn't yet.)
 
 ## Testing
 
@@ -239,6 +257,7 @@ node e2e/fileops.mjs        # file operations, in a scratch folder under %TEMP%
 node e2e/live-index.mjs     # files changed by another program show up in search
 node e2e/views.mjs          # view modes, thumbnails, hidden items and extensions
 node e2e/undo.mjs           # undo and redo
+node e2e/undo-restart.mjs   # the undo history after a restart (restarts the slot itself)
 node e2e/batchrename.mjs    # batch rename and its preview
 node e2e/locked.mjs         # a folder this account can't open shows locked
 node e2e/preview.mjs        # preview pane and Quick Look
@@ -248,13 +267,21 @@ node e2e/integration.mjs    # the features together, in the icon, list and tile 
 node e2e/dev.mjs stop
 ```
 
+With `$env:KESTREL_RELEASE = 1` set as well, `dev.mjs start` makes the slot a release build
+instead: it runs `tauri build` (no installer) with the slot's identity and starts the
+`kestrel.exe` that produced, whose front end is built in. `smoke.mjs`, `views.mjs`,
+`shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs` and
+`integration.mjs` need a dev build. A release build has the Windows menu's test hook only when
+started with `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
+
 Run the suites one after another, not side by side: several use the clipboard or the window's
 settings. Every suite works in its own scratch folder under `%TEMP%` and removes it afterwards;
 `views.mjs` and `integration.mjs` save the window's view and preview settings first and put
 them back at the end. Screenshots, in the dark and light themes, go to `e2e/out`.
 
 `dragdrop.mjs` and `integration.mjs` need a dev build: they drive drops through the test hook
-such a build exposes, since a real mouse drag can't be scripted. Drags out are rehearsed rather
+such a build exposes, since a real mouse drag can't be scripted. `undo-restart.mjs` stops and
+starts the slot's app itself, between two runs of operations. Drags out are rehearsed rather
 than performed, so nothing is ever dropped on another program. `shellmenu.mjs` and
 `integration.mjs` switch the app's development hook on, which makes the Windows menu helper
 list the menu instead of showing it; showing the real menu and the Open With dialog are manual

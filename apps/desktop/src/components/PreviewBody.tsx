@@ -29,8 +29,10 @@ import {
   type PreviewItem,
   type PreviewKind,
 } from "../lib/preview";
+import type { SurfaceKind } from "../lib/previewSurface";
 import { notify } from "../state";
 import { Icon } from "./Icon";
+import { PreviewSurface } from "./PreviewSurface";
 
 export type PreviewVariant = "pane" | "quicklook";
 
@@ -164,6 +166,7 @@ function ItemPreview(props: { item: PreviewItem; variant: PreviewVariant; onClos
               <Content
                 item={props.item}
                 kind={kind()}
+                variant={props.variant}
                 details={loaded()}
                 onMeasured={setMeasured}
                 onDuration={setDuration}
@@ -205,10 +208,46 @@ function OpenButton(props: { path: string }) {
 interface ContentProps {
   item: PreviewItem;
   kind: PreviewKind;
+  variant: PreviewVariant;
   details: PreviewDetails;
   onMeasured: (size: [number, number]) => void;
   onDuration: (seconds: number) => void;
   onEncoding: (label: string) => void;
+}
+
+/**
+ * Reads an image's size, or finds that it can't be shown, without showing it: the preview's
+ * own webview does that. An image runs no script wherever it is loaded, an SVG included.
+ */
+function probeImage(url: string, onMeasured: (size: [number, number]) => void, onFailed: () => void) {
+  const image = new Image();
+  image.onload = () => {
+    if (image.naturalWidth > 0) onMeasured([image.naturalWidth, image.naturalHeight]);
+  };
+  image.onerror = onFailed;
+  image.src = url;
+  return () => {
+    image.onload = image.onerror = null;
+    image.src = "";
+  };
+}
+
+/** Reads a video's or a sound's length and size from its metadata, without playing or showing it. */
+function probeMedia(kind: "video" | "audio", url: string, props: ContentProps, onFailed: () => void) {
+  const media = document.createElement(kind);
+  media.preload = "metadata";
+  media.muted = true;
+  media.onloadedmetadata = () => {
+    props.onDuration(media.duration);
+    if (media instanceof HTMLVideoElement && media.videoWidth > 0) props.onMeasured([media.videoWidth, media.videoHeight]);
+  };
+  media.onerror = onFailed;
+  media.src = url;
+  return () => {
+    media.onloadedmetadata = media.onerror = null;
+    media.removeAttribute("src");
+    media.load();
+  };
 }
 
 function Content(props: ContentProps) {
@@ -216,6 +255,35 @@ function Content(props: ContentProps) {
   const url = () => previewUrl(props.item.path, props.item.mtime, props.details.online_only);
   const [failed, setFailed] = createSignal(false);
   const tooLarge = () => (props.details.size ?? 0) > MAX_WHOLE;
+  /** Quick Look, shown over the pane, takes the preview's webview from it. */
+  const priority = () => (props.variant === "quicklook" ? 2 : 1);
+  const surface = (kind: SurfaceKind, className: string) => (
+    <PreviewSurface
+      kind={kind}
+      path={props.item.path}
+      version={props.item.mtime}
+      download={props.details.online_only}
+      priority={priority()}
+      class={className}
+      label={`Preview of ${props.item.name}`}
+    />
+  );
+
+  // What the details list says about images, video and sound is read here; the content itself
+  // shows in the preview's own webview.
+  createEffect(
+    on([() => props.kind, url, tooLarge], ([kind, address, large]) => {
+      if (large) return;
+      const fail = () => setFailed(true);
+      const stop =
+        kind === "image"
+          ? probeImage(address, props.onMeasured, fail)
+          : kind === "video" || kind === "audio"
+            ? probeMedia(kind, address, props, fail)
+            : null;
+      if (stop) onCleanup(stop);
+    }),
+  );
 
   return (
     <Switch fallback={<TextContent {...props} />}>
@@ -234,45 +302,14 @@ function Content(props: ContentProps) {
         </Message>
       </Match>
       <Match when={props.kind === "image"}>
-        <div class="preview-canvas">
-          {/* Always an <img>: an SVG's scripts never run in one. */}
-          <img
-            class="preview-image"
-            src={url()}
-            alt=""
-            draggable={false}
-            onLoad={(event) => {
-              const image = event.currentTarget;
-              if (image.naturalWidth > 0) props.onMeasured([image.naturalWidth, image.naturalHeight]);
-            }}
-            onError={() => setFailed(true)}
-          />
-        </div>
+        {/* Always an <img> in the viewer page: an SVG's scripts never run in one. */}
+        <div class="preview-canvas">{surface("image", "preview-image-surface")}</div>
       </Match>
-      <Match when={props.kind === "video"}>
-        <video
-          class="preview-video"
-          src={url()}
-          controls
-          preload="metadata"
-          onLoadedMetadata={(event) => {
-            const video = event.currentTarget;
-            props.onDuration(video.duration);
-            if (video.videoWidth > 0) props.onMeasured([video.videoWidth, video.videoHeight]);
-          }}
-          onError={() => setFailed(true)}
-        />
-      </Match>
+      <Match when={props.kind === "video"}>{surface("video", "preview-video")}</Match>
       <Match when={props.kind === "audio"}>
         <div class="preview-audio">
           <img src={iconUrl(props.item, 48)} width="48" height="48" alt="" draggable={false} />
-          <audio
-            src={url()}
-            controls
-            preload="metadata"
-            onLoadedMetadata={(event) => props.onDuration(event.currentTarget.duration)}
-            onError={() => setFailed(true)}
-          />
+          {surface("audio", "preview-audio-controls")}
         </div>
       </Match>
       <Match when={props.kind === "pdf" && tooLarge()}>
@@ -281,11 +318,7 @@ function Content(props: ContentProps) {
           <OpenButton path={props.item.path} />
         </Message>
       </Match>
-      <Match when={props.kind === "pdf"}>
-        {/* Not sandboxed, because Chromium refuses to show a PDF in a sandboxed frame. The
-            frame's origin is preview.localhost, which may not call the app's commands. */}
-        <iframe class="preview-pdf" src={url()} title={`Preview of ${props.item.name}`} />
-      </Match>
+      <Match when={props.kind === "pdf"}>{surface("pdf", "preview-pdf")}</Match>
     </Switch>
   );
 }

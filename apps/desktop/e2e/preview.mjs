@@ -18,7 +18,8 @@ import { fileURLToPath } from "node:url";
 
 import { connectToKestrel, port } from "./connect.mjs";
 import { pdf, png, wav } from "./fixtures.mjs";
-import { devUrl } from "./slot.mjs";
+import { appUrl, release } from "./slot.mjs";
+import { webviews } from "./windows.mjs";
 
 const out = join(dirname(fileURLToPath(import.meta.url)), "out");
 mkdirSync(out, { recursive: true });
@@ -123,9 +124,110 @@ page.on("pageerror", (error) => pageErrors.push(error.message));
 
 /** Every preview.localhost response, to check statuses and range answers. */
 const responses = [];
-page.on("response", (response) => {
+const record = (response) => {
   if (response.url().startsWith("http://preview.localhost/")) responses.push(response);
-});
+};
+page.on("response", record);
+
+// ---------- the preview's own webview ----------
+
+/**
+ * The preview's own webview, where images, video, sound and PDF documents show. It is a
+ * second page on the same debugging port, created the first time something is shown in it.
+ */
+let viewPage = null;
+async function previewView() {
+  for (let attempt = 0; !viewPage && attempt < 150; attempt++) {
+    viewPage = browser.contexts().flatMap((context) => context.pages()).find((other) => other !== page && /^(http:\/\/preview\.localhost\/|about:blank)/.test(other.url())) ?? null;
+    if (viewPage) viewPage.on("response", record);
+    else await page.waitForTimeout(100);
+  }
+  assert(viewPage, "the preview's webview is there");
+  return viewPage;
+}
+
+/**
+ * Runs `check` in the preview's webview until it returns something truthy. Its viewer page
+ * runs no script, so it can't wait by itself; the debugging protocol still evaluates there.
+ */
+async function inView(check, arg, timeout = 15_000) {
+  const view = await previewView();
+  const until = Date.now() + timeout;
+  let last;
+  while (Date.now() < until) {
+    last = await view.evaluate(check, arg).catch((error) => `error: ${error.message}`);
+    if (last && !String(last).startsWith("error:")) return last;
+    await page.waitForTimeout(100);
+  }
+  throw new Error(`the preview's webview never got there (${check}): ${last}`);
+}
+
+/** Waits until the preview's webview shows `name` (its address names the file). */
+const viewShows = (name) =>
+  inView((name) => decodeURIComponent(location.href).includes(`\\${name}&`) && location.href, name);
+
+/** Checks that the preview's webview has the size of the scope's preview surface. */
+async function expectPlaced(scope) {
+  const box = await scope.locator(".preview-surface").boundingBox();
+  assert(box, "the preview surface is on the page");
+  const fits = ([width, height]) => Math.abs(width - box.width) <= 2 && Math.abs(height - box.height) <= 2;
+  await inView(([width, height]) => Math.abs(innerWidth - width) <= 2 && Math.abs(innerHeight - height) <= 2, [box.width, box.height]).catch(async () => {
+    const size = await (await previewView()).evaluate(() => [innerWidth, innerHeight]);
+    assert(fits(size), `view ${size} over surface ${box.width}x${box.height}`);
+  });
+}
+
+/**
+ * The preview's webview as Windows shows it, which its page can't tell: whether it is shown,
+ * and where, in CSS pixels of the app's page. Waits up to `timeout` for `wanted` to hold.
+ */
+async function nativeView(wanted, timeout = 10_000) {
+  const until = Date.now() + timeout;
+  let seen;
+  do {
+    const scale = await page.evaluate(() => devicePixelRatio);
+    const [main, view] = webviews();
+    seen = view && main ? { visible: view.visible, x: (view.left - main.left) / scale, y: (view.top - main.top) / scale, width: view.width / scale, height: view.height / scale } : null;
+    if (seen && wanted(seen)) return seen;
+  } while (Date.now() < until);
+  throw new Error(`the preview's webview is not as expected: ${JSON.stringify(seen)}`);
+}
+
+/**
+ * Saves the window as the user sees it while the preview's webview shows something: a capture
+ * of the page does not include that webview, so its own capture is drawn in at its place.
+ */
+async function shotView(name) {
+  const view = await previewView();
+  const viewSession = await view.context().newCDPSession(view);
+  const { data: content } = await viewSession.send("Page.captureScreenshot", { format: "png" });
+  await viewSession.detach();
+  const { data: window } = await session.send("Page.captureScreenshot", { format: "png" });
+  // Quick Look's preview has the webview whenever it is open.
+  const inQuickLook = (await page.locator(".quicklook .preview-surface").count()) > 0;
+  const box = await page.locator(inQuickLook ? ".quicklook .preview-surface" : ".preview-pane .preview-surface").boundingBox();
+  const combined = await page.evaluate(
+    async ([window, content, box]) => {
+      const load = (data) =>
+        new Promise((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = reject;
+          image.src = `data:image/png;base64,${data}`;
+        });
+      const [whole, part] = await Promise.all([load(window), load(content)]);
+      const canvas = document.createElement("canvas");
+      [canvas.width, canvas.height] = [whole.width, whole.height];
+      const context = canvas.getContext("2d");
+      context.drawImage(whole, 0, 0);
+      const scale = whole.width / innerWidth;
+      context.drawImage(part, box.x * scale, box.y * scale, box.width * scale, box.height * scale);
+      return canvas.toDataURL("image/png").split(",")[1];
+    },
+    [window, content, box],
+  );
+  writeFileSync(join(out, `preview-${name}-${theme}.png`), Buffer.from(combined, "base64"));
+}
 
 /**
  * Asks the built-in PDF viewers in this slot's window what they show, and saves a capture of
@@ -177,22 +279,27 @@ async function expectContent(scope, name) {
   await scope.locator(".preview-name", { hasText: exact(name) }).waitFor();
   switch (name) {
     case "photo.png": {
-      const image = scope.locator("img.preview-image");
-      await image.waitFor();
-      await page.waitForFunction((el) => el.complete && el.naturalWidth === 160, await image.elementHandle());
-      assert.equal(await detail(scope, "Dimensions").textContent(), "160 × 120 pixels");
+      // The image shows in the preview's own webview; the page only holds its place.
+      await scope.locator(".preview-surface[data-kind='image']").waitFor();
+      await viewShows(name);
+      await inView(() => document.querySelector("img")?.complete && document.querySelector("img").naturalWidth === 160);
+      await expectPlaced(scope);
+      await detail(scope, "Dimensions").filter({ hasText: "160 × 120 pixels" }).waitFor();
+      assert.equal(await scope.locator("img.preview-image, video, audio, iframe").count(), 0, "no content in the app's page");
       break;
     }
     case "drawing.svg": {
-      const image = scope.locator("img.preview-image");
-      await page.waitForFunction((el) => el.complete && el.naturalWidth === 120, await image.elementHandle());
+      await scope.locator(".preview-surface[data-kind='image']").waitFor();
+      await viewShows(name);
+      await inView(() => document.querySelector("img")?.complete && document.querySelector("img").naturalWidth === 120);
+      await expectPlaced(scope);
       break;
     }
     case "huge.png":
       // Described, not loaded: the protocol would not send it whole.
       await scope.locator(".preview-message", { hasText: "This image is too large to preview." }).waitFor();
       await scope.locator(".preview-message button", { hasText: exact("Open") }).waitFor();
-      assert.equal(await scope.locator("img.preview-image").count(), 0);
+      assert.equal(await scope.locator(".preview-surface").count(), 0);
       assert.equal(await detail(scope, "Size").textContent(), "65.0 MB (68,157,440 bytes)");
       break;
     case "notes.txt":
@@ -228,10 +335,10 @@ async function expectContent(scope, name) {
       break;
     }
     case "doc.pdf": {
-      const frame = scope.locator("iframe.preview-pdf");
-      await frame.waitFor();
-      assert.match(await frame.getAttribute("src"), /^http:\/\/preview\.localhost\/\?p=/);
-      assert.equal(await frame.getAttribute("sandbox"), null);
+      await scope.locator(".preview-surface[data-kind='pdf']").waitFor();
+      assert.match(await viewShows(name), /^http:\/\/preview\.localhost\/\?p=/, "the PDF is the webview's own page");
+      await expectPlaced(scope);
+      assert.equal(await scope.locator("iframe").count(), 0, "no frame in the app's page");
       break;
     }
     case "page.html": {
@@ -241,14 +348,18 @@ async function expectContent(scope, name) {
       break;
     }
     case "tone.wav": {
-      const audio = scope.locator("audio");
-      await page.waitForFunction((el) => el.readyState >= 1, await audio.elementHandle());
+      await scope.locator(".preview-surface[data-kind='audio']").waitFor();
+      await viewShows(name);
+      await inView(() => document.querySelector("audio")?.readyState >= 1);
+      await expectPlaced(scope);
       await detail(scope, "Length").filter({ hasText: "0:01" }).waitFor();
       break;
     }
     case "clip.webm": {
-      const video = scope.locator("video.preview-video");
-      await page.waitForFunction((el) => el.readyState >= 1 && el.videoWidth === 160, await video.elementHandle());
+      await scope.locator(".preview-surface[data-kind='video']").waitFor();
+      await viewShows(name);
+      await inView(() => document.querySelector("video")?.readyState >= 1 && document.querySelector("video").videoWidth === 160);
+      await expectPlaced(scope);
       break;
     }
     case "sub":
@@ -276,6 +387,8 @@ const step = async (title, run, limit = 240_000) => {
 
 /** The order the list shows the sandbox in: folders first, then by name. */
 const ORDER = ["sub", "clip.webm", "data.json", "doc.pdf", "drawing.svg", "huge.png", "main.rs", "notes.txt", "page.html", "photo.png", "readme.md", "tone.wav"];
+/** The items shown in the preview's own webview rather than in the app's page. */
+const IN_VIEW = new Set(["clip.webm", "doc.pdf", "drawing.svg", "photo.png", "tone.wav"]);
 
 try {
   await page.emulateMedia({ colorScheme: "dark" });
@@ -373,6 +486,7 @@ try {
       await expectContent(pane, name);
       if (name === "doc.pdf") await waitForPdf("pane-doc.pdf");
       await shot(`pane-${name}`);
+      if (IN_VIEW.has(name)) await shotView(`pane-${name}`);
     });
   }
 
@@ -435,6 +549,7 @@ try {
       await expectContent(quickLook, name);
       if (name === "doc.pdf") await waitForPdf("quicklook-doc.pdf");
       await shot(`quicklook-${name}`);
+      if (IN_VIEW.has(name)) await shotView(`quicklook-${name}`);
     }
     await page.keyboard.press("ArrowLeft");
     await expectContent(quickLook, "readme.md");
@@ -492,16 +607,21 @@ try {
   await step("the same previews in the light theme", async () => {
     theme = "light";
     await page.emulateMedia({ colorScheme: "light" });
-    for (const name of ["photo.png", "main.rs", "readme.md", "data.json", "doc.pdf", "sub"]) {
+    for (const name of ["photo.png", "main.rs", "readme.md", "data.json", "doc.pdf", "clip.webm", "sub"]) {
       await row(name).click();
       await expectContent(pane, name);
       if (name === "doc.pdf") await waitForPdf("pane-doc.pdf");
       await shot(`pane-${name}`);
+      if (IN_VIEW.has(name)) await shotView(`pane-${name}`);
     }
+    // The viewer page follows the theme too.
     await row("photo.png").click();
+    await expectContent(pane, "photo.png");
+    assert.equal(await inView(() => getComputedStyle(document.body).backgroundColor), "rgb(251, 252, 253)");
     await page.keyboard.press("Space");
     await expectContent(quickLook, "photo.png");
     await shot("quicklook-photo.png");
+    await shotView("quicklook-photo.png");
     await page.keyboard.press("ArrowRight");
     await expectContent(quickLook, "readme.md");
     await shot("quicklook-readme.md");
@@ -575,42 +695,113 @@ try {
     await page.evaluate(() => document.querySelectorAll(".e2e-probe").forEach((frame) => frame.remove()));
   });
 
-  await step("the PDF frame, the one unsandboxed preview document, cannot reach the app's commands or page", async () => {
+  /**
+   * Calls commands from inside the preview's webview, through the IPC bridge Tauri injects
+   * there as everywhere: Tauri's own plugin commands, which the old in-page PDF frame could
+   * still reach, and the app's commands. Every call must be refused.
+   */
+  const commandsFromView = async () => {
+    const view = await previewView();
+    // The wait is kept out here: timers don't run in the sandboxed viewer page.
+    const call = (command, args) =>
+      Promise.race([
+        view
+          .evaluate(
+            ([command, args]) =>
+              window.__TAURI_INTERNALS__
+                ? window.__TAURI_INTERNALS__.invoke(command, args).then(
+                    (value) => `answered ${JSON.stringify(value)}`,
+                    (error) => `refused: ${error}`,
+                  )
+                : "no bridge",
+            [command, args],
+          )
+          .catch((error) => `refused: ${error.message}`),
+        new Promise((resolve) => setTimeout(() => resolve("no answer"), 4000)),
+      ]);
+    return {
+      origin: await view.evaluate(() => self.origin),
+      // Core plugin commands: granted to the app's webview by `core:default`.
+      version: await call("plugin:app|version"),
+      emit: await call("plugin:event|emit", { event: "kestrel-e2e-from-preview", payload: null }),
+      title: await call("plugin:window|title", { label: "main" }),
+      webviews: await call("plugin:webview|get_all_webviews"),
+      // The app's own commands.
+      status: await call("index_status"),
+      write: await call("new_folder", { parent: sandbox }),
+      // A file that does not exist, so even a failure of the guard would open nothing.
+      open: await call("open_path", { path: `${sandbox}\\missing.txt` }),
+    };
+  };
+
+  await step("the preview's own webview, where a PDF shows unsandboxed, can call no command at all", async () => {
+    // The app's own page may call the same core command, so a refusal below is the webview's.
+    const own = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("plugin:app|version"));
+    assert.equal(typeof own, "string");
     await row("doc.pdf").click();
     await expectContent(pane, "doc.pdf");
     await waitForPdf("pane-doc.pdf");
-    const frame = page.frames().find((f) => f.url().startsWith("http://preview.localhost/") && decodeURIComponent(f.url()).includes("doc.pdf"));
-    assert(frame, "the PDF frame is there");
-    const probe = await frame.evaluate(async (parent) => {
-      const settle = (promise) =>
-        Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve("no answer"), 3000))]).then(
-          (value) => `answered ${JSON.stringify(value)}`,
-          (error) => `refused: ${error}`,
-        );
-      let page;
-      try {
-        page = window.parent.document.title;
-      } catch (error) {
-        page = `blocked: ${error.name}`;
-      }
-      const internals = window.__TAURI_INTERNALS__;
-      return {
-        origin: self.origin,
-        page,
-        status: internals ? await settle(internals.invoke("index_status")) : "no bridge",
-        write: internals ? await settle(internals.invoke("new_folder", { parent })) : "no bridge",
-        // A file that does not exist, so even a failure of the guard would open nothing.
-        open: internals ? await settle(internals.invoke("open_path", { path: `${parent}\\missing.txt` })) : "no bridge",
-      };
-    }, sandbox);
-    assert.equal(probe.origin, "http://preview.localhost");
-    assert.equal(probe.page, "blocked: SecurityError");
-    for (const call of [probe.status, probe.write, probe.open]) {
-      assert.match(call, /^refused: Commands are not available to http:\/\/preview\.localhost/, JSON.stringify(probe));
+    const probe = await commandsFromView();
+    assert.equal(probe.origin, "http://preview.localhost", "the PDF is not sandboxed, so its origin is not opaque");
+    for (const command of ["version", "emit", "title", "webviews"]) {
+      assert.match(probe[command], /^refused: .*not allowed/, `plugin command ${command}: ${JSON.stringify(probe)}`);
+    }
+    for (const command of ["status", "write", "open"]) {
+      assert.match(probe[command], /^refused: Commands are not available to the preview view/, `${command}: ${JSON.stringify(probe)}`);
     }
     assert(!newFolderMade());
-    // The app's own page still may.
+    // And from the viewer page images and media show in, which is sandboxed as well.
+    await row("photo.png").click();
+    await expectContent(pane, "photo.png");
+    const fromImage = await commandsFromView();
+    assert.equal(fromImage.origin, "null");
+    for (const [command, outcome] of Object.entries(fromImage)) {
+      if (command !== "origin") assert(!outcome.startsWith("answered"), `${command} answered in the image viewer: ${outcome}`);
+    }
+    assert(!newFolderMade());
+    // The app's own page still may call its commands.
     assert.equal(await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("index_status").then((s) => typeof s.entries)), "number");
+  });
+
+  await step("the preview's webview lies over the pane, steps aside for the app's menus, and empties when nothing is shown", async () => {
+    await row("photo.png").click();
+    await expectContent(pane, "photo.png");
+    const surface = await pane.locator(".preview-surface").boundingBox();
+    const near = (a, b) => Math.abs(a - b) <= 2;
+    await nativeView((view) => view.visible && near(view.x, surface.x) && near(view.y, surface.y) && near(view.width, surface.width) && near(view.height, surface.height));
+    // Right-clicked at the row's far end, the menu opens over the pane.
+    const box = await row("photo.png").boundingBox();
+    await row("photo.png").click({ button: "right", position: { x: box.width - 4, y: box.height / 2 } });
+    await page.locator(".menu").waitFor();
+    const menuBox = await page.locator(".menu").boundingBox();
+    assert(menuBox.x + menuBox.width > surface.x, "the menu reaches over the preview");
+    await nativeView((view) => !view.visible);
+    await shot("pane-menu-over-view");
+    await page.keyboard.press("Escape");
+    await page.locator(".menu").waitFor({ state: "detached" });
+    await nativeView((view) => view.visible);
+    // Quick Look over the pane: its image takes the webview, and while it shows text instead,
+    // the pane's image must not show through over the dialog.
+    await list.focus();
+    await page.keyboard.press("Space");
+    await expectContent(quickLook, "photo.png");
+    const dialog = await quickLook.locator(".preview-surface").boundingBox();
+    await nativeView((view) => view.visible && near(view.width, dialog.width) && near(view.height, dialog.height));
+    await page.keyboard.press("ArrowRight");
+    await expectContent(quickLook, "readme.md");
+    await nativeView((view) => !view.visible);
+    await page.keyboard.press("Escape");
+    await quickLook.waitFor({ state: "detached" });
+    // The list followed Quick Look to readme.md, so the pane shows text now.
+    await expectContent(pane, "readme.md");
+    await nativeView((view) => !view.visible);
+    await row("photo.png").click();
+    await expectContent(pane, "photo.png");
+    await nativeView((view) => view.visible && near(view.x, surface.x) && near(view.width, surface.width));
+    await row("notes.txt").click();
+    await expectContent(pane, "notes.txt");
+    await nativeView((view) => !view.visible);
+    await inView(() => location.href === "about:blank");
   });
 
   await step("only web and mail links are handed to the shell", async () => {
@@ -642,7 +833,9 @@ try {
     assert.equal(await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("index_status").then((s) => typeof s.entries)), "number");
   });
 
-  await step("Markdown on a share cannot name another server", async () => {
+  // The check below imports the app's source modules from the dev server.
+  if (release) console.log("--  Markdown on a share cannot name another server: skipped (needs a dev build)");
+  else await step("Markdown on a share cannot name another server", async () => {
     // Worked out in the app's own page, from its own modules, without loading anything: the
     // rendered HTML is only parsed, never shown.
     const result = await page.evaluate(async () => {
@@ -703,13 +896,13 @@ try {
 
     await row("picture.png").click();
     await pane.locator(".preview-message", { hasText: "stored online only" }).waitFor();
-    assert.equal(await pane.locator("img.preview-image").count(), 0);
+    assert.equal(await pane.locator(".preview-surface").count(), 0);
     await shot("pane-online-only");
     await pane.locator(".preview-action", { hasText: "Download and preview" }).click();
-    const shown = pane.locator("img.preview-image");
-    await shown.waitFor();
-    await page.waitForFunction((el) => el.complete && el.naturalWidth === 160, await shown.elementHandle());
-    assert.match(await shown.getAttribute("src"), /&download=1$/);
+    await pane.locator(".preview-surface[data-kind='image']").waitFor();
+    assert.match(await viewShows("picture.png"), /&download=1(&|$)/);
+    await inView(() => document.querySelector("img")?.complete && document.querySelector("img").naturalWidth === 160);
+    assert.match(await inView(() => document.querySelector("img").getAttribute("src")), /&download=1$/);
     await page.keyboard.press("Control+l");
     await page.locator(".address-input").fill(sandbox);
     await page.keyboard.press("Enter");
@@ -727,7 +920,7 @@ try {
   throw error;
 } finally {
   // Should something have taken the window away from the app, bring it back first.
-  if (!page.url().startsWith(devUrl)) await page.goto(devUrl).catch(() => {});
+  if (!page.url().startsWith(appUrl)) await page.goto(appUrl).catch(() => {});
   await page.emulateMedia({ colorScheme: null }).catch(() => {});
   await page.keyboard.press("Escape").catch(() => {});
   // Leave the pane closed and the app somewhere that still exists, then remove the folder.

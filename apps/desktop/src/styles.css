@@ -1433,7 +1433,11 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
-/* Images are centred and never enlarged; a checkerboard shows through transparency. */
+/*
+ * Images, video, sound and PDF documents show in the preview's own webview, laid over these
+ * places (previewview.rs, lib/previewSurface.ts). Its viewer page centres an image without
+ * enlarging it, on a checkerboard that shows through transparency.
+ */
 .preview-canvas {
   position: relative;
   flex: 1;
@@ -1441,14 +1445,9 @@ code {
   margin: 14px;
 }
 
-.preview-image {
+.preview-image-surface {
   position: absolute;
   inset: 0;
-  max-width: 100%;
-  max-height: 100%;
-  margin: auto;
-  background: repeating-conic-gradient(var(--raised) 0 25%, var(--surface) 0 50%) 0 0 / 16px 16px;
-  box-shadow: 0 0 0 1px var(--line);
 }
 
 .preview-video,
@@ -1470,9 +1469,11 @@ code {
   padding: 24px;
 }
 
-.preview-audio audio {
+.preview-audio-controls {
+  flex: none;
   width: 100%;
   max-width: 360px;
+  height: 54px;
 }
 
 .preview-text {

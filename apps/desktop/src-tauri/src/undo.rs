@@ -6,12 +6,20 @@
 //!
 //! Permanent deletions can't be undone. After one, the history before it is dropped, because
 //! undoing older operations around the gap could act on the wrong items, and the UI says why.
+//!
+//! The history survives a restart: every change to it is written to the app's database
+//! (`kestrel_db::undo`) as it happens, and the next start brings it back, leaving out the
+//! operations none of whose items are still where they were left.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
+use kestrel_db::Db;
+use kestrel_db::undo::{Stack, StoredEntry, UndoChange};
 use parking_lot::Mutex;
 use serde::Serialize;
-use tauri::{State, WebviewWindow};
+use tauri::{State, Window};
 
 use crate::fileops::{self, Done, Op, Options, Outcome, file_name, parent};
 
@@ -51,6 +59,23 @@ pub struct Journal {
     history: Mutex<History>,
     /// Held while an undo or redo runs, so two never overlap.
     busy: Mutex<()>,
+    /// Where the history is kept between runs; without one it lasts as long as the app.
+    store: Option<Store>,
+}
+
+/// The history as kept in the database.
+struct Store {
+    db: Arc<Db>,
+    /// What the database holds: each operation's stack and number of steps (which an undo
+    /// that leaves some steps behind reduces), and the erased note. Only differences are
+    /// written, so a large batch rename is stored once, not again with every later operation.
+    saved: Mutex<Saved>,
+}
+
+#[derive(Default)]
+struct Saved {
+    entries: HashMap<u64, (Stack, usize)>,
+    erased: Option<String>,
 }
 
 /// What the Undo and Redo commands would do now, for menus.
@@ -179,6 +204,7 @@ impl Journal {
         if !erased.is_empty() {
             history.undo.clear();
             history.erased = Some(subjects(&erased));
+            self.persist(&history);
             return;
         }
         history.erased = None;
@@ -187,6 +213,7 @@ impl Journal {
         if history.undo.len() > LIMIT {
             history.undo.remove(0);
         }
+        self.persist(&history);
     }
 
     pub fn state(&self) -> UndoState {
@@ -303,6 +330,7 @@ impl Journal {
         if let Some(next) = next {
             to.push(next);
         }
+        self.persist(&guard);
         drop(guard);
 
         let verb = if undoing { "Undid" } else { "Redid" };
@@ -344,7 +372,167 @@ impl Journal {
         let mut history = self.history.lock();
         let stack = if direction == Direction::Undo { &mut history.undo } else { &mut history.redo };
         stack.retain(|entry| entry.id != id);
+        self.persist(&history);
     }
+}
+
+// ---------- keeping the history between runs ----------
+
+impl Journal {
+    /// A journal kept in `db`. Call [`Journal::restore`] once to bring back the history of
+    /// earlier runs; operations recorded before that are numbered after every stored one.
+    pub fn with_store(db: Arc<Db>) -> Self {
+        let mut journal = Self::default();
+        journal.history.get_mut().next = db.undo_last_id().unwrap_or_else(|error| {
+            eprintln!("could not read the undo history: {error}");
+            0
+        });
+        journal.store = Some(Store { db, saved: Mutex::new(Saved::default()) });
+        journal
+    }
+
+    /// Writes whatever changed in `history` since the last write. A failure is reported and
+    /// tried again with the next change; it never stops an operation.
+    fn persist(&self, history: &History) {
+        let Some(store) = &self.store else { return };
+        let mut saved = store.saved.lock();
+        let mut now = HashMap::new();
+        let mut written = Vec::new();
+        for (stack, entries) in [(Stack::Undo, &history.undo), (Stack::Redo, &history.redo)] {
+            for entry in entries {
+                let shape = (stack, entry.steps.len());
+                now.insert(entry.id, shape);
+                if saved.entries.get(&entry.id) == Some(&shape) {
+                    continue;
+                }
+                match serde_json::to_string(&entry.steps) {
+                    Ok(steps) => written.push(StoredEntry { id: entry.id, stack, label: entry.label.clone(), steps }),
+                    Err(error) => eprintln!("could not save the undo history: {error}"),
+                }
+            }
+        }
+        let removed: Vec<u64> = saved.entries.keys().filter(|id| !now.contains_key(id)).copied().collect();
+        if written.is_empty() && removed.is_empty() && saved.erased == history.erased {
+            return;
+        }
+        let change = UndoChange { removed: &removed, written: &written, erased: history.erased.as_deref() };
+        match store.db.update_undo(&change, LIMIT) {
+            Ok(()) => {
+                saved.entries = now;
+                saved.erased = history.erased.clone();
+            }
+            Err(error) => eprintln!("could not save the undo history: {error}"),
+        }
+    }
+
+    /// Brings back the history kept from earlier runs. An operation none of whose items are
+    /// still where it left them (renamed or deleted since, by Kestrel or anything else, or gone
+    /// from the Recycle Bin) can never be reversed, and is left out without a word; one with
+    /// some of its items still there stays, and its undo reverses those and says what was
+    /// missing, as it would have before the restart. Called once, at start, on a thread of
+    /// its own: looking for deleted items in the Recycle Bin can take a moment.
+    pub fn restore(&self) {
+        let Some(store) = &self.store else { return };
+        let mut history = self.history.lock();
+        let (stored, erased) = match (store.db.undo_entries(), store.db.undo_erased()) {
+            (Ok(stored), Ok(erased)) => (stored, erased),
+            (Err(error), _) | (_, Err(error)) => return eprintln!("could not read the undo history: {error}"),
+        };
+        let parsed: Vec<(StoredEntry, Option<Vec<Done>>)> = stored
+            .into_iter()
+            .map(|entry| {
+                let steps = serde_json::from_str(&entry.steps).ok();
+                (entry, steps)
+            })
+            .collect();
+        {
+            // What the database holds now; whatever is not kept is removed from it below.
+            let mut saved = store.saved.lock();
+            for (entry, steps) in &parsed {
+                saved.entries.insert(entry.id, (entry.stack, steps.as_ref().map_or(usize::MAX, Vec::len)));
+            }
+            saved.erased = erased.clone();
+        }
+        let readable: Vec<(StoredEntry, Vec<Done>)> =
+            parsed.into_iter().filter_map(|(entry, steps)| Some((entry, steps?))).collect();
+        let valid = still_reversible(&readable.iter().map(|(_, steps)| steps.as_slice()).collect::<Vec<_>>());
+        let (mut undo, mut redo) = (Vec::new(), Vec::new());
+        for ((stored, steps), keep) in readable.into_iter().zip(valid) {
+            if keep {
+                let entry = Entry { id: stored.id, label: stored.label, steps };
+                if stored.stack == Stack::Undo { undo.push(entry) } else { redo.push(entry) }
+            }
+        }
+        // Anything recorded meanwhile is newer: it goes on top, and it ended the redo history.
+        let fresh = history.undo.is_empty() && history.redo.is_empty() && history.erased.is_none();
+        undo.append(&mut history.undo);
+        let excess = undo.len().saturating_sub(LIMIT);
+        undo.drain(..excess);
+        history.undo = undo;
+        if fresh {
+            history.redo = redo;
+            history.erased = erased;
+        }
+        history.next = history.next.max(history.undo.iter().chain(&history.redo).map(|entry| entry.id).max().unwrap_or(0));
+        self.persist(&history);
+    }
+}
+
+/// For each operation, given by its steps, whether reversing it would still find any of its
+/// items where the operation left them, by the checks [`Journal::reverse`] makes.
+fn still_reversible(operations: &[&[Done]]) -> Vec<bool> {
+    let ops: Vec<Vec<Op>> = operations.iter().map(|steps| steps.iter().filter_map(inverse).collect()).collect();
+    // Deleted items are looked for in the Recycle Bin all at once.
+    let wanted: Vec<(String, fileops::Window)> = ops
+        .iter()
+        .flatten()
+        .filter_map(|op| match op {
+            Op::Restore { path, deleted } => Some((path.clone(), *deleted)),
+            _ => None,
+        })
+        .collect();
+    let mut in_bin = in_recycle_bin(&wanted).into_iter();
+    let in_place = |op: &Op| {
+        source(op).is_none_or(|path| Path::new(path).exists()) && destination(op).is_none_or(|folder| Path::new(&folder).is_dir())
+    };
+    ops.iter()
+        .map(|ops| {
+            // Every Restore takes its answer in turn, so all of them are asked, not just the first.
+            ops.iter().fold(false, |any, op| {
+                let found = !matches!(op, Op::Restore { .. }) || in_bin.next().unwrap_or(true);
+                in_place(op) && found || any
+            })
+        })
+        .collect()
+}
+
+/// Whether each item deleted from a path within a window of time is still in the Recycle Bin.
+/// If the bin can't be read, every item counts as there: the undo itself will say otherwise.
+fn in_recycle_bin(wanted: &[(String, fileops::Window)]) -> Vec<bool> {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let all_there = || vec![true; wanted.len()];
+    std::thread::spawn({
+        let wanted = wanted.to_vec();
+        move || {
+            // SAFETY: COM is initialised on this thread for the search and uninitialised after
+            // the last interface pointer from it is dropped.
+            unsafe {
+                if CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_err() {
+                    return None;
+                }
+                let found = crate::recycle::find(&wanted).ok().map(|items| items.iter().map(Option::is_some).collect());
+                CoUninitialize();
+                found
+            }
+        }
+    })
+    .join()
+    .ok()
+    .flatten()
+    .unwrap_or_else(all_there)
 }
 
 #[tauri::command]
@@ -354,13 +542,13 @@ pub fn undo_state(journal: State<Journal>) -> UndoState {
 
 /// Reverses the latest operation, with the shell's progress and conflict windows.
 #[tauri::command(async)]
-pub fn undo(window: WebviewWindow, journal: State<Journal>) -> Result<Report, String> {
+pub fn undo(window: Window, journal: State<Journal>) -> Result<Report, String> {
     journal.undo(crate::interactive(&window))
 }
 
 /// Repeats the latest undone operation.
 #[tauri::command(async)]
-pub fn redo(window: WebviewWindow, journal: State<Journal>) -> Result<Report, String> {
+pub fn redo(window: Window, journal: State<Journal>) -> Result<Report, String> {
     journal.redo(crate::interactive(&window))
 }
 
@@ -577,6 +765,122 @@ mod tests {
         assert_eq!(names_in(&dir.join("dst/shared")), ["new.txt", "old.txt"], "nothing moved");
         assert_eq!(journal.state().undo, None, "the entry is dropped so older ones stay reachable");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A journal kept in a database file of its own in `dir`, as the app keeps one in its data
+    /// folder, brought back from whatever that file already holds.
+    fn stored_journal(dir: &std::path::Path) -> (Journal, Arc<Db>) {
+        let db = Arc::new(Db::open(&dir.join("kestrel.db")).unwrap());
+        let journal = Journal::with_store(db.clone());
+        journal.restore();
+        (journal, db)
+    }
+
+    fn rename(path: &std::path::Path, name: &str) -> Outcome {
+        execute(Request::Rename { path: text(path), new_name: name.into() }, QUIET).unwrap()
+    }
+
+    #[test]
+    fn the_history_survives_a_restart_without_what_no_longer_matches_the_disk() {
+        let dir = sandbox("undo-restart");
+        let files = dir.join("files");
+        fs::create_dir_all(&files).unwrap();
+        for name in ["one.txt", "two.txt", "three.txt"] {
+            fs::write(files.join(name), name).unwrap();
+        }
+        {
+            let (journal, _) = stored_journal(&dir);
+            journal.record(&rename(&files.join("one.txt"), "uno.txt"));
+            journal.record(&rename(&files.join("two.txt"), "dos.txt"));
+            journal.record(&rename(&files.join("three.txt"), "tres.txt"));
+            journal.undo(QUIET).unwrap();
+            assert_eq!(names_in(&files), ["dos.txt", "three.txt", "uno.txt"]);
+        }
+        // While the app is closed, another program deletes the second renamed file.
+        fs::remove_file(files.join("dos.txt")).unwrap();
+
+        let (journal, db) = stored_journal(&dir);
+        let state = journal.state();
+        assert_eq!(state, UndoState { undo: Some("rename of one.txt".into()), redo: Some("rename of three.txt".into()), erased: None });
+        assert_eq!(db.undo_entries().unwrap().len(), 2, "the operation that can't be undone any more is gone for good");
+        journal.redo(QUIET).unwrap();
+        assert_eq!(names_in(&files), ["tres.txt", "uno.txt"]);
+        journal.undo(QUIET).unwrap();
+        assert_eq!(journal.undo(QUIET).unwrap().message, "Undid rename of one.txt");
+        assert_eq!(names_in(&files), ["one.txt", "three.txt"]);
+        assert_eq!(journal.state().undo, None);
+        drop((journal, db));
+        // And again, after one more restart: the stacks are as the last run left them.
+        let (journal, _) = stored_journal(&dir);
+        assert_eq!(journal.state().redo.as_deref(), Some("rename of one.txt"));
+        drop(journal);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_stored_history_keeps_the_newest_hundred_and_drops_what_is_gone() {
+        let dir = sandbox("undo-bounded");
+        let gone = text(&dir.join("gone"));
+        {
+            let (journal, db) = stored_journal(&dir);
+            for n in 0..120 {
+                let step = Done::Renamed { from: format!(r"{gone}\{n}.txt"), to: format!(r"{gone}\{n}-renamed.txt") };
+                journal.record(&Outcome { completed: true, done: vec![(0, step)], missing: Vec::new() });
+            }
+            let stored = db.undo_entries().unwrap();
+            assert_eq!(stored.len(), LIMIT);
+            assert_eq!(stored.last().unwrap().label, "rename of 119.txt");
+            assert_eq!(stored.first().unwrap().label, "rename of 20.txt");
+        }
+        // None of those files exists, so none of the operations comes back.
+        let (journal, db) = stored_journal(&dir);
+        assert_eq!(journal.state(), UndoState::default());
+        assert!(db.undo_entries().unwrap().is_empty());
+        // New operations are numbered after the ones that were stored, and kept.
+        fs::write(dir.join("new.txt"), b"x").unwrap();
+        journal.record(&rename(&dir.join("new.txt"), "newer.txt"));
+        assert!(db.undo_entries().unwrap()[0].id > 120);
+        drop((journal, db));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_permanent_deletion_still_blocks_undo_after_a_restart() {
+        let dir = sandbox("undo-restart-erase");
+        fs::write(dir.join("gone.txt"), b"x").unwrap();
+        {
+            let (journal, _) = stored_journal(&dir);
+            journal.record(&execute(Request::Delete { paths: vec![text(&dir.join("gone.txt"))], permanent: true }, QUIET).unwrap());
+        }
+        let (journal, _) = stored_journal(&dir);
+        assert_eq!(journal.state().erased.as_deref(), Some("gone.txt"));
+        assert_eq!(journal.undo(QUIET).unwrap_err(), "gone.txt was deleted permanently, so it can't be undone.");
+        drop(journal);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Sends one tiny file named kestrel-test-* to the real Recycle Bin and, after a restart,
+    /// brings it back through the restored history, so the Recycle Bin ends as it began.
+    #[test]
+    fn a_deletion_is_undone_from_the_recycle_bin_after_a_restart() {
+        let dir = sandbox("undo-restart-recycle");
+        let pid = std::process::id();
+        let name = format!("kestrel-test-{pid}-restart.txt");
+        fs::write(dir.join(&name), b"deleted").unwrap();
+        {
+            let (journal, _) = stored_journal(&dir.join("..").join(format!("kestrel-fileops-undo-restart-recycle-db-{pid}")));
+            journal.record(&execute(Request::Delete { paths: vec![text(&dir.join(&name))], permanent: false }, QUIET).unwrap());
+            assert!(!dir.join(&name).exists());
+        }
+        let store = dir.join("..").join(format!("kestrel-fileops-undo-restart-recycle-db-{pid}"));
+        let (journal, _) = stored_journal(&store);
+        assert_eq!(journal.state().undo, Some(format!("delete of {name}")), "found in the Recycle Bin, so kept");
+        assert_eq!(journal.undo(QUIET).unwrap().message, format!("Undid delete of {name}"));
+        assert_eq!(fs::read(dir.join(&name)).unwrap(), b"deleted");
+        assert_eq!(crate::recycle::records_mentioning(&format!("kestrel-test-{pid}-restart")), Vec::<String>::new());
+        drop(journal);
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&store).unwrap();
     }
 
     /// Sends two tiny files named kestrel-test-* to the real Recycle Bin and brings both back

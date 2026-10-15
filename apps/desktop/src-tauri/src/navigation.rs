@@ -6,19 +6,24 @@
 //! window refuses to go. The window has no title bar or back button, so a page that replaced the
 //! app would leave the user stranded on it, and it could pass itself off as Kestrel.
 //!
-//! Only the top-level page is guarded; frames (the preview pane's PDF viewer) navigate freely
-//! inside the page. The first load of the page is never checked: Tauri asks plugins only once
-//! the window exists.
+//! Only top-level pages are guarded; frames navigate freely inside the page. The preview's own
+//! webview, which shows images, media and PDF documents, may only show the preview protocol.
+//! The first load of the page is never checked: Tauri asks plugins only once the window exists.
 
 use tauri::plugin::{Builder, TauriPlugin};
 use tauri::utils::config::FrontendDist;
 use tauri::{Config, Manager, Runtime, Url};
 
-/// The plugin that refuses every top-level navigation away from the app's own origin.
+/// The plugin that refuses every top-level navigation away from the app's own origin. The
+/// preview's own webview (`previewview.rs`) is held to the preview protocol instead.
 pub fn guard<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("navigation-guard")
         .on_navigation(|webview, url| {
-            let allowed = homes(webview.config()).iter().any(|home| same_origin(url, home));
+            let allowed = if webview.label() == crate::previewview::LABEL {
+                crate::previewview::allowed(url)
+            } else {
+                homes(webview.config()).iter().any(|home| same_origin(url, home))
+            };
             if !allowed {
                 eprintln!("refused to navigate the window away from the app, to {url}");
             }

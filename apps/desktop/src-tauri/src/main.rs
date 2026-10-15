@@ -13,6 +13,7 @@ mod lru;
 mod navigation;
 mod places;
 mod preview;
+mod previewview;
 mod recycle;
 mod shellmenu;
 mod thumbs;
@@ -24,7 +25,7 @@ use std::ptr::null;
 use std::sync::Arc;
 
 use tauri::http::{Response, StatusCode};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, Window};
 use windows_sys::Win32::UI::Shell::{SHObjectProperties, ShellExecuteW};
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
@@ -107,11 +108,15 @@ fn locate_names(engine: Shared, set: u32, names: Vec<String>) -> Vec<(u32, u32)>
 }
 
 /// The window's handle, for parenting shell dialogs and owning the clipboard.
-fn owner(window: &WebviewWindow) -> Option<isize> {
+///
+/// Commands take the `Window`, never a `WebviewWindow`: the main window also holds the
+/// preview's own webview (`previewview.rs`), and Tauri refuses to hand a command a
+/// `WebviewWindow` for a window with more than one webview.
+fn owner(window: &Window) -> Option<isize> {
     window.hwnd().ok().map(|hwnd| hwnd.0 as isize)
 }
 
-fn interactive(window: &WebviewWindow) -> Options {
+fn interactive(window: &Window) -> Options {
     Options { owner: owner(window), quiet: false }
 }
 
@@ -119,7 +124,7 @@ fn interactive(window: &WebviewWindow) -> Options {
 /// `false` if the user cancelled.
 #[tauri::command(async)]
 fn delete_items(
-    window: WebviewWindow,
+    window: Window,
     engine: Shared,
     journal: State<Journal>,
     set: u32,
@@ -138,7 +143,7 @@ fn delete_items(
 /// Renames an item and returns the name it ended up with, which differs from the one asked
 /// for when the user resolves a conflict by keeping both. `None` if nothing was renamed.
 #[tauri::command(async)]
-fn rename_item(window: WebviewWindow, journal: State<Journal>, path: String, new_name: String) -> Result<Option<String>, String> {
+fn rename_item(window: Window, journal: State<Journal>, path: String, new_name: String) -> Result<Option<String>, String> {
     let outcome = fileops::execute(Request::Rename { path, new_name }, interactive(&window))?;
     journal.record(&outcome);
     Ok(outcome.results().find_map(|done| match done {
@@ -149,7 +154,7 @@ fn rename_item(window: WebviewWindow, journal: State<Journal>, path: String, new
 
 /// Creates a folder with the first unused "New folder" name and returns the name it got.
 #[tauri::command(async)]
-fn new_folder(window: WebviewWindow, journal: State<Journal>, parent: String) -> Result<String, String> {
+fn new_folder(window: Window, journal: State<Journal>, parent: String) -> Result<String, String> {
     let name = fileops::unused_name(&parent, "New folder");
     let outcome = fileops::execute(Request::NewFolder { parent, name: name.clone() }, interactive(&window))?;
     journal.record(&outcome);
@@ -165,7 +170,7 @@ fn new_folder(window: WebviewWindow, journal: State<Journal>, parent: String) ->
 /// Puts the selected rows on the clipboard as files. Returns how many.
 #[tauri::command(async)]
 fn copy_items(
-    window: WebviewWindow,
+    window: Window,
     engine: Shared,
     set: u32,
     ranges: Vec<(u32, u32)>,
@@ -187,7 +192,7 @@ fn can_paste() -> bool {
 /// items ended up with there ("name - Copy" and conflict renames included), or an empty list
 /// if there was nothing to paste or the user cancelled.
 #[tauri::command(async)]
-fn paste_items(window: WebviewWindow, journal: State<Journal>, destination: String) -> Result<Vec<String>, String> {
+fn paste_items(window: Window, journal: State<Journal>, destination: String) -> Result<Vec<String>, String> {
     let Some(clip) = clipboard::files(owner(&window))? else { return Ok(Vec::new()) };
     let kind = if clip.cut { Transfer::Move } else { Transfer::Copy };
     let request = Request::Transfer { sources: clip.paths, destination, kind };
@@ -208,7 +213,7 @@ fn paste_items(window: WebviewWindow, journal: State<Journal>, destination: Stri
 
 /// Opens the standard Windows Properties dialog for a file or folder.
 #[tauri::command(async)]
-fn show_properties(window: WebviewWindow, path: String) -> Result<(), String> {
+fn show_properties(window: Window, path: String) -> Result<(), String> {
     let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
     let owner = owner(&window).map_or(std::ptr::null_mut(), |hwnd| hwnd as _);
     // SAFETY: `wide` is NUL-terminated and outlives the call; the shell shows the dialog on a
@@ -305,14 +310,16 @@ fn main() {
     let engine = Arc::new(Engine::default());
     let icons = Arc::new(IconService::start());
     let thumbs = ThumbService::start(icons.clone());
+    let database = open_database();
 
     tauri::Builder::default()
         // The window never leaves the app's own page; see navigation.rs.
         .plugin(navigation::guard())
         .manage(engine.clone())
         .manage(Watcher::default())
-        .manage(Journal::default())
-        .manage(open_database())
+        // The undo history is kept in the database, and brought back in `setup`.
+        .manage(Journal::with_store(database.clone()))
+        .manage(database)
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
             thumbs.handle(&request, responder)
@@ -366,6 +373,8 @@ fn main() {
             preview::preview_text,
             preview::preview_details,
             preview::open_link,
+            previewview::preview_surface,
+            previewview::preview_surface_return_focus,
             dragdrop::start_drag,
             dragdrop::drop_items,
             dragdrop::drop_effect,
@@ -377,11 +386,15 @@ fn main() {
         ]))
         .on_window_event(|_window, event| dragdrop::on_window_event(event))
         .setup(move |app| {
-            if let Some(window) = app.get_webview_window("main")
+            if let Some(window) = app.get_window("main")
                 && let Err(error) = dragdrop::install(&window)
             {
                 eprintln!("Dragging files out is unavailable: {error}");
             }
+            let restoring = app.handle().clone();
+            std::thread::Builder::new()
+                .name("kestrel-undo-restore".into())
+                .spawn(move || restoring.state::<Journal>().restore())?;
             let handle = app.handle().clone();
             let engine = app.state::<Arc<Engine>>().inner().clone();
             std::thread::Builder::new()
