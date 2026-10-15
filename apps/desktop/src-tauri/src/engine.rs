@@ -14,6 +14,8 @@ use kestrel_query::{Clause, ClauseKind, Clock, Sort, SortKey, compile, parse, se
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
+use crate::visibility::Visibility;
+
 /// FILETIME ticks at the Unix epoch.
 const FILETIME_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
 /// Result sets kept alive at once. The UI releases sets it no longer shows, so this only
@@ -241,8 +243,15 @@ impl Engine {
     }
 
     /// Lists a folder from disk and brings the index into line with what was found, so the
-    /// listing is always current even when the index is stale.
+    /// listing is always current even when the index is stale. Hidden items are included: the
+    /// commands use [`Engine::list_dir_with`], and this stays for callers that want everything.
+    #[allow(dead_code)]
     pub fn list_dir(&self, path: &str, spec: SortSpec) -> Result<Listing, String> {
+        self.list_dir_with(path, spec, Visibility::ALL)
+    }
+
+    /// [`Engine::list_dir`], leaving out the entries `visibility` excludes.
+    pub fn list_dir_with(&self, path: &str, spec: SortSpec, visibility: Visibility) -> Result<Listing, String> {
         let started = Instant::now();
         let path = normalize(path);
         let items = walk::list(&path).map_err(|e| format!("Can't open {path}: {e}"))?;
@@ -255,13 +264,15 @@ impl Engine {
                 let mut sync = Sync::default();
                 sync.dir(&mut index, dir, items);
                 sync.finish(&mut index);
-                let mut ids: Vec<EntryId> = index.children(dir).collect();
+                let mut ids: Vec<EntryId> =
+                    index.children(dir).filter(|&id| visibility.shows(index.attrs(id))).collect();
                 sort(&index, &mut ids, sort_spec);
                 let max = ids.iter().map(|&id| index.size(id)).max().unwrap_or(0);
                 (Rows::Indexed(ids), index.path(dir), max)
             }
             None => {
                 let mut items = items;
+                items.retain(|item| visibility.shows(item.meta.attrs));
                 sort_live(&mut items, sort_spec);
                 let max = items.iter().map(|i| i.meta.size).max().unwrap_or(0);
                 (Rows::Live { dir: path.clone(), items }, path, max)
@@ -274,8 +285,21 @@ impl Engine {
         Ok(Listing { set, total, path: shown_path, max_size, took_us: started.elapsed().as_micros() as u64 })
     }
 
-    /// Runs a query, optionally restricted to the folder `scope`.
+    /// Runs a query, optionally restricted to the folder `scope`. Hidden items are included,
+    /// as for [`Engine::list_dir`].
+    #[allow(dead_code)]
     pub fn search(&self, text: &str, scope: Option<&str>, spec: SortSpec) -> Result<Listing, String> {
+        self.search_with(text, scope, spec, Visibility::ALL)
+    }
+
+    /// [`Engine::search`], leaving out the entries `visibility` excludes.
+    pub fn search_with(
+        &self,
+        text: &str,
+        scope: Option<&str>,
+        spec: SortSpec,
+        visibility: Visibility,
+    ) -> Result<Listing, String> {
         let started = Instant::now();
         let mut query = parse(text, Clock::local()).map_err(|e| e.to_string())?;
         if let Some(scope) = scope {
@@ -288,6 +312,9 @@ impl Engine {
         let index = self.index.read();
         let compiled = compile(&query, &index).map_err(|e| e.to_string())?;
         let mut ids = search(&index, &compiled, &cancel).ok_or("Superseded by a newer search")?;
+        if !visibility.hidden {
+            ids.retain(|&id| visibility.shows(index.attrs(id)));
+        }
         sort(&index, &mut ids, spec.resolve(false));
         let max_size = ids.iter().map(|&id| index.size(id)).max().unwrap_or(0);
         let rows = Rows::Indexed(ids);

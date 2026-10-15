@@ -1,13 +1,16 @@
-import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
+import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 
 import { api, iconUrl, type Listing, type Marks, type Row, type SortKey, type SortSpec } from "../lib/api";
 import { formatDate, formatSize } from "../lib/format";
 import { Selection } from "../lib/selection";
+import { geometry, keyTarget, sameGeometry } from "../lib/viewLayout";
+import { VIEW_MODES, displayName, listingLocation, setViewMode, showExtensions, viewModeAt } from "../lib/views";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
+import { ViewItem } from "./ViewItem";
 
-const ROW_HEIGHT = 28;
 const PAGE_SIZE = 128;
-const OVERSCAN = 8;
+/** Pixels rendered beyond each edge of the view, so short scrolls never show a gap. */
+const OVERSCAN_PX = 224;
 /** Pages kept in memory per list; the rest are refetched on demand in about a millisecond. */
 const MAX_PAGES = 48;
 /**
@@ -17,6 +20,10 @@ const MAX_PAGES = 48;
  */
 const MAX_SCROLL_HEIGHT = 8_000_000;
 const TYPE_AHEAD_RESET_MS = 700;
+/** How long scrolling must pause before thumbnails are asked for. */
+const THUMB_DELAY_MS = 150;
+/** Wheel travel, with Ctrl held, that steps to the next view size. */
+const ZOOM_STEP = 100;
 
 /** Actions the list asks its owner to carry out on the current selection or folder. */
 export type ListCommand =
@@ -76,8 +83,10 @@ const SEARCH_COLUMNS: Column[] = [
 export function FileList(props: Props) {
   let viewport!: HTMLDivElement;
   const [height, setHeight] = createSignal(0);
-  const [scrollTop, setScrollTop] = createSignal(0);
-  /** Scroll offset in list pixels, which differs from `scrollTop` when the scrollbar is scaled. */
+  const [width, setWidth] = createSignal(0);
+  /** The viewport's scroll position along the view's scroll axis: down, or across for the list view. */
+  const [scrollPos, setScrollPos] = createSignal(0);
+  /** Scroll offset in list pixels, which differs from `scrollPos` when the scrollbar is scaled. */
   const [offset, setOffset] = createSignal(0);
   const [loadedTick, setLoadedTick] = createSignal(0);
   const [selection, setSelection] = createSignal(Selection.empty);
@@ -85,7 +94,12 @@ export function FileList(props: Props) {
   /** Row whose name is being edited, or -1. */
   const [renaming, setRenaming] = createSignal(-1);
   const [menu, setMenu] = createSignal<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
+  /** The view is being scrolled, so thumbnails wait until it pauses. */
+  const [scrolling, setScrolling] = createSignal(false);
   let anchor = -1;
+  let scrollPause: number | undefined;
+  /** Ctrl+wheel travel not yet turned into a change of view size. */
+  let zoomTravel = 0;
 
   const loadedPages = new Map<number, Row[]>();
   const requested = new Set<number>();
@@ -98,13 +112,20 @@ export function FileList(props: Props) {
   const total = () => props.listing?.total ?? 0;
   const isSearch = () => props.listing?.path === "";
   const columns = () => (isSearch() ? SEARCH_COLUMNS : FOLDER_COLUMNS);
-  const listHeight = () => total() * ROW_HEIGHT;
-  const scrollHeight = () => Math.min(listHeight(), MAX_SCROLL_HEIGHT);
+  /** The view mode remembered for the folder, or the search, on screen. */
+  const mode = () => viewModeAt(listingLocation(props.listing));
+  const layout = createMemo(() => geometry(mode(), width(), height()), undefined, { equals: sameGeometry });
+  const vertical = () => layout().axis === "y";
+  /** The viewport's extent along the scroll axis. */
+  const extent = () => (vertical() ? height() : width());
+  const lineCount = () => Math.ceil(total() / layout().perLine);
+  const listExtent = () => lineCount() * layout().lineSize;
+  const scrollExtent = () => Math.min(listExtent(), MAX_SCROLL_HEIGHT);
   const scale = () => {
-    const scrollable = scrollHeight() - height();
-    return listHeight() > scrollHeight() && scrollable > 0 ? (listHeight() - height()) / scrollable : 1;
+    const scrollable = scrollExtent() - extent();
+    return listExtent() > scrollExtent() && scrollable > 0 ? (listExtent() - extent()) / scrollable : 1;
   };
-  const maxOffset = () => Math.max(0, listHeight() - height());
+  const maxOffset = () => Math.max(0, listExtent() - extent());
   /** Identifies the rows currently behind the list; responses for anything else are dropped. */
   const contentKey = () => `${props.listing?.set}:${props.revision}`;
   /**
@@ -128,24 +149,59 @@ export function FileList(props: Props) {
   const resetTypeAhead = () => void (typeAhead.prefix = "");
 
   onMount(() => {
-    const observer = new ResizeObserver(() => setHeight(viewport.clientHeight));
+    const observer = new ResizeObserver(() =>
+      batch(() => {
+        setHeight(viewport.clientHeight);
+        setWidth(viewport.clientWidth);
+      }),
+    );
     observer.observe(viewport);
-    onCleanup(() => observer.disconnect());
+    onCleanup(() => {
+      observer.disconnect();
+      clearTimeout(scrollPause);
+    });
     props.focusRef(() => viewport.focus());
   });
+
+  /** The viewport's own scroll position along the scroll axis. */
+  const readScroll = () => (vertical() ? viewport.scrollTop : viewport.scrollLeft);
+  const writeScroll = (position: number) => {
+    if (vertical()) viewport.scrollTop = position;
+    else viewport.scrollLeft = position;
+  };
+
+  /** The scroll position last set by `scrollTo`, as the viewport reported it back. */
+  let ownScroll = -1;
 
   const scrollTo = (target: number) => {
     const next = Math.min(Math.max(0, target), maxOffset());
     setOffset(next);
-    viewport.scrollTop = next / scale();
-    setScrollTop(viewport.scrollTop);
+    writeScroll(next / scale());
+    ownScroll = readScroll();
+    setScrollPos(ownScroll);
   };
 
+  /** Scrolls just far enough to show the whole line holding `row`. */
   const reveal = (row: number) => {
-    const top = row * ROW_HEIGHT;
-    if (top < offset()) scrollTo(top);
-    else if (top + ROW_HEIGHT > offset() + height()) scrollTo(top + ROW_HEIGHT - height());
+    const { perLine, lineSize } = layout();
+    const start = Math.floor(row / perLine) * lineSize;
+    if (start < offset()) scrollTo(start);
+    else if (start + lineSize > offset() + extent()) scrollTo(start + lineSize - extent());
   };
+
+  // A new view mode, or a resize that changes how many items fit in a line, keeps the same
+  // items in view: the focused one if there is one, otherwise the first one showing.
+  createEffect(
+    on(layout, (next, previous) => {
+      if (!previous) return;
+      const first = Math.floor(offset() / previous.lineSize) * previous.perLine;
+      // A position along the other axis belongs to the previous view.
+      viewport.scrollTop = 0;
+      viewport.scrollLeft = 0;
+      scrollTo(Math.floor(first / next.perLine) * next.lineSize);
+      if (focused() >= 0) reveal(focused());
+    }),
+  );
 
   /** Selects the items an operation just created, once the listing that contains them is in. */
   const selectPending = async () => {
@@ -193,18 +249,42 @@ export function FileList(props: Props) {
   createEffect(() => props.onSelectionChange(selection(), focused()));
   createEffect(() => props.onRenaming(renaming() >= 0));
 
-  const firstRow = createMemo(() => Math.max(0, Math.floor(offset() / ROW_HEIGHT) - OVERSCAN));
-  const lastRow = createMemo(() =>
-    Math.min(total() - 1, Math.ceil((offset() + height()) / ROW_HEIGHT) + OVERSCAN),
+  const overscan = () => Math.max(1, Math.ceil(OVERSCAN_PX / layout().lineSize));
+  const firstLine = createMemo(() => Math.max(0, Math.floor(offset() / layout().lineSize) - overscan()));
+  const lastLine = createMemo(() =>
+    Math.min(lineCount() - 1, Math.ceil((offset() + extent()) / layout().lineSize) + overscan()),
   );
+  /** The first and last items rendered: whole lines, from just before the view to just after it. */
+  const firstRow = () => firstLine() * layout().perLine;
+  const lastRow = () => Math.min(total() - 1, (lastLine() + 1) * layout().perLine - 1);
   const visibleRows = createMemo(() => {
     const rows: number[] = [];
     for (let row = firstRow(); row <= lastRow(); row++) rows.push(row);
     return rows;
   });
-  /** Where the first rendered row sits inside the scrolled content. */
-  const translate = () =>
-    scale() === 1 ? firstRow() * ROW_HEIGHT : scrollTop() + firstRow() * ROW_HEIGHT - offset();
+  /** Where the first rendered line sits inside the scrolled content. */
+  const translate = () => {
+    const start = firstLine() * layout().lineSize;
+    return scale() === 1 ? start : scrollPos() + start - offset();
+  };
+  /** Places the rendered lines: rows for details, a grid of cells, or the list view's columns. */
+  const linesStyle = () => {
+    const { perLine, lineSize, itemSize } = layout();
+    if (mode() === "details") return { transform: `translateY(${translate()}px)` };
+    if (vertical()) {
+      // Cells share out the width left over, so a row fills the view.
+      return {
+        transform: `translateY(${translate()}px)`,
+        "grid-template-columns": `repeat(${perLine}, minmax(0, 1fr))`,
+        "grid-auto-rows": `${lineSize}px`,
+      };
+    }
+    return {
+      transform: `translateX(${translate()}px)`,
+      "grid-template-rows": `repeat(${perLine}, ${itemSize}px)`,
+      "grid-auto-columns": `${lineSize}px`,
+    };
+  };
 
   const rowAt = (row: number): Row | undefined => {
     loadedTick();
@@ -245,22 +325,51 @@ export function FileList(props: Props) {
   });
 
   const onScroll = () => {
-    const top = viewport.scrollTop;
-    setScrollTop(top);
+    const top = readScroll();
+    setScrollPos(top);
+    holdThumbnails();
     const factor = scale();
     if (factor === 1) {
       setOffset(top);
       return;
     }
     // A scaled scrollbar cannot represent every row, so ignore scroll events that merely echo
-    // an offset set by the wheel or keyboard, and follow real scrollbar drags.
-    if (Math.abs(top * factor - offset()) > factor * 2) setOffset(Math.min(top * factor, maxOffset()));
+    // an offset set by the wheel or keyboard, and follow real scrollbar drags. An echo is
+    // recognised by the position itself too, since the browser may have rounded or clamped it.
+    const echo = Math.abs(top - ownScroll) < 1;
+    if (!echo && Math.abs(top * factor - offset()) > factor * 2) setOffset(Math.min(top * factor, maxOffset()));
+  };
+
+  /** Thumbnails wait until scrolling pauses, so a fling does not ask for thousands. */
+  const holdThumbnails = () => {
+    setScrolling(true);
+    clearTimeout(scrollPause);
+    scrollPause = window.setTimeout(() => setScrolling(false), THUMB_DELAY_MS);
   };
 
   const onWheel = (event: WheelEvent) => {
-    if (scale() === 1 || event.ctrlKey) return;
+    if (event.ctrlKey) return zoom(event);
+    if (vertical()) {
+      if (scale() === 1) return;
+      event.preventDefault();
+      scrollTo(offset() + event.deltaY);
+      return;
+    }
+    // The list view scrolls sideways, and the wheel moves it as it would move a page down.
     event.preventDefault();
-    scrollTo(offset() + event.deltaY);
+    scrollTo(offset() + (Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY));
+  };
+
+  /** Ctrl+wheel steps through the view sizes, as in Explorer: up for larger, down for smaller. */
+  const zoom = (event: WheelEvent) => {
+    event.preventDefault();
+    const location = listingLocation(props.listing);
+    zoomTravel += event.deltaY;
+    if (location === null || Math.abs(zoomTravel) < ZOOM_STEP) return;
+    const at = VIEW_MODES.findIndex((info) => info.mode === mode());
+    const next = Math.min(VIEW_MODES.length - 1, Math.max(0, at + Math.sign(zoomTravel)));
+    zoomTravel = 0;
+    setViewMode(location, VIEW_MODES[next].mode);
   };
 
   const select = (row: number, mode: { extend?: boolean; toggle?: boolean } = {}) => {
@@ -376,9 +485,11 @@ export function FileList(props: Props) {
     if (key === "delete") return has && run(event.shiftKey ? "erase" : "delete");
     if (key === "f2") return startRename(), true;
     if (key === "contextmenu" || (event.shiftKey && key === "f10")) {
-      const box = viewport.getBoundingClientRect();
       const row = Math.max(0, focused());
-      void openMenu(box.left + 40, box.top + (row + 1) * ROW_HEIGHT - offset(), true);
+      reveal(row);
+      // The menu opens over the item, below its icon and the start of its name.
+      const box = (viewport.querySelector(`[data-index="${row}"]`) ?? viewport).getBoundingClientRect();
+      void openMenu(box.left + Math.min(40, box.width / 2), box.top + Math.min(box.height, layout().lineSize), true);
       return true;
     }
     return false;
@@ -391,13 +502,7 @@ export function FileList(props: Props) {
       event.preventDefault();
       return;
     }
-    const pageRows = Math.max(1, Math.floor(height() / ROW_HEIGHT) - 1);
     const current = focused();
-    const mode = { extend: event.shiftKey };
-    const move = (row: number) => {
-      event.preventDefault();
-      select(Math.min(Math.max(0, row), total() - 1), mode);
-    };
     if (event.ctrlKey && event.key.toLowerCase() === "a") {
       event.preventDefault();
       if (total() > 0) setSelection(Selection.range(0, total() - 1));
@@ -406,19 +511,16 @@ export function FileList(props: Props) {
     if (event.ctrlKey || event.altKey || event.metaKey) return;
     const isCharacter = event.key.length === 1 && event.key !== " ";
     if (!isCharacter) resetTypeAhead();
+    // A page is a viewful of lines, less one so that the line at the edge stays in sight.
+    const { perLine, lineSize } = layout();
+    const page = Math.max(1, Math.floor(extent() / lineSize) - 1) * perLine;
+    const target = keyTarget(event.key, current, total(), layout(), page);
+    if (target !== null) {
+      event.preventDefault();
+      select(target, { extend: event.shiftKey });
+      return;
+    }
     switch (event.key) {
-      case "ArrowDown":
-        return move(current + 1);
-      case "ArrowUp":
-        return move(current < 0 ? 0 : current - 1);
-      case "PageDown":
-        return move(current + pageRows);
-      case "PageUp":
-        return move(current - pageRows);
-      case "Home":
-        return move(0);
-      case "End":
-        return move(total() - 1);
       case "Enter":
         event.preventDefault();
         return open(current >= 0 ? current : selection().first);
@@ -443,10 +545,29 @@ export function FileList(props: Props) {
   const typeLabel = (row: Row) => (row.dir ? "Folder" : row.ext ? `${row.ext.toUpperCase()} file` : "File");
 
   const isBackground = (target: EventTarget | null) =>
-    target === viewport || (target as HTMLElement).classList.contains("list-spacer");
+    target === viewport ||
+    (target as HTMLElement).classList.contains("list-spacer") ||
+    (target as HTMLElement).classList.contains("list-rows");
+
+  // Mouse handling for the items of the icon, list and tile views: the same as a details row's.
+  const onItemMouseDown = (index: number, event: MouseEvent) => {
+    if (event.button !== 0 || event.target instanceof HTMLInputElement) return;
+    resetTypeAhead();
+    select(index, { extend: event.shiftKey, toggle: event.ctrlKey });
+  };
+  const onItemDblClick = (index: number, event: MouseEvent) => {
+    if (!(event.target instanceof HTMLInputElement)) open(index);
+  };
+  const onItemContextMenu = (index: number, event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    // Right-clicking outside the selection acts on that one item instead.
+    if (!selection().has(index)) select(index);
+    void openMenu(event.clientX, event.clientY, true);
+  };
 
   return (
-    <div class="filelist" classList={{ results: isSearch() }}>
+    <div class="filelist" classList={{ results: isSearch() }} data-view={mode()}>
       <div class="list-header" role="row">
         <For each={columns()}>
           {(column) => (
@@ -482,8 +603,8 @@ export function FileList(props: Props) {
         ref={viewport}
         class="list-viewport"
         tabindex="0"
-        role="grid"
-        aria-rowcount={total()}
+        role={mode() === "details" ? "grid" : "listbox"}
+        aria-rowcount={mode() === "details" ? total() : undefined}
         aria-multiselectable="true"
         onScroll={onScroll}
         onWheel={onWheel}
@@ -501,9 +622,16 @@ export function FileList(props: Props) {
           void openMenu(event.clientX, event.clientY, false);
         }}
       >
-        <div class="list-spacer" style={{ height: `${scrollHeight()}px` }}>
-          <div class="list-rows" style={{ transform: `translateY(${translate()}px)` }}>
-            <For each={visibleRows()}>
+        <div
+          class="list-spacer"
+          style={vertical() ? { height: `${scrollExtent()}px` } : { width: `${scrollExtent()}px`, height: "100%" }}
+        >
+          <div
+            class="list-rows"
+            classList={{ "view-cells": mode() !== "details" && vertical(), "view-columns": !vertical() }}
+            style={linesStyle()}
+          >
+            <For each={mode() === "details" ? visibleRows() : []}>
               {(index) => {
                 const row = createMemo(() => rowAt(index));
                 return (
@@ -517,6 +645,7 @@ export function FileList(props: Props) {
                     role="row"
                     aria-rowindex={index + 1}
                     aria-selected={selection().has(index)}
+                    data-index={index}
                     onMouseDown={(event) => {
                       if (event.button !== 0 || event.target instanceof HTMLInputElement) return;
                       resetTypeAhead();
@@ -538,7 +667,7 @@ export function FileList(props: Props) {
                         <>
                           <div class="cell name">
                             <img src={iconUrl(data())} width="16" height="16" alt="" draggable={false} />
-                            <Show when={renaming() === index} fallback={<span class="label">{data().name}</span>}>
+                            <Show when={renaming() === index} fallback={<span class="label">{displayName(data(), showExtensions())}</span>}>
                               <input
                                 class="rename"
                                 aria-label="New name"
@@ -579,6 +708,25 @@ export function FileList(props: Props) {
                   </div>
                 );
               }}
+            </For>
+            <For each={mode() === "details" ? [] : visibleRows()}>
+              {(index) => (
+                <ViewItem
+                  index={index}
+                  row={rowAt(index)}
+                  mode={mode()}
+                  visual={layout().visual}
+                  selected={selection().has(index)}
+                  focused={focused() === index}
+                  renaming={renaming() === index}
+                  showExtension={showExtensions()}
+                  loadThumbs={!scrolling()}
+                  onMouseDown={(event) => onItemMouseDown(index, event)}
+                  onDblClick={(event) => onItemDblClick(index, event)}
+                  onContextMenu={(event) => onItemContextMenu(index, event)}
+                  onRenameDone={(name) => finishRename(index, name)}
+                />
+              )}
             </For>
           </div>
         </div>

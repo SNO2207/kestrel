@@ -15,6 +15,7 @@ import {
 } from "./lib/api";
 import { parentPath } from "./lib/format";
 import { Selection } from "./lib/selection";
+import { SEARCH_LOCATION, folderKey, locationKey, recall, remember } from "./lib/views";
 
 export interface Tab {
   id: number;
@@ -159,10 +160,13 @@ export function navigate(tabId: number, path: string, mode: NavigateMode = "push
     try {
       // Re-listing the folder already on screen is a refresh, which keeps the selection.
       const refreshing = !isSearch(tab) && tab.listing !== null && samePath(path, tab.path);
+      // Each folder keeps the sort it was last given.
+      const sort = { ...(recall(folderKey(path)).sort ?? DEFAULT_SORT) };
       // Only the tab on screen is watched for changes; others catch up when activated.
-      const listing = await api.listDir(path, tab.sort, tabId === activeId());
+      const listing = await api.listDir(path, sort, tabId === activeId());
       const restore = refreshing ? await carryMarks(tabId, listing) : NO_MARKS;
       show(tabId, listing, restore, (tab) => {
+        tab.sort = sort;
         if (mode === "push" && tab.history[tab.cursor] !== listing.path) {
           tab.history.splice(tab.cursor + 1);
           tab.history.push(listing.path);
@@ -184,8 +188,10 @@ function runSearch(tabId: number, keepSelection = false) {
     if (!tab || tab.query.trim() === "") return;
     try {
       const scope = everywhere() ? null : tab.path;
-      const listing = await api.search(tab.query, scope, tab.sort);
-      show(tabId, listing, keepSelection ? await carryMarks(tabId, listing) : NO_MARKS);
+      // Search results keep a sort of their own, separate from any folder's.
+      const sort = { ...(recall(SEARCH_LOCATION).sort ?? DEFAULT_SORT) };
+      const listing = await api.search(tab.query, scope, sort);
+      show(tabId, listing, keepSelection ? await carryMarks(tabId, listing) : NO_MARKS, (tab) => void (tab.sort = sort));
     } catch (error) {
       patch(tabId, (tab) => void (tab.error = String(error)));
     }
@@ -250,13 +256,21 @@ export const canGoBack = (tab: Tab) => isSearch(tab) || tab.cursor > 0;
 export const canGoForward = (tab: Tab) => tab.cursor < tab.history.length - 1;
 export const canGoUp = (tab: Tab) => parentPath(tab.path) !== null;
 
+/** Sizes and dates start with the largest and newest, as Explorer does. */
+export const startsDescending = (key: SortKey) => key === "size" || key === "modified";
+
 /** Sorts by `key`, flipping direction if it is already the sort column. */
 export function setSort(tabId: number, key: SortKey) {
   const tab = find(tabId);
   if (!tab) return;
-  // Sizes and dates start with the largest and newest, as Explorer does.
-  const desc = tab.sort.key === key ? !tab.sort.desc : key === "size" || key === "modified";
-  const sort = { key, desc };
+  setSortSpec(tabId, { key, desc: tab.sort.key === key ? !tab.sort.desc : startsDescending(key) });
+}
+
+/** Sorts the tab's rows, remembering the order for its folder (or for search results). */
+export function setSortSpec(tabId: number, sort: SortSpec) {
+  const tab = find(tabId);
+  if (!tab) return;
+  remember(locationKey(tab), { sort });
   patch(tabId, (tab) => void (tab.sort = sort));
   enqueue(tabId, async () => {
     const tab = find(tabId);
@@ -264,6 +278,9 @@ export function setSort(tabId: number, key: SortKey) {
     try {
       const moved = await api.sortSet(tab.listing.set, sort, marksOf(tabId) ?? NO_MARKS);
       patch(tabId, (tab) => {
+        // A listing that arrived while this waited set the sort it was made with; the rows
+        // are now in this order instead.
+        tab.sort = sort;
         tab.restore = moved;
         tab.revision += 1;
       });

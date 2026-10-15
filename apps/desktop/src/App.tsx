@@ -1,6 +1,7 @@
 import { For, Show, onCleanup, onMount } from "solid-js";
 
 import { api, type Row } from "./lib/api";
+import { locationKey, setViewMode, shortcutView } from "./lib/views";
 import { FileList, type ListCommand } from "./components/FileList";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -88,6 +89,8 @@ export function App() {
     if (event.ctrlKey && key === "tab") return handled(), cycleTab(event.shiftKey ? -1 : 1);
     if (key === "f5") return handled(), refresh(tab.id);
     if (key === "backspace" && !typing) return handled(), goBack(tab.id);
+    const view = shortcutView(event);
+    if (view) return handled(), setViewMode(locationKey(tab), view);
   };
 
   // The web view's own context menu has no place in a file manager; text fields keep theirs.

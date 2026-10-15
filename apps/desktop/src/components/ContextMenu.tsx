@@ -1,5 +1,7 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
 
+import { Icon } from "./Icon";
+
 export interface MenuItem {
   label: string;
   /** Keyboard shortcut shown beside the label. */
@@ -7,6 +9,8 @@ export interface MenuItem {
   disabled?: boolean;
   /** Marks an action that destroys data. */
   danger?: boolean;
+  /** For an option that is on or off: whether it is on. Shown as a check mark. */
+  checked?: boolean;
   run: () => void;
 }
 
@@ -19,6 +23,8 @@ export function ContextMenu(props: { x: number; y: number; entries: MenuEntry[];
   const [active, setActive] = createSignal(-1);
 
   const items = () => props.entries.map((entry, index) => ({ entry, index }));
+  /** A menu with any options in it gives every item a column for check marks. */
+  const checkable = () => props.entries.some((entry) => entry !== "separator" && entry.checked !== undefined);
   const enabled = () =>
     items().filter(({ entry }) => entry !== "separator" && !entry.disabled).map(({ index }) => index);
 
@@ -86,12 +92,20 @@ export function ContextMenu(props: { x: number; y: number; entries: MenuEntry[];
               <button
                 class="menu-item"
                 classList={{ active: active() === index, danger: item().danger }}
-                role="menuitem"
+                role={item().checked === undefined ? "menuitem" : "menuitemcheckbox"}
+                aria-checked={item().checked}
                 disabled={item().disabled}
                 onMouseEnter={() => setActive(index)}
                 onClick={() => choose(item())}
               >
-                <span>{item().label}</span>
+                <Show when={checkable()}>
+                  <span class="menu-check">
+                    <Show when={item().checked}>
+                      <Icon name="check" size={14} />
+                    </Show>
+                  </span>
+                </Show>
+                <span class="menu-label">{item().label}</span>
                 <Show when={item().hint}>
                   <span class="menu-hint">{item().hint}</span>
                 </Show>

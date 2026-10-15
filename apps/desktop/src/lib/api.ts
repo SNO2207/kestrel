@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { showHidden } from "./views";
+
 export type SortKey = "name" | "size" | "modified" | "type";
 
 export interface SortSpec {
@@ -71,12 +73,13 @@ export const api = {
   indexStatus: () => invoke<IndexStatus>("index_status"),
   /**
    * Lists a folder. With `watch`, the folder is watched from then on, replacing any earlier
-   * watch, and `onDirChanged` fires when its contents change.
+   * watch, and `onDirChanged` fires when its contents change. Hidden and system items are
+   * included only when `hidden` is true, which defaults to the "Show hidden items" option.
    */
-  listDir: (path: string, sort: SortSpec, watch: boolean) =>
-    invoke<Listing>("list_dir", { path, sort, watch }),
-  search: (query: string, scope: string | null, sort: SortSpec) =>
-    invoke<Listing>("search", { query, scope, sort }),
+  listDir: (path: string, sort: SortSpec, watch: boolean, hidden: boolean = showHidden()) =>
+    invoke<Listing>("list_dir", { path, sort, watch, showHidden: hidden }),
+  search: (query: string, scope: string | null, sort: SortSpec, hidden: boolean = showHidden()) =>
+    invoke<Listing>("search", { query, scope, sort, showHidden: hidden }),
   /** Maps a selection from one result set to another that shows the same files. */
   carryMarks: (from: number, to: number, marks: Marks) => invoke<Marks>("carry_marks", { from, to, marks }),
   /** Frees a result set. Call only once the UI shows something else. */
@@ -117,4 +120,13 @@ export function iconUrl(row: Pick<Row, "dir" | "ext" | "path">, size = 32): stri
   if (row.dir) return `${base}/folder?s=${size}`;
   if (OWN_ICON.has(row.ext)) return `${base}/file?s=${size}&p=${encodeURIComponent(row.path)}`;
   return `${base}/ext/${encodeURIComponent(row.ext || "_")}?s=${size}`;
+}
+
+/**
+ * URL of a file's thumbnail, at most `size` pixels square, served by the app's `thumb`
+ * protocol. Files without one get their icon. The modification time is part of the URL, so a
+ * changed file gets a fresh thumbnail while an unchanged one comes from the cache.
+ */
+export function thumbUrl(row: Pick<Row, "path" | "mtime">, size: number): string {
+  return `http://thumb.localhost/?p=${encodeURIComponent(row.path)}&s=${size}&m=${row.mtime}`;
 }
