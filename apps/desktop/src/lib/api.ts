@@ -110,6 +110,38 @@ export interface RenamePreview {
   problem: string | null;
 }
 
+/** The start of a file as text, for the preview pane. */
+export interface TextPreview {
+  text: string;
+  /** Only the first megabyte was read. */
+  truncated: boolean;
+  encoding: "utf-8" | "utf-16le" | "utf-16be";
+  /** Invalid bytes were replaced. */
+  lossy: boolean;
+  /** The file does not look like text; `text` is empty. */
+  binary: boolean;
+  size: number;
+}
+
+/** What the preview pane's details block shows about a file or folder. */
+export interface PreviewDetails {
+  name: string;
+  path: string;
+  dir: boolean;
+  /** Bytes; for a folder, the total from the index, or null if the index lacks it. */
+  size: number | null;
+  /** Milliseconds since the Unix epoch, or 0 when unknown. */
+  created: number;
+  modified: number;
+  accessed: number;
+  attributes: string[];
+  /** The contents live in the cloud, and reading them downloads the file. */
+  online_only: boolean;
+  type_name: string;
+  dimensions: [number, number] | null;
+  folder: { files: number; folders: number; readable: boolean } | null;
+}
+
 export const api = {
   indexStatus: () => invoke<IndexStatus>("index_status"),
   /**
@@ -149,6 +181,11 @@ export const api = {
     invoke<number | null>("find_prefix", { set, prefix, from }),
   places: () => invoke<Places>("places"),
   openPath: (path: string) => invoke<void>("open_path", { path }),
+  /** Reads at most the first megabyte of a file as text. */
+  previewText: (path: string) => invoke<TextPreview>("preview_text", { path }),
+  previewDetails: (path: string) => invoke<PreviewDetails>("preview_details", { path }),
+  /** Opens an http, https or mailto link in the default app; anything else is refused. */
+  openLink: (url: string) => invoke<void>("open_link", { url }),
   onIndexStatus: (handler: (status: IndexStatus) => void) =>
     listen<IndexStatus>("index-status", (event) => handler(event.payload)),
   undoState: () => invoke<UndoState>("undo_state"),

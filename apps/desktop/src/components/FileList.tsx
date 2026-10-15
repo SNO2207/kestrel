@@ -62,6 +62,10 @@ interface Props {
   onRename: (row: Row, name: string) => void;
   onCommand: (command: ListCommand) => void;
   focusRef: (focus: () => void) => void;
+  /** Reports the focused row once its data has loaded, or null when no row has focus. */
+  onFocusRow?: (row: Row | null) => void;
+  /** Hands the owner a way to move the focus by some rows, for Quick Look. */
+  stepRef?: (step: (delta: number) => void) => void;
 }
 
 interface Column {
@@ -404,6 +408,18 @@ export function FileList(props: Props) {
     setFocused(row);
     reveal(row);
   };
+
+  // The preview follows the focused row. While a row's page is still loading, the previous
+  // report stands, so stepping through the list never flashes an empty preview.
+  createEffect(() => {
+    const index = focused();
+    const row = index >= 0 ? rowAt(index) : undefined;
+    if (index < 0) props.onFocusRow?.(null);
+    else if (row) props.onFocusRow?.(row);
+  });
+  props.stepRef?.((delta) => {
+    if (total() > 0) select(Math.min(Math.max(0, focused() + delta), total() - 1));
+  });
 
   const open = (row: number, inNewTab = false) => {
     const data = rowAt(row);

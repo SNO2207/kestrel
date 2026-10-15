@@ -18,6 +18,7 @@ import {
 } from "../state";
 import { Icon } from "./Icon";
 import { ViewMenu } from "./ViewMenu";
+import { PreviewToggle } from "./PreviewPane";
 
 /** Lets the app's keyboard shortcuts focus the address and search fields. */
 export const focusTargets: { address?: () => void; search?: () => void } = {};
@@ -142,6 +143,7 @@ export function Toolbar(props: { focusList: () => void }) {
       </div>
 
       <ViewMenu focusList={props.focusList} />
+      <PreviewToggle />
     </div>
   );
 }

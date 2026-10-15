@@ -107,6 +107,8 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+Shift+1 / 2 / 3 / 4 | Extra large / large / medium / small icons |
 | Ctrl+Shift+5 / 6 / 8 | List / details / tiles |
 | Ctrl+wheel | Larger or smaller icons |
+| Alt+P | Show or hide the preview pane (drag its left edge to resize it) |
+| Space | Quick Look; Space or Esc closes it, the arrow keys move to the previous or next item |
 
 File operations run through the Windows shell's own copy engine, so progress and conflict
 dialogs, the Recycle Bin and Explorer's undo behave exactly as they do in Explorer. A progress
@@ -163,7 +165,15 @@ node e2e/live-index.mjs # files changed by another program show up in search
 node e2e/undo.mjs       # undo and redo, in a scratch folder
 node e2e/batchrename.mjs # batch rename and its preview, in a scratch folder
 node e2e/locked.mjs     # a scratch folder this account can't open shows locked
+node e2e/preview.mjs    # preview pane and Quick Look, confined to a scratch folder under %TEMP%
 ```
+
+The preview pane shows images (SVG only through `<img>`), video, audio, PDF (the web view's own
+viewer), text and code with highlighting (the first megabyte), Markdown rendered and sanitised,
+JSON re-indented, and details for folders and everything else. File bytes reach it through the
+`preview` protocol (`src-tauri/src/preview.rs`), which serves regular files only, honours
+`Range`, shows HTML and other active content as text, and whose frames may not call the app's
+commands.
 
 `fileops.mjs` replaces the clipboard's contents, and with `KESTREL_E2E_RECYCLE=1` it also
 sends one small file to the Recycle Bin. `undo.mjs` and `batchrename.mjs` (undo, redo, batch

@@ -5,6 +5,8 @@ import { locationKey, setViewMode, shortcutView } from "./lib/views";
 import { LOCKED_MESSAGE, isLocked, recheckAccess } from "./lib/access";
 import { BatchRenameDialog, openBatchRename } from "./components/BatchRename";
 import { FileList, type ListCommand } from "./components/FileList";
+import { PreviewPane } from "./components/PreviewPane";
+import { QuickLook } from "./components/QuickLook";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { TitleBar } from "./components/TitleBar";
@@ -39,6 +41,7 @@ import {
   tabs,
 } from "./state";
 import { redoLast, undoLast } from "./undo";
+import { registerStepper, setFocusedRow } from "./previewState";
 
 export function App() {
   /** Focus functions for each tab's list, so shortcuts can hand focus back to the files. */
@@ -152,10 +155,13 @@ export function App() {
                   listFocus.set(tab.id, focus);
                   onCleanup(() => listFocus.delete(tab.id));
                 }}
+                onFocusRow={(row) => setFocusedRow(tab.id, row)}
+                stepRef={(step) => onCleanup(registerStepper(tab.id, step))}
               />
             </div>
           )}
         </For>
+        <PreviewPane />
         <Show when={notice()}>
           <div class="notice" classList={{ info: noticeTone() === "info" }} role="alert">
             <span>{notice()}</span>
@@ -167,6 +173,7 @@ export function App() {
       </main>
       <StatusBar />
       <BatchRenameDialog onClose={focusList} />
+      <QuickLook focusList={focusList} />
     </div>
   );
 }
