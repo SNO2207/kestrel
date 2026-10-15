@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Window controls for the custom title bar",
-  "windows": ["main"],
+  "description": "Window controls for the custom title bar. Granted to the app's own webview only: the preview's webview, in the same window, gets no capability at all",
+  "webviews": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

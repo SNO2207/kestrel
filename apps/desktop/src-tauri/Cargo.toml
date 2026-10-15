@@ -23,7 +23,9 @@ rayon = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tauri = { version = "2", features = [] }
+# `unstable` brings Tauri's multiwebview API: previewed content is shown in a webview of its
+# own laid over the preview area (`previewview.rs`).
+tauri = { version = "2", features = ["unstable"] }
 # COM interfaces (IFileOperation and friends) need the full bindings; plain functions use
 # the lighter windows-sys. The progress sink is a COM object written in Rust: the `implement`
 # macro (built into windows 0.62) expands to paths in `windows-core`, hence that dependency.

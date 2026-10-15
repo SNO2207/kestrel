@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{DragDropEvent, State, WebviewWindow, WindowEvent};
+use tauri::{DragDropEvent, State, Window, WindowEvent};
 use windows::Win32::Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_USEDEFAULTCURSORS};
 use windows::Win32::System::Com::IDataObject;
 use windows::Win32::System::Ole::{
@@ -194,7 +194,7 @@ pub fn drop_effect(paths: Vec<String>, destination: String, keys: Option<Keys>) 
 /// paste does.
 #[tauri::command(async)]
 pub fn drop_items(
-    window: WebviewWindow,
+    window: Window,
     journal: State<'_, Journal>,
     paths: Vec<String>,
     destination: String,
@@ -329,7 +329,7 @@ fn drag_message() -> u32 {
 }
 
 /// Lets the window start drags. Called once, on the thread that created the window.
-pub fn install(window: &WebviewWindow) -> Result<(), String> {
+pub fn install(window: &Window) -> Result<(), String> {
     let hwnd = window.hwnd().map_err(|e| e.to_string())?.0;
     if drag_message() == 0 {
         return Err("Couldn't register the drag message".into());
@@ -444,7 +444,7 @@ pub struct DragOut {
 /// a target that moves files does so itself, as Explorer does.
 #[tauri::command(async)]
 pub fn start_drag(
-    window: WebviewWindow,
+    window: Window,
     engine: State<'_, Arc<Engine>>,
     set: u32,
     ranges: Vec<(u32, u32)>,

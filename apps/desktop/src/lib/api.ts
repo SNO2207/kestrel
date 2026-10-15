@@ -152,6 +152,19 @@ export type DropEffect = "copy" | "move" | "link" | "none";
 
 export type DragRehearsal = "prepare" | "cancel" | "hold";
 
+/**
+ * Where the preview's own webview goes, in CSS pixels of the page, and what it shows: a
+ * `preview.localhost` page. See `previewview.rs`.
+ */
+export interface SurfacePlacement {
+  url: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  visible: boolean;
+}
+
 /** What the user chose from the Windows context menu. */
 export interface ShellChoice {
   /** Canonical verb of the chosen command, such as "copy", if it has one. */
@@ -243,6 +256,10 @@ export const api = {
   shellFolderMenu: (path: string, x: number, y: number, dark: boolean, extended: boolean) =>
     invoke<ShellChoice>("shell_folder_menu", { path, x, y, dark, extended }),
   openWith: (path: string) => invoke<void>("open_with", { path }),
+  /** Places the preview's own webview and shows a page in it, or with `null` empties and hides it. */
+  previewSurface: (placement: SurfacePlacement | null) => invoke<void>("preview_surface", { placement }),
+  /** Takes the keyboard back from the preview's webview, if the window is still in front. */
+  previewSurfaceReturnFocus: () => invoke<void>("preview_surface_return_focus"),
 };
 
 /** Extensions whose files each carry their own icon rather than sharing one per type. */

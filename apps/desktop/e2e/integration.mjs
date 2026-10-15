@@ -84,12 +84,6 @@ async function centre(locator) {
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 }
 
-/** Waits up to two seconds for `check` to hold (see `settles` in dragdrop.mjs). */
-async function settles(check) {
-  for (let waited = 0; !check() && waited < 2000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
-  return check();
-}
-
 /** Captured through the debugging protocol, which unlike Playwright's own capture does not resize the window. */
 async function shotBoth(name) {
   for (const scheme of ["dark", "light"]) {
@@ -138,7 +132,8 @@ try {
     await shotBoth("1-icon-drop-target");
     const result = await hook.drop([dropped], await centre(item("Archive")));
     assert.deepEqual(result, { effect: "move", names: ["dropped.txt"] });
-    assert(await settles(() => onDisk(archive, "dropped.txt") && !onDisk(dropped)));
+    // The shell has finished the move when the drop returns.
+    assert(onDisk(archive, "dropped.txt") && !onDisk(dropped));
     assert.equal(await panel.locator(".drop-target").count(), 0);
     await hook.keys(undefined);
   });
@@ -147,10 +142,10 @@ try {
     await list.focus();
     await page.keyboard.press("Control+z");
     await notice(/Undid move of dropped\.txt/);
-    assert(await settles(() => onDisk(outside, "dropped.txt") && !onDisk(archive, "dropped.txt")));
+    assert(onDisk(outside, "dropped.txt") && !onDisk(archive, "dropped.txt"));
     await page.keyboard.press("Control+y");
     await notice(/Redid move of dropped\.txt/);
-    assert(await settles(() => onDisk(archive, "dropped.txt") && !onDisk(outside, "dropped.txt")));
+    assert(onDisk(archive, "dropped.txt") && !onDisk(outside, "dropped.txt"));
   });
 
   await step("a press and a short move on selected icons starts a drag of all of them", async () => {

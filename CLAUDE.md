@@ -34,14 +34,21 @@ Done and verified:
   "Show file extensions".
 - **Exact results, undo and redo, batch rename** (`fileops.rs` progress sink, `undo.rs`,
   `recycle.rs`, `batchrename.rs`, `BatchRename.tsx`): every operation, drops included, goes
-  into an in-memory journal of 100; deletions to the Recycle Bin come back from it.
+  into a journal of the newest 100, kept in `kestrel-db` (`kestrel_db::undo`) as it changes and
+  restored at start without the operations whose items no longer match the disk; deletions to
+  the Recycle Bin come back from it.
 - **Locked results** (`access.rs`, `lib/access.ts`): rows in or being folders the account can't
   open are dimmed with a padlock in every view and explain themselves when opened.
 - **Broker journal size** (`apps/broker/src/journal.rs`): `install --journal-mb N`, unit
   tested only; the elevated install that uses it has not been run.
 - **Preview pane and Quick Look** (`preview.rs`, `PreviewPane.tsx`, `PreviewBody.tsx`,
   `QuickLook.tsx`, `previewState.ts`): Alt+P and Space; the `preview` protocol, and
-  `preview::guard`, which refuses app commands from any frame that isn't the app's own.
+  `preview::guard`, which refuses app commands to any webview but `main` and any frame that
+  isn't the app's own. Images, media and PDF documents show in a second webview with no
+  capabilities, laid over the preview area (`previewview.rs`, `lib/previewSurface.ts`,
+  `PreviewSurface.tsx`).
+- **Release build** (`pnpm tauri build`, bundling off): builds `kestrel-shellhost.exe` next to
+  `kestrel.exe` first (`scripts/shellhost.mjs`); e2e slots run it with `KESTREL_RELEASE=1`.
 - **Drag and drop** (`dragdrop.rs`, `dragdrop.ts`, `DropHint.tsx`): native drags out
   (`SHDoDragDrop` on the window's thread), drops in onto rows, icons, places, tabs or the open
   folder, with Explorer's copy and move rules.
@@ -51,9 +58,9 @@ Done and verified:
 All five feature branches (views, undo, preview, dragdrop, shellmenu) are merged on `main`,
 and every unit test and e2e suite passes there, `integration.mjs` covering where they meet.
 
-Not done yet: release packaging of `kestrel-shellhost.exe` (it needs a Tauri sidecar entry,
-see README), Explorer's Content view (Ctrl+Shift+7), marquee selection, shortcuts on drop
-(Alt), and an undo history that survives a restart.
+Not done yet: an installer (bundling is off; the helper would then need a Tauri sidecar entry,
+see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and shortcuts on drop
+(Alt).
 
 ## How the app fits together
 
@@ -73,7 +80,10 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection, shortcut
   memory caches) and `navigation.rs` (the window stays on the app) do what their names say.
   `shellmenu.rs` runs the Windows context menu and Open With in `apps/shellhost`
   (`kestrel-shellhost.exe`), a helper process found next to `kestrel.exe`, so third-party
-  shell extensions never load into the app.
+  shell extensions never load into the app. The main window holds two webviews: `main`, the
+  app's page, and `preview` (`previewview.rs`), so commands take a `tauri::Window`, never a
+  `WebviewWindow` (Tauri refuses to hand one to a command from a window with two webviews),
+  and capabilities name webviews (`"webviews": ["main"]`), not windows.
 - `apps/desktop/src`: the front end. `state.ts` holds tabs and every action; `lib/api.ts`
   wraps every backend command; `components/` has one file per piece of UI; `styles.css` holds
   the design tokens (slate surfaces, one ochre accent, light and dark) and all styles.
@@ -157,7 +167,9 @@ Git:
   escalation. Reinstalling (`kestrel-broker install`, elevated) replaces the copy.
 - Processes started from Claude's shell run inside the Claude app's MSIX container: writes to
   `%LOCALAPPDATA%` land in `AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local`,
-  and a crawl from inside sees that merged view. An index or snapshot made there is not the
+  and a crawl from inside sees that merged view. `%TEMP%` is not redirected (checked: a folder
+  made there from inside is not in `LocalCache\Local\Temp`, and the journal names it by the
+  same file ids a listing reports), so scratch folders there are on the real disk. An index or snapshot made there is not the
   one the owner's own launches use. The broker (a service, outside the container) sees the
   real disk, which makes it the way to check where files really are.
 - Another of the owner's WebView2 apps (AI Binary Workbench) holds debugging port 9222, so
@@ -169,8 +181,20 @@ Git:
   for files held open for writing; the MFT's own size is current.
 - WebView2 copies Tauri's command bridge, and its key, into every frame, and Tauri treats
   every custom protocol host as local. Pages served by a custom protocol must never run
-  script; `preview::guard` refuses app commands from other frames, but Tauri's own plugin
-  commands are not covered by it.
+  script, and must never show in the app's page as documents: frames there get what the
+  `main` webview's capabilities grant. Content goes in the `preview` webview, which has none
+  and which `preview::guard` refuses.
+- The live index lists the folders the change journal names by file id
+  (`walk::Volume::list`), not by the paths the index holds: those are stale while a folder
+  above has moved in the same batch, and a listing that fails silently loses the change. A
+  folder that turns up as new is listed too (`Sync::take_new_dirs`): it may have arrived with
+  contents nothing else names.
+- A drop target read from the DOM must ignore rows still loading: a refreshed list fetches its
+  rows again, and for a few milliseconds they carry no `data-path` (`dragdrop.ts`, `LOADING`).
+- WebView2 leaves `document.visibilityState` alone when a webview is hidden; e2e checks of the
+  preview webview's visibility ask Windows (`e2e/windows.mjs`).
+- `dev.mjs stop` kills the app, so a setting saved in local storage just before may be lost;
+  suites that restart the app (`undo-restart.mjs`) close the preview pane again themselves.
 - The window refuses every top-level navigation away from the app's own origin
   (`navigation.rs`): a borderless window taken over by a web page has no way back. An e2e
   script that needs another page must use a frame, and Markdown links reach the browser only

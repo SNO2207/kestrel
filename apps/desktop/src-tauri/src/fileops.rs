@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
@@ -70,7 +71,7 @@ pub enum Op {
 }
 
 /// A span of time in FILETIME ticks (100 ns since 1601, UTC) within which something happened.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Window {
     pub from: i64,
     pub to: i64,
@@ -82,8 +83,10 @@ impl Window {
     }
 }
 
-/// What actually happened to one of the items an operation was asked to handle.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What actually happened to one of the items an operation was asked to handle. Kept in the
+/// undo history between runs, as JSON (`undo.rs`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Done {
     /// `merged` is set when a folder was copied or moved into a folder of the same name that
     /// already existed, so the result also holds things that were there before.

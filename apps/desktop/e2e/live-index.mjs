@@ -26,7 +26,11 @@ const step = async (title, run) => {
   console.log(`ok  ${title} (${Date.now() - started} ms)`);
 };
 
-/** Re-runs the search until `names` is exactly what it finds, or fails after `timeout`. */
+/**
+ * Re-runs the search until `names` is exactly what it finds, or fails after `timeout`. No
+ * results count only once the list says so for this very query, so rows still on screen from
+ * an earlier search, or a list not yet filled, are never taken for the answer.
+ */
 async function expectResults(query, names, timeout = 5000) {
   const deadline = Date.now() + timeout;
   let found = [];
@@ -35,7 +39,8 @@ async function expectResults(query, names, timeout = 5000) {
     await search.fill(query);
     await page.waitForTimeout(150);
     found = (await panel.locator(".row .label").allTextContents()).sort();
-    if (JSON.stringify(found) === JSON.stringify([...names].sort())) return;
+    const settled = names.length > 0 || (await panel.locator(".list-empty", { hasText: `Nothing matches “${query}”` }).count()) > 0;
+    if (settled && JSON.stringify(found) === JSON.stringify([...names].sort())) return;
     await page.waitForTimeout(150);
   }
   assert.deepEqual(found, [...names].sort(), `searching for ${query}`);
@@ -60,13 +65,26 @@ try {
     mkdirSync(join(sandbox, "elsewhere"));
     renameSync(join(sandbox, "nested"), join(sandbox, "elsewhere", "nested"));
     await expectResults(tag, [`${tag}-final.txt`]);
-    await search.fill(`${tag} in:${sandbox}\\elsewhere`);
-    await panel.locator(".row .label", { hasText: `${tag}-final.txt` }).waitFor({ timeout: 3000 });
+    // Only the new place counts: the plain search above also passes before the move is seen.
+    await expectResults(`${tag} in:${join(sandbox, "elsewhere")}`, [`${tag}-final.txt`]);
   });
 
   await step("a deleted file disappears from results", async () => {
     rmSync(join(sandbox, "elsewhere", "nested", "deeper", `${tag}-final.txt`));
     await expectResults(tag, []);
+  });
+
+  await step("a file deleted just after its folder moved disappears too", async () => {
+    // Both changes land in one read of the journal, which once left the file in the index: its
+    // folder was re-read at the path it had before the move.
+    mkdirSync(join(sandbox, "moving", "inner"), { recursive: true });
+    writeFileSync(join(sandbox, "moving", "inner", `${tag}-late.txt`), "late");
+    await expectResults(tag, [`${tag}-late.txt`]);
+    renameSync(join(sandbox, "moving"), join(sandbox, "elsewhere", "moving"));
+    rmSync(join(sandbox, "elsewhere", "moving", "inner", `${tag}-late.txt`));
+    writeFileSync(join(sandbox, "elsewhere", "moving", "inner", `${tag}-kept.txt`), "kept");
+    await expectResults(tag, [`${tag}-kept.txt`]);
+    await expectResults(`${tag} in:${join(sandbox, "elsewhere", "moving", "inner")}`, [`${tag}-kept.txt`]);
   });
 
   console.log("\nall checks passed");

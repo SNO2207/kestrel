@@ -1,4 +1,4 @@
-// Starts and stops an isolated dev instance of Kestrel for end-to-end tests.
+// Starts and stops an isolated instance of Kestrel for end-to-end tests.
 //
 //   node e2e/dev.mjs start    builds if needed, launches, and returns once the window is up
 //   node e2e/dev.mjs stop     stops the instance and everything it started
@@ -7,33 +7,35 @@
 // KESTREL_SLOT picks the instance (default 0); each slot has its own ports, app identity and
 // data folder, so agents in separate worktrees can test at the same time. The instance runs
 // detached and logs to e2e/out/slot<N>.log, so `start` can be called from a foreground shell.
+//
+// With KESTREL_RELEASE=1 the instance is a release build: `start` runs the same `tauri build`
+// as `pnpm tauri build` (no installer bundling), with the slot's identity, and starts the
+// kestrel.exe it produced, which serves its own front end. Pass the same variable to the
+// suites. The build turns on the end-to-end hooks of a release build (`KESTREL_TEST_HOOKS`),
+// which only the Windows menu's tests need; drag-and-drop tests need a dev build.
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { cdpPort, dataDir, devUrl, identifier, slot, vitePort } from "./slot.mjs";
+import { appExe, appUrl, cdpPort, dataDir, devUrl, identifier, release, slot, targetDir, vitePort } from "./slot.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const app = join(here, "..");
 const out = join(here, "out");
 mkdirSync(out, { recursive: true });
 const pidFile = join(out, `slot${slot}.pid`);
-// Tauri compiles each instance's settings into its binary, so every slot needs a build of its
-// own; sharing one would make a second slot try to overwrite a running executable.
-const repo = join(app, "..", "..");
-const targetDir = slot === 0 ? join(repo, "target") : join(repo, "target", "slots", `slot${slot}`);
-const appExe = join(targetDir, "debug", "kestrel.exe");
 const logFile = join(out, `slot${slot}.log`);
-/** First builds of the Rust backend can take several minutes. */
-const START_TIMEOUT_MS = 15 * 60 * 1000;
+const tauri = join(app, "node_modules", "@tauri-apps", "cli", "tauri.js");
+/** First builds of the Rust backend can take several minutes; a release build longer. */
+const START_TIMEOUT_MS = 20 * 60 * 1000;
 
 async function windowIsUp() {
   try {
     const response = await fetch(`http://127.0.0.1:${cdpPort}/json/list`, { signal: AbortSignal.timeout(1500) });
     const pages = await response.json();
-    return pages.some((page) => page.title === "Kestrel" && page.url.startsWith(devUrl));
+    return pages.some((page) => page.title === "Kestrel" && page.url.startsWith(appUrl));
   } catch {
     return false;
   }
@@ -67,27 +69,40 @@ async function stop() {
   // The app outlives its launcher if the launcher was killed first, so also stop whatever
   // still holds this slot's ports: the dev server and the web view (whose parent is the app).
   for (const pid of portOwners([vitePort, cdpPort])) kill(pid);
-  const exe = appExe.toLowerCase().replace(/'/g, "''");
-  const script = `Get-CimInstance Win32_Process -Filter "Name = 'kestrel.exe'" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.ToLower() -eq '${exe}' } | Select-Object -ExpandProperty ProcessId`;
+  // Either build of the slot, whichever mode started it.
+  const exes = ["debug", "release"].map((profile) => join(targetDir, profile, "kestrel.exe").toLowerCase().replace(/'/g, "''"));
+  const script = `Get-CimInstance Win32_Process -Filter "Name = 'kestrel.exe'" | Where-Object { $_.ExecutablePath -and @('${exes.join("','")}') -contains $_.ExecutablePath.ToLower() } | Select-Object -ExpandProperty ProcessId`;
   for (const pid of execFileSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8" }).split(/\s+/).filter(Boolean)) {
     kill(Number(pid));
   }
   console.log(`slot ${slot} stopped`);
 }
 
+/** Builds the release executable with the slot's identity, as `pnpm tauri build` does. */
+function buildRelease(env, log) {
+  const config = { identifier };
+  const built = spawnSync(process.execPath, [tauri, "build", "--no-bundle", "--config", JSON.stringify(config)], {
+    cwd: app,
+    env,
+    stdio: ["ignore", log, log],
+    windowsHide: true,
+    timeout: START_TIMEOUT_MS,
+  });
+  if (built.status !== 0 || !existsSync(appExe)) {
+    const tail = readFileSync(logFile, "utf8").split("\n").slice(-30).join("\n");
+    throw new Error(`the release build of slot ${slot} failed (exit ${built.status}). Log tail:\n${tail}`);
+  }
+}
+
 async function start() {
   if (await windowIsUp()) {
-    console.log(`slot ${slot} already running at ${devUrl} (debugging port ${cdpPort})`);
+    console.log(`slot ${slot} already running at ${appUrl} (debugging port ${cdpPort})`);
     return;
   }
   if (portOwners([vitePort, cdpPort]).length) {
     throw new Error(`ports ${vitePort}/${cdpPort} are in use by something else; run \`node e2e/dev.mjs stop\` or pick another KESTREL_SLOT`);
   }
   if (dataDir) mkdirSync(dataDir, { recursive: true });
-  const config = {
-    identifier,
-    build: { devUrl, beforeDevCommand: `pnpm dev --port ${vitePort} --strictPort` },
-  };
   const env = {
     ...process.env,
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${cdpPort}`,
@@ -95,17 +110,32 @@ async function start() {
     ...(dataDir ? { KESTREL_DATA_DIR: dataDir } : {}),
   };
   const log = openSync(logFile, "w");
-  const child = spawn(process.execPath, [join(app, "node_modules", "@tauri-apps", "cli", "tauri.js"), "dev", "--config", JSON.stringify(config)], {
-    cwd: app,
-    env,
-    detached: true,
-    stdio: ["ignore", log, log],
-    windowsHide: true,
-  });
+  const started = Date.now();
+  let child;
+  if (release) {
+    buildRelease(env, log);
+    child = spawn(appExe, [], {
+      cwd: dirname(appExe),
+      env: { ...env, KESTREL_TEST_HOOKS: "1" },
+      detached: true,
+      stdio: ["ignore", log, log],
+    });
+  } else {
+    const config = {
+      identifier,
+      build: { devUrl, beforeDevCommand: `pnpm dev --port ${vitePort} --strictPort` },
+    };
+    child = spawn(process.execPath, [tauri, "dev", "--config", JSON.stringify(config)], {
+      cwd: app,
+      env,
+      detached: true,
+      stdio: ["ignore", log, log],
+      windowsHide: true,
+    });
+  }
   writeFileSync(pidFile, String(child.pid));
   child.unref();
 
-  const started = Date.now();
   while (!(await windowIsUp())) {
     if (Date.now() - started > START_TIMEOUT_MS) {
       const tail = readFileSync(logFile, "utf8").split("\n").slice(-30).join("\n");
@@ -114,7 +144,8 @@ async function start() {
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  console.log(`slot ${slot} ready at ${devUrl} (debugging port ${cdpPort}) after ${Math.round((Date.now() - started) / 1000)} s; log: ${logFile}`);
+  const mode = release ? `release build ${appExe}` : appUrl;
+  console.log(`slot ${slot} ready: ${mode} (debugging port ${cdpPort}) after ${Math.round((Date.now() - started) / 1000)} s; log: ${logFile}`);
 }
 
 const command = process.argv[2];
@@ -122,6 +153,6 @@ if (command === "start") await start();
 else if (command === "stop") await stop();
 else if (command === "status") console.log((await windowIsUp()) ? `slot ${slot} running` : `slot ${slot} not running`);
 else {
-  console.log("usage: node e2e/dev.mjs start|stop|status   (KESTREL_SLOT selects the instance)");
+  console.log("usage: node e2e/dev.mjs start|stop|status   (KESTREL_SLOT selects the instance, KESTREL_RELEASE=1 a release build)");
   process.exitCode = 1;
 }
