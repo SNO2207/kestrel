@@ -324,6 +324,36 @@ fn detail_scripts_readme_and_dismissal() {
 }
 
 #[test]
+fn the_palette_offers_projects_by_name_stack_tag_and_status() {
+    let fixture = fixture("palette");
+    let projects = service(&fixture);
+    // As at startup: nothing has asked for projects yet.
+    projects.inner.lock().active = false;
+    projects.engine.set_status("ready", false);
+    let palette = crate::palette::Palette::new(Arc::new(Db::open_in_memory().unwrap()));
+    palette.register(Arc::new(ProjectsProvider::new(projects.clone())));
+    let ask = |text: &str| -> Vec<String> {
+        let request = crate::palette::Request { text: text.into(), session: "t".into(), items: Vec::new(), show_hidden: false, limit: None };
+        palette.query(request).unwrap().hits.into_iter().map(|hit| hit.item.title).collect()
+    };
+    let app = fixture.app.to_str().unwrap();
+    let plain = fixture.plain.to_str().unwrap();
+
+    assert!(ask("app").is_empty(), "a plain query never starts looking for projects");
+    meta::set_pinned(&projects.db, plain, true).unwrap();
+    assert_eq!(ask("@"), ["plain", "app"], "`@` looks for them, and lists the pinned first");
+    assert!(projects.inner.lock().active, "and keeps them current from then on");
+    assert_eq!(ask("app"), ["app"], "once found, plain queries find them too");
+    assert_eq!(ask("@rust"), ["app"], "by stack");
+    meta::set_tags(&projects.db, app, &["client".to_owned()]).unwrap();
+    assert_eq!(ask("@client"), ["app"], "by tag");
+    meta::set_status(&projects.db, plain, meta::Status::Paused).unwrap();
+    assert_eq!(ask("@paused"), ["plain"], "by status");
+    meta::set_dismissed(&projects.db, plain, true).unwrap();
+    assert_eq!(ask("@"), ["app"], "dismissed folders are not offered");
+}
+
+#[test]
 fn slow_git_commands_are_abandoned() {
     let error = git::run(&std::env::temp_dir(), &["--version"], None, std::time::Duration::ZERO).unwrap_err();
     assert!(error.contains("took longer"), "{error}");

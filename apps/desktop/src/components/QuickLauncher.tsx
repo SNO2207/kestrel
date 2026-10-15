@@ -2,6 +2,7 @@ import { Show, createSignal, onCleanup, onMount } from "solid-js";
 
 import { paletteProvider, registerPaletteProvider, rememberChoice, type OpenMode, type PaletteHit } from "../lib/palette";
 import { actionsProvider } from "../lib/paletteActions";
+import { featureProviders } from "../lib/paletteFeatures";
 import { paletteApi } from "../lib/paletteApi";
 import { filesProvider } from "../lib/paletteFiles";
 import { setOption, showExtensions, showHidden } from "../lib/views";
@@ -41,7 +42,7 @@ export function QuickLauncher() {
   const [failure, setFailure] = createSignal<string | null>(null);
 
   onMount(() => {
-    const removers = [registerPaletteProvider(actionsProvider()), registerPaletteProvider(filesProvider)];
+    const removers = [actionsProvider(), filesProvider, ...featureProviders()].map(registerPaletteProvider);
     const stopShown = paletteApi.onShown(() => {
       setFailure(null);
       setGeneration((count) => count + 1);

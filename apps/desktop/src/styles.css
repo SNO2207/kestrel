@@ -1914,6 +1914,12 @@ code {
   color: var(--text);
 }
 
+/* A tag's colour (shortcuts.css), the size of the sidebar's. */
+.palette-icon .palette-tag {
+  width: 10px;
+  height: 10px;
+}
+
 .palette-text {
   display: flex;
   flex: 1;

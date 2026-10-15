@@ -167,8 +167,8 @@ pub struct Query<'a> {
     /// What to match, without the prefix.
     pub text: &'a str,
     /// The prefix typed, if any: a provider that also takes part in the default mix may list
-    /// more under its own prefix. None of the built-in providers need it.
-    #[allow(dead_code)]
+    /// more under its own prefix, or do more to answer it (the projects provider starts
+    /// looking for projects only when asked by `@`).
     pub scope: Option<char>,
     /// Hidden files and folders are wanted ("Show hidden items" is on).
     pub show_hidden: bool,
@@ -224,6 +224,14 @@ pub trait Provider: Send + Sync + 'static {
     /// Each item's [`Item::provider`] names the front end handler that carries it out, which
     /// is normally this provider's own id; the paths provider hands its items to `files`.
     fn search(&self, query: &Query) -> Vec<Hit>;
+
+    /// A remembered item of this provider as it is now, for the empty palette's list of what
+    /// was used lately (which keeps only the title, subtitle and path): `None` if it is gone.
+    /// The default shows it as it was remembered, which suits items that never change, and
+    /// files and folders, which are dropped once their path is gone.
+    fn current(&self, remembered: Item) -> Option<Item> {
+        Some(remembered)
+    }
 }
 
 /// Ranks a short list of items against the query: what a provider with a few hundred items
@@ -379,7 +387,11 @@ impl Palette {
             let shown = |provider: &str| {
                 !registered.iter().any(|p| p.id() == provider) || active.iter().any(|p| p.id() == provider)
             };
-            hits.extend(remembered(&recents, shown));
+            let current = |item: Item| match registered.iter().find(|p| p.id() == item.provider) {
+                Some(provider) => provider.current(item),
+                None => Some(item),
+            };
+            hits.extend(remembered(&recents, shown, current));
         }
         let hits = finish(hits, &recents, limit);
         let providers = active.iter().map(|provider| provider.id()).collect();
@@ -387,18 +399,16 @@ impl Palette {
     }
 }
 
-/// The remembered items an empty palette lists first: those `shown` allows, and files and
-/// folders only while they still exist.
-fn remembered(recents: &Recents, shown: impl Fn(&str) -> bool) -> Vec<Hit> {
+/// The remembered items an empty palette lists first: those `shown` allows, as `current`
+/// says they are now (it drops those that are gone), and files and folders only while they
+/// still exist.
+fn remembered(recents: &Recents, shown: impl Fn(&str) -> bool, current: impl Fn(Item) -> Option<Item>) -> Vec<Hit> {
     recents
         .rows()
         .iter()
         .filter(|row| shown(&row.item.provider))
-        .filter(|row| row.item.path.as_deref().is_none_or(|path| std::path::Path::new(path).exists()))
-        .take(RECENT_SHOWN)
-        .enumerate()
-        .map(|(order, row)| {
-            let item = Item {
+        .filter_map(|row| {
+            current(Item {
                 provider: row.item.provider.clone(),
                 id: row.item.id.clone(),
                 title: row.item.title.clone(),
@@ -406,9 +416,12 @@ fn remembered(recents: &Recents, shown: impl Fn(&str) -> bool) -> Vec<Hit> {
                 path: row.item.path.clone(),
                 dir: row.item.dir,
                 ..Item::default()
-            };
-            Hit { order, ..Hit::new(item, 0, Vec::new()) }
+            })
         })
+        .filter(|item| item.path.as_deref().is_none_or(|path| std::path::Path::new(path).exists()))
+        .take(RECENT_SHOWN)
+        .enumerate()
+        .map(|(order, item)| Hit { order, ..Hit::new(item, 0, Vec::new()) })
         .collect()
 }
 
@@ -432,7 +445,7 @@ fn finish(hits: Vec<Hit>, recents: &Recents, limit: usize) -> Vec<Hit> {
             }
         }
     }
-    let mut hits: Vec<Hit> = best.into_values().collect();
+    let mut hits = one_per_path(best.into_values().collect());
     let weight = |hit: &Hit| weights.get(&hit.item.key()).copied().unwrap_or(0.0);
     hits.sort_by(|a, b| {
         b.score
@@ -443,6 +456,35 @@ fn finish(hits: Vec<Hit>, recents: &Recents, limit: usize) -> Vec<Hit> {
     });
     hits.truncate(limit);
     hits
+}
+
+/// Keeps one hit per file or folder. The same folder can come from several providers (the
+/// index, a pin, the frequent folders, the projects); the best-ranked showing stands for all
+/// of them, which is normally the one whose provider says the most about it (a pin with its
+/// number key, a project), since those are boosted.
+fn one_per_path(hits: Vec<Hit>) -> Vec<Hit> {
+    let mut by_path: HashMap<String, usize> = HashMap::new();
+    let mut kept: Vec<Option<Hit>> = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let Some(path) = hit.item.path.as_deref().map(|path| path.trim_end_matches('\\').to_lowercase()) else {
+            kept.push(Some(hit));
+            continue;
+        };
+        match by_path.get(&path) {
+            Some(&at) => {
+                let Some(previous) = kept[at].as_ref() else { continue };
+                let better = (hit.score, std::cmp::Reverse(hit.order)) > (previous.score, std::cmp::Reverse(previous.order));
+                if better {
+                    kept[at] = Some(hit);
+                }
+            }
+            None => {
+                by_path.insert(path, kept.len());
+                kept.push(Some(hit));
+            }
+        }
+    }
+    kept.into_iter().flatten().collect()
 }
 
 // ---------- commands ----------
@@ -606,6 +648,49 @@ mod tests {
         assert_eq!(hits[0].highlights, [0, 1, 2, 3, 4, 5]);
         assert_eq!(hits[1].item.id, "show-hidden");
         assert!(hits[1].highlights.is_empty());
+    }
+
+    /// Saved things, which can be renamed or deleted after they were chosen.
+    struct Saved;
+
+    impl Provider for Saved {
+        fn id(&self) -> &'static str {
+            "saved"
+        }
+        fn search(&self, _query: &Query) -> Vec<Hit> {
+            Vec::new()
+        }
+        fn current(&self, remembered: Item) -> Option<Item> {
+            (remembered.id == "kept").then(|| Item { title: "Renamed".into(), icon: Some("search".into()), ..remembered })
+        }
+    }
+
+    #[test]
+    fn remembered_items_are_shown_as_they_are_now_and_not_once_gone() {
+        let palette = palette();
+        palette.register(Arc::new(Saved));
+        for id in ["gone", "kept"] {
+            palette.record(&Use { provider: "saved".into(), id: id.into(), title: "Old name".into(), ..Use::default() }).unwrap();
+        }
+        let request = Request { text: String::new(), session: "t".into(), items: Vec::new(), show_hidden: false, limit: None };
+        let hits = palette.query(request).unwrap().hits;
+        let shown: Vec<(&str, &str)> = hits.iter().map(|hit| (hit.item.id.as_str(), hit.item.title.as_str())).collect();
+        assert_eq!(shown, [("kept", "Renamed")]);
+        assert_eq!(hits[0].item.icon.as_deref(), Some("search"), "with what was not remembered");
+    }
+
+    #[test]
+    fn a_folder_offered_by_several_providers_is_listed_once() {
+        let palette = palette();
+        let at = |provider: &str, path: &str, boost: i32| Item {
+            path: Some(path.into()),
+            dir: true,
+            boost,
+            ..item(provider, path, "Falcon")
+        };
+        palette.register(Arc::new(Fixed("index", None, vec![at("index", r"C:\Code\Falcon", 0), at("index", r"C:\Old\Falcon", 0)])));
+        palette.register(Arc::new(Fixed("pins", None, vec![at("pins", r"c:\code\falcon\", 25)])));
+        assert_eq!(ask(&palette, "falcon", Vec::new()), [r"pins:c:\code\falcon\", r"index:C:\Old\Falcon"]);
     }
 
     #[test]

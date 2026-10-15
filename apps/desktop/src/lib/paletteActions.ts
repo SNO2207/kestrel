@@ -5,7 +5,11 @@
  * the selected files, and hands a chosen one to the main window (palette.ts).
  */
 import type { ListCommand } from "../components/FileList";
+import { openGoto } from "../components/GoToFolder";
+import { askName } from "../components/ShortcutDialogs";
 import { focusTargets } from "../components/Toolbar";
+import { projectsOpen, toggleProjects } from "../projects";
+import { saveSearch, saveWorkspace } from "../shortcuts";
 import { paneOpen, setQuickLookOpen, focusedItem, togglePane } from "../previewState";
 import {
   activeTab,
@@ -52,6 +56,8 @@ interface Action {
   folder?: boolean;
   /** Has no meaning in the quick launcher. */
   mainOnly?: boolean;
+  /** Listed only while this holds, in the main window. */
+  when?: () => boolean;
   run: (host: ActionHost) => void;
 }
 
@@ -78,6 +84,20 @@ const withTab = (run: (tabId: number) => void) => () => {
   if (tab) run(tab.id);
 };
 
+/** Saves the active tab's search to the sidebar, under a name asked for. */
+async function saveTheSearch() {
+  const tab = activeTab();
+  if (!tab || tab.query.trim() === "") return;
+  const answer = await askName({ title: "Save search", label: "Name", initial: tab.query.trim(), action: "Save" });
+  if (answer) await saveSearch(tab.id, answer.name);
+}
+
+/** Saves the open tabs as a workspace, under a name asked for. */
+async function saveTheTabs() {
+  const answer = await askName({ title: "Save tabs as a workspace", label: "Name", initial: "", placeholder: "Writing, Taxes 2026…", action: "Save" });
+  if (answer) await saveWorkspace(answer.name);
+}
+
 /** Every action, in the order an empty palette lists them. */
 function actions(): Action[] {
   const tab = activeTab();
@@ -92,6 +112,15 @@ function actions(): Action[] {
     { id: "up", title: "Up one folder", hint: "Alt+Up", icon: "up", keywords: "parent", run: withTab(goUp) },
     { id: "refresh", title: "Refresh", hint: "F5", icon: "refresh", keywords: "reload", run: withTab((id) => (recheckAccess(), refresh(id))) },
     { id: "address", title: "Edit the address", hint: "Ctrl+L", keywords: "location path go to", run: () => focusTargets.address?.() },
+    { id: "go-to-folder", title: "Go to folder", hint: "Ctrl+G", icon: "folder", keywords: "jump frequent recent visited", run: () => openGoto() },
+    {
+      id: "projects",
+      title: projectsOpen() ? "Close projects" : "Open projects",
+      hint: "Ctrl+Shift+P",
+      icon: "project:projects",
+      keywords: "projects repositories git code hub",
+      run: toggleProjects,
+    },
     { id: "search", title: "Search", hint: "Ctrl+F", icon: "search", keywords: "find", run: () => focusTargets.search?.() },
     {
       id: "search-scope",
@@ -99,6 +128,15 @@ function actions(): Action[] {
       icon: everywhere() ? "folder" : "globe",
       keywords: "search scope everywhere folder",
       run: () => setEverywhere(!everywhere()),
+    },
+    {
+      id: "save-search",
+      title: "Save this search",
+      icon: "shortcut:save",
+      keywords: "saved searches sidebar keep",
+      mainOnly: true,
+      when: () => (activeTab()?.query.trim() ?? "") !== "",
+      run: () => void saveTheSearch(),
     },
     ...VIEW_MODES.map(
       (info): Action => ({
@@ -174,6 +212,10 @@ function actions(): Action[] {
     { id: "delete", title: "Delete", hint: "Del", selection: true, keywords: "remove recycle bin", run: (host) => host.runCommand("delete") },
     { id: "open-with", title: "Open with…", selection: true, keywords: "application program", run: (host) => host.runCommand("open-with") },
     { id: "properties", title: "Properties", hint: "Alt+Enter", selection: true, run: (host) => host.runCommand("properties") },
+    { id: "pin", title: "Pin to sidebar", hint: "Ctrl+D", icon: "shortcut:pin", selection: true, keywords: "pinned places favourites bookmark", run: (host) => host.runCommand("pin") },
+    { id: "pin-folder", title: "Pin this folder", icon: "shortcut:pin", folder: true, keywords: "pinned places favourites bookmark sidebar", run: (host) => host.runCommand("pin-folder") },
+    { id: "tags", title: "Tags…", icon: "shortcut:tag", selection: true, keywords: "tag label colour color", run: (host) => host.runCommand("tags") },
+    { id: "save-workspace", title: "Save tabs as a workspace", icon: "shortcut:workspace", keywords: "workspaces session tabs keep", run: () => void saveTheTabs() },
     { id: "folder-properties", title: "Folder properties", folder: true, run: (host) => host.runCommand("folder-properties") },
     { id: "select-all", title: "Select all", hint: "Ctrl+A", mainOnly: true, run: (host) => pressInList(host, "a", { ctrlKey: true }) },
     {
@@ -197,6 +239,7 @@ function available(action: Action, context: PaletteContext): boolean {
   const tab = activeTab();
   if (action.selection && (tab?.selected ?? 0) === 0) return false;
   if (action.folder && (!tab || isSearch(tab))) return false;
+  if (action.when && !action.when()) return false;
   return true;
 }
 

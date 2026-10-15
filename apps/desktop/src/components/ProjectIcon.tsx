@@ -16,6 +16,8 @@ const PATHS = {
 
 export type ProjectIconName = keyof typeof PATHS;
 
+export const hasProjectIcon = (name: string): name is ProjectIconName => Object.hasOwn(PATHS, name);
+
 /** Line icons for the projects hub, drawn like the app's own `Icon`. */
 export function ProjectIcon(props: { name: ProjectIconName; size?: number }) {
   return (

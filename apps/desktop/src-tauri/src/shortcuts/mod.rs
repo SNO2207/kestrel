@@ -6,6 +6,7 @@
 pub mod frecency;
 pub mod goto;
 pub mod pins;
+pub mod provider;
 pub mod searches;
 pub mod tags;
 pub mod workspaces;

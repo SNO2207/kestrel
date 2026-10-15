@@ -55,6 +55,8 @@ export interface PaletteProvider {
   listWhenEmpty?: boolean;
   /** Carries out a chosen item. In the quick launcher this runs in the main window, unless `runsAnywhere`. */
   run: (hit: PaletteHit, mode: OpenMode) => void | Promise<void>;
+  /** What Shift+Enter does to its items, as the footer says it; "show in folder" if left out. */
+  revealLabel?: string;
   /** Whether a choice needs no window of Kestrel's, such as a file opening in its own app. */
   runsAnywhere?: (hit: PaletteHit, mode: OpenMode) => boolean;
   /** What Tab puts in the input for an item, or null to leave the input alone. */

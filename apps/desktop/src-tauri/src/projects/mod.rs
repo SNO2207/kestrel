@@ -13,6 +13,7 @@ mod discover;
 mod facts;
 mod git;
 mod launch;
+mod provider;
 mod scripts;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -34,6 +35,8 @@ use facts::{LanguageShare, Reclaimable, RecentFile, TreeFacts};
 use git::{Branch, Commit, Counts};
 use launch::{Available, Launch, Launcher};
 use scripts::Script;
+
+pub use provider::ProjectsProvider;
 
 /// How long the index must stay quiet before projects are looked for again.
 const QUIET: Duration = Duration::from_secs(1);
@@ -218,6 +221,23 @@ impl Projects {
             if due {
                 self.look();
             }
+        }
+    }
+
+    /// Keeps projects current from now on, as opening the hub does, and looks for them now if
+    /// nothing has yet, so that whoever asks (the palette's `@`) gets them at once.
+    pub fn ensure_found(&self) {
+        let first = {
+            let mut inner = self.inner.lock();
+            !std::mem::replace(&mut inner.active, true)
+        };
+        if !first {
+            return;
+        }
+        if self.engine.status().state == "ready" {
+            self.look();
+        } else {
+            self.wake.notify_one();
         }
     }
 

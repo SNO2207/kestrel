@@ -325,6 +325,9 @@ fn main() {
     let palette = Arc::new(palette::Palette::new(database.clone()));
     palette.register(Arc::new(palette::files::FilesProvider::new(engine.clone())));
     palette.register(Arc::new(palette::paths::PathsProvider::default()));
+    // `@` projects, and the shortcuts (pins, frequent folders, saved searches, workspaces, `#` tags).
+    palette.register(Arc::new(projects::ProjectsProvider::new(projects.clone())));
+    shortcuts::provider::register(&palette, &database);
 
     tauri::Builder::default()
         // The window never leaves the app's own page; see navigation.rs.

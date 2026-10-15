@@ -15,6 +15,8 @@ const PATHS = {
 
 export type ShortcutGlyph = keyof typeof PATHS;
 
+export const hasShortcutGlyph = (name: string): name is ShortcutGlyph => Object.hasOwn(PATHS, name);
+
 export function ShortcutIcon(props: { name: ShortcutGlyph; size?: number; class?: string }) {
   return (
     <svg

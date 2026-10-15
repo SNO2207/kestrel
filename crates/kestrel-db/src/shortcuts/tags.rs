@@ -73,6 +73,19 @@ pub fn list(db: &Db) -> Result<Vec<Tag>> {
     db.with(|c| c.prepare("SELECT id, name, color FROM tags ORDER BY position, id")?.query_map([], tag_from)?.collect())
 }
 
+/// Every tag, in sidebar order, with how many items carry it.
+pub fn with_counts(db: &Db) -> Result<Vec<(Tag, usize)>> {
+    db.with(|c| {
+        c.prepare(
+            "SELECT tags.id, tags.name, tags.color, COUNT(item_tags.item_id) FROM tags
+             LEFT JOIN item_tags ON item_tags.tag_id = tags.id
+             GROUP BY tags.id ORDER BY tags.position, tags.id",
+        )?
+        .query_map([], |row| Ok((tag_from(row)?, row.get::<_, i64>(3)? as usize)))?
+        .collect()
+    })
+}
+
 /// The tag with this name, in any case.
 pub fn by_name(db: &Db, name: &str) -> Result<Option<Tag>> {
     db.with(|c| c.query_row("SELECT id, name, color FROM tags WHERE name = ?1", params![name.trim()], tag_from).optional())
@@ -276,6 +289,20 @@ mod tests {
         assert!(items(&db).unwrap().is_empty());
         assert!(delete(&db, later.id).is_err());
         assert!(assign(&db, later.id, &at(r"C:\a.txt", 1)).is_err());
+    }
+
+    #[test]
+    fn tags_are_counted_in_sidebar_order() {
+        let db = Db::open_in_memory().unwrap();
+        let red = create(&db, "Red", "red").unwrap();
+        let blue = create(&db, "Blue", "blue").unwrap();
+        assign(&db, blue.id, &at(r"C:\a.txt", 1)).unwrap();
+        assign(&db, blue.id, &at(r"C:\b.txt", 2)).unwrap();
+        assign(&db, red.id, &at(r"C:\b.txt", 2)).unwrap();
+        let counted: Vec<(String, usize)> = with_counts(&db).unwrap().into_iter().map(|(tag, n)| (tag.name, n)).collect();
+        assert_eq!(counted, [("Red".to_owned(), 1), ("Blue".to_owned(), 2)]);
+        create(&db, "Unused", "gray").unwrap();
+        assert_eq!(with_counts(&db).unwrap()[2].1, 0, "a tag on nothing counts none");
     }
 
     #[test]

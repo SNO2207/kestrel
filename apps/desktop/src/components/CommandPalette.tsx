@@ -1,4 +1,4 @@
-import { For, Show, batch, createEffect, createSignal, on, onMount } from "solid-js";
+import { For, Match, Show, Switch, batch, createEffect, createSignal, on, onMount } from "solid-js";
 
 import { iconUrl } from "../lib/api";
 import {
@@ -6,6 +6,7 @@ import {
   askPalette,
   highlightRuns,
   paletteProvider,
+  splitPrefix,
   type OpenMode,
   type PaletteAnswer,
   type PaletteHit,
@@ -13,6 +14,8 @@ import {
 } from "../lib/palette";
 import { showHidden } from "../lib/views";
 import { Icon, hasIcon, type IconName } from "./Icon";
+import { ProjectIcon, hasProjectIcon, type ProjectIconName } from "./ProjectIcon";
+import { ShortcutIcon, hasShortcutGlyph, type ShortcutGlyph } from "./ShortcutIcon";
 
 /** Rows moved by Page Up and Page Down. */
 const PAGE = 8;
@@ -137,6 +140,9 @@ export function CommandPalette(props: Props) {
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
+    // Every key typed here is the palette's: the window's own shortcuts (Ctrl+T, Alt+P, Ctrl+G,
+    // the pins' Ctrl+1…) must not act behind it. Text editing keys still do what they do.
+    event.stopPropagation();
     const handled = () => {
       event.preventDefault();
       event.stopPropagation();
@@ -170,12 +176,18 @@ export function CommandPalette(props: Props) {
     const current = answer();
     if (!current) return "";
     const prefix = PREFIXES.find((entry) => entry.prefix === current.prefix);
-    if (prefix && !current.provided) return prefix.empty;
+    // A prefix with nothing typed after it lists everything its provider has: none yet.
+    if (prefix && (!current.provided || splitPrefix(text()).rest.trim() === "")) return prefix.empty;
     const typed = text().trim();
     return typed ? `Nothing matches “${typed}”.` : "Nothing to show yet.";
   };
 
   const kind = (hit: PaletteHit) => paletteProvider(hit.provider)?.label(hit) ?? "";
+  /** What Shift+Enter does to the selected item. */
+  const revealLabel = () => {
+    const hit = hits()[selected()];
+    return (hit && paletteProvider(hit.provider)?.revealLabel) || "show in folder";
+  };
 
   return (
     <div class="palette" classList={{ quick: props.window === "quick" }} role="dialog" aria-label="Command palette">
@@ -221,14 +233,7 @@ export function CommandPalette(props: Props) {
               onClick={(event) => choose(index(), modeFor(event))}
             >
               <span class="palette-icon">
-                <Show
-                  when={hit.path}
-                  fallback={
-                    <Show when={hit.icon && hasIcon(hit.icon) && hit.icon} fallback={<ActionGlyph />}>
-                      {(name) => <Icon name={name() as IconName} />}
-                    </Show>
-                  }
-                >
+                <Show when={hit.path} fallback={<PaletteGlyph icon={hit.icon} />}>
                   {(path) => (
                     <img
                       src={iconUrl({ dir: hit.dir ?? false, ext: extensionOf(hit.title), path: path() })}
@@ -268,7 +273,7 @@ export function CommandPalette(props: Props) {
           <kbd>Ctrl+Enter</kbd> new tab
         </span>
         <span>
-          <kbd>Shift+Enter</kbd> show in folder
+          <kbd>Shift+Enter</kbd> {revealLabel()}
         </span>
         <span>
           <kbd>Tab</kbd> complete
@@ -284,6 +289,30 @@ export function CommandPalette(props: Props) {
         </span>
       </div>
     </div>
+  );
+}
+
+/**
+ * The mark of an item that is not a file or folder: an app icon by name, a shortcut's glyph
+ * (`shortcut:<name>`), a project glyph (`project:<name>`), a tag's colour (`tag:<colour>`), or
+ * for an action without one, a bolt.
+ */
+function PaletteGlyph(props: { icon: string | null | undefined }) {
+  const icon = () => props.icon ?? "";
+  const after = (prefix: string) => (icon().startsWith(prefix) ? icon().slice(prefix.length) : null);
+  return (
+    <Switch fallback={<ActionGlyph />}>
+      <Match when={after("tag:")}>{(color) => <span class="tag-dot palette-tag" data-color={color()} />}</Match>
+      <Match when={after("shortcut:")}>
+        {(name) => (hasShortcutGlyph(name()) ? <ShortcutIcon name={name() as ShortcutGlyph} /> : <ActionGlyph />)}
+      </Match>
+      <Match when={after("project:")}>
+        {(name) => (hasProjectIcon(name()) ? <ProjectIcon name={name() as ProjectIconName} /> : <ActionGlyph />)}
+      </Match>
+      <Match when={hasIcon(icon())}>
+        <Icon name={icon() as IconName} />
+      </Match>
+    </Switch>
   );
 }
 
