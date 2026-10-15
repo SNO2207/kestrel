@@ -1,6 +1,7 @@
 import { For, Match, Show, Switch, batch, createEffect, createSignal, on, onMount } from "solid-js";
 
 import { iconUrl } from "../lib/api";
+import { baseName } from "../lib/format";
 import {
   PREFIXES,
   askPalette,
@@ -32,7 +33,7 @@ interface Props {
   generation?: number;
 }
 
-/** A file's extension, for its system icon. */
+/** A file's extension, for its system icon: from its path, since a pin's title may be an alias. */
 const extensionOf = (name: string) => {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
@@ -236,7 +237,7 @@ export function CommandPalette(props: Props) {
                 <Show when={hit.path} fallback={<PaletteGlyph icon={hit.icon} />}>
                   {(path) => (
                     <img
-                      src={iconUrl({ dir: hit.dir ?? false, ext: extensionOf(hit.title), path: path() })}
+                      src={iconUrl({ dir: hit.dir ?? false, ext: extensionOf(baseName(path())), path: path() })}
                       width="16"
                       height="16"
                       alt=""

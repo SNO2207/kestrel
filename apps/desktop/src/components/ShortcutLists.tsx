@@ -20,6 +20,7 @@ import {
   tags,
   workspaces,
 } from "../shortcuts";
+import { projectsOpen } from "../projects";
 import { activeTab, isSearch } from "../state";
 import { askName, showMenu } from "./ShortcutDialogs";
 import { ShortcutIcon } from "./ShortcutIcon";
@@ -44,7 +45,7 @@ export function ShortcutLists() {
 function FrequentFolders() {
   const current = () => {
     const tab = activeTab();
-    return tab && !isSearch(tab) ? tab.path : "";
+    return tab && !isSearch(tab) && !projectsOpen() ? tab.path : "";
   };
   const menu = (event: MouseEvent, path: string) => {
     event.preventDefault();

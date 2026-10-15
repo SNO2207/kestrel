@@ -19,7 +19,9 @@
 //! A provider with a short list of items can build them all and call [`rank_items`]; one with
 //! many (like [`files::FilesProvider`]) matches them itself with a [`Scorer`]. Its items need a
 //! front end half too, which says what choosing one does: see `PaletteProvider` in
-//! `src/lib/palette.ts`, where the provider is registered under the same id.
+//! `src/lib/palette.ts`, where the provider is registered under the same id. The projects
+//! (`projects/provider.rs`) and the shortcuts (`shortcuts/provider.rs`) are short-list
+//! providers; items that can be renamed or deleted also implement [`Provider::current`].
 //!
 //! # Prefixes
 //!

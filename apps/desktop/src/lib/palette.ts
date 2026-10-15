@@ -12,15 +12,15 @@
  *
  * To add a provider, register both halves under one id: the backend one in Rust (see the
  * documentation of `palette.rs`), and this one at startup, in both windows (the main window,
- * App.tsx, and the quick launcher, QuickLauncher.tsx), for example:
+ * PaletteOverlay.tsx, and the quick launcher, QuickLauncher.tsx). `paletteFeatures.ts` holds
+ * the halves of the projects, tags and shortcuts providers, for example:
  *
  * ```ts
  * registerPaletteProvider({
- *   id: "projects",
- *   prefix: "@",
- *   label: () => "Project",
- *   run: (hit, mode) => (mode === "new-tab" ? openTab(hit.path!) : navigate(activeId(), hit.path!)),
- *   complete: (hit) => `@${hit.title}`,
+ *   id: "frequent",
+ *   label: () => "Frequent folder",
+ *   run: (hit, mode) => (mode === "reveal" ? showInFolder(hit.path!) : openPlace(hit.path!, true, mode === "new-tab")),
+ *   complete: (hit) => `/${hit.path}\\`,
  * });
  * ```
  *
