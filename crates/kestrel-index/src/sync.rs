@@ -27,6 +27,8 @@ pub struct Sync {
     pending: Vec<(EntryId, DirItem)>,
     /// Entries whose folder was listed without them: removed unless they turn up elsewhere.
     missing: Vec<EntryId>,
+    /// Folders added as new rather than moved, since [`Sync::take_new_dirs`] was last called.
+    new_dirs: Vec<EntryId>,
     stats: SyncStats,
 }
 
@@ -81,10 +83,20 @@ impl Sync {
                 self.stats.moved += 1;
             }
             None => {
-                index.insert(dir, &item.name, item.meta);
+                let new = index.insert(dir, &item.name, item.meta);
+                self.new_dirs.push(new);
                 self.stats.inserted += 1;
             }
         }
+    }
+
+    /// The folders added as new since this was last called. A new folder is not necessarily
+    /// empty: it may have been moved in, contents and all, from somewhere the index does not
+    /// cover or no longer holds it (a batch of changes can end between a folder leaving one
+    /// place and arriving in another). Nothing else will name its contents, so a caller that
+    /// follows changes lists these folders too.
+    pub fn take_new_dirs(&mut self) -> Vec<EntryId> {
+        std::mem::take(&mut self.new_dirs)
     }
 
     /// Places the remaining new files and removes entries that did not reappear anywhere.
@@ -240,6 +252,21 @@ mod tests {
         assert_eq!((stats.moved, stats.removed, stats.inserted), (1, 0, 0));
         assert!(index.lookup(r"C:\renamed\deep\x.txt").is_some());
         assert!(index.lookup(r"C:\a").is_none());
+    }
+
+    #[test]
+    fn folders_added_as_new_are_reported_and_moved_ones_are_not() {
+        let mut index = sample();
+        let (root, b) = (index.roots()[0], index.lookup(r"C:\b").unwrap());
+        let mut sync = Sync::default();
+        // `deep` moved from a to b (it keeps its contents); `fresh` is unknown.
+        sync.dir(&mut index, b, vec![folder("deep", 11), folder("fresh", 30), file("f.txt", 1, 31)]);
+        let fresh = index.lookup(r"C:\b\fresh").unwrap();
+        assert_eq!(sync.take_new_dirs(), [fresh]);
+        assert!(sync.take_new_dirs().is_empty(), "each new folder is reported once");
+        sync.dir(&mut index, root, vec![folder("a", 10), folder("b", 12), file("one.txt", 3, 20)]);
+        assert!(sync.take_new_dirs().is_empty());
+        sync.finish(&mut index);
     }
 
     #[test]

@@ -30,6 +30,9 @@ pub enum Outcome {
 pub struct Tracker {
     root: String,
     journal: Journal,
+    /// Opens the folders the journal names by their file ids; without it they are read by
+    /// path.
+    volume: Option<walk::Volume>,
 }
 
 /// The root of the volume holding `path`, in the form cursors are stored under, such as
@@ -44,7 +47,7 @@ fn volume_root(path: &str) -> String {
 
 impl Tracker {
     pub fn open(root: &str) -> io::Result<Self> {
-        Ok(Self { root: volume_root(root), journal: Journal::open(root)? })
+        Ok(Self { root: volume_root(root), journal: Journal::open(root)?, volume: walk::Volume::open(root).ok() })
     }
 
     pub fn root(&self) -> &str {
@@ -83,50 +86,82 @@ impl Tracker {
             .map(|change| change.parent_id)
             .filter(|&parent| seen.insert(parent))
             .collect();
-        let (listed, stats) = refresh_folders(index, folders);
+        let (listed, stats) = refresh(index, folders, self.volume.as_ref());
         index.write().advance_journal(&self.root, state.id, next);
         Ok(Outcome::Current { changes: changes.len(), folders: listed, stats })
     }
 }
 
+/// Re-reads the folders with these file ids, by the paths the index holds for them, and
+/// applies the differences as one batch. Returns how many folders were read.
+pub fn refresh_folders(index: &RwLock<Index>, folder_ids: Vec<u64>) -> (usize, SyncStats) {
+    refresh(index, folder_ids, None)
+}
+
+/// The live directory entry with this file id. Folders cannot be hard-linked, so there is at
+/// most one on a real disk.
+fn find_dir(index: &Index, file_id: u64) -> Option<EntryId> {
+    index.entries_with_file_id(file_id).into_iter().find(|&id| index.is_dir(id))
+}
+
 /// Re-reads the folders with these file ids and applies the differences as one batch.
-/// Returns how many folders were read.
 ///
 /// Folders are read in rounds. A folder created during the changes is unknown to the index
 /// until its parent has been applied, so each round picks up the folders the previous one
-/// made known. The index lock is released while the disk is read.
-pub fn refresh_folders(index: &RwLock<Index>, mut folder_ids: Vec<u64>) -> (usize, SyncStats) {
+/// made known, and a folder that turns up as new is read too, since it may have arrived with
+/// contents that nothing else names. The index lock is released while the disk is read.
+///
+/// With a `volume`, folders are opened by file id. Their paths in the index are stale while a
+/// folder above them has moved in the same batch (the move is applied only once its new parent
+/// is read), and listing such a path failed, which silently lost the changes inside it.
+fn refresh(index: &RwLock<Index>, mut waiting: Vec<u64>, volume: Option<&walk::Volume>) -> (usize, SyncStats) {
     let mut sync = Sync::default();
-    let mut listed = 0;
+    let mut read: HashSet<u64> = HashSet::new();
     loop {
-        let mut targets: Vec<(EntryId, String)> = Vec::new();
+        let mut targets: Vec<(u64, EntryId, String)> = Vec::new();
         {
             let index = index.read();
-            folder_ids.retain(|&file_id| {
-                let found = index.entries_with_file_id(file_id).into_iter().find(|&id| index.is_dir(id));
-                if let Some(dir) = found {
-                    targets.push((dir, index.path(dir)));
+            waiting.retain(|&file_id| {
+                if read.contains(&file_id) {
+                    return false;
                 }
-                found.is_none()
+                let Some(dir) = find_dir(&index, file_id) else { return true };
+                read.insert(file_id);
+                targets.push((file_id, dir, index.path(dir)));
+                false
             });
         }
         if targets.is_empty() {
             break;
         }
-        listed += targets.len();
         // Folders that cannot be read, usually for lack of permission, are left as they are.
-        let listings: Vec<(EntryId, Vec<DirItem>)> = targets
+        let listings: Vec<(u64, EntryId, Vec<DirItem>)> = targets
             .into_par_iter()
-            .filter_map(|(dir, path)| walk::list(&path).ok().map(|items| (dir, items)))
+            .filter_map(|(file_id, dir, path)| {
+                let by_id = volume.map(|volume| volume.list(file_id));
+                let items = match by_id {
+                    Some(Ok(items)) => Ok(items),
+                    _ => walk::list(&path),
+                };
+                items.ok().map(|items| (file_id, dir, items))
+            })
             .collect();
         let mut index = index.write();
-        for (dir, items) in listings {
-            if !index.is_deleted(dir) {
+        for (file_id, dir, items) in listings {
+            // A folder moved by a listing applied before its own has a new entry by now.
+            let dir = if index.is_deleted(dir) { find_dir(&index, file_id) } else { Some(dir) };
+            if let Some(dir) = dir {
                 sync.dir(&mut index, dir, items);
             }
         }
+        for dir in sync.take_new_dirs() {
+            let file_id = index.file_id(dir);
+            if !index.is_deleted(dir) && file_id != 0 && !read.contains(&file_id) {
+                waiting.push(file_id);
+            }
+        }
     }
-    (listed, sync.finish(&mut index.write()))
+    (read.len(), sync.finish(&mut index.write()))
 }
 
 #[cfg(test)]
@@ -184,6 +219,86 @@ mod tests {
         // A folder tree created from nothing was filled in, however deep.
         assert_eq!(names(&index, &format!(r"{base}\brand\new\tree")), ["leaf.txt"]);
         assert_eq!(index.size(index.lookup(&base).unwrap()), 1000 + 500 + 4);
+        drop(index);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A scratch folder under %TEMP% with the given subfolders, removed first if it exists.
+    fn scratch(name: &str, folders: &[&str]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("kestrel-live-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for folder in folders {
+            fs::create_dir_all(root.join(folder)).unwrap();
+        }
+        root
+    }
+
+    /// Whether any live entry of the index has this name.
+    fn anywhere(index: &Index, name: &str) -> bool {
+        (0..index.len()).any(|id| !index.is_deleted(id) && index.name(id) == name)
+    }
+
+    /// The e2e failure: a folder moved and a file inside it deleted between two journal reads.
+    /// The folder of the deleted file was listed at the path the index still had for it, from
+    /// before the move, which no longer existed, so the deletion was never applied.
+    #[test]
+    fn a_change_inside_a_folder_moved_in_the_same_batch_is_applied() {
+        let root = scratch("moved-batch", &["nested/deeper"]);
+        fs::write(root.join("nested/deeper/final.txt"), b"hello").unwrap();
+        let (index, tracker) = scanned(&root);
+        let base = root.to_str().unwrap().to_owned();
+
+        fs::create_dir(root.join("elsewhere")).unwrap();
+        fs::rename(root.join("nested"), root.join("elsewhere/nested")).unwrap();
+        fs::remove_file(root.join("elsewhere/nested/deeper/final.txt")).unwrap();
+        fs::write(root.join("elsewhere/nested/deeper/added.txt"), b"new").unwrap();
+
+        assert!(matches!(tracker.catch_up(&index).unwrap(), Outcome::Current { .. }));
+        let index = index.read();
+        assert_eq!(names(&index, &format!(r"{base}\elsewhere\nested\deeper")), ["added.txt"]);
+        assert!(!anywhere(&index, "final.txt"), "the deleted file is gone from the index");
+        assert!(index.lookup(&format!(r"{base}\nested")).is_none());
+        drop(index);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A journal read can end between creating a folder and moving another into it, and the
+    /// listing that follows already shows the move. The moved folder must keep its contents.
+    #[test]
+    fn a_folder_moved_into_a_new_folder_keeps_its_contents_when_only_the_parent_is_named() {
+        let root = scratch("moved-new", &["nested/deeper"]);
+        fs::write(root.join("nested/deeper/kept.txt"), b"kept").unwrap();
+        let (index, _tracker) = scanned(&root);
+        let base = root.to_str().unwrap().to_owned();
+
+        fs::create_dir(root.join("elsewhere")).unwrap();
+        fs::rename(root.join("nested"), root.join("elsewhere/nested")).unwrap();
+        // Only the record of `elsewhere` being created, whose parent is the root, was read.
+        let root_id = walk::file_id_of(&base).unwrap();
+        refresh_folders(&index, vec![root_id]);
+
+        let index = index.read();
+        assert_eq!(names(&index, &format!(r"{base}\elsewhere\nested\deeper")), ["kept.txt"]);
+        assert!(index.lookup(&format!(r"{base}\nested")).is_none());
+        drop(index);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A folder moved in from somewhere the index does not cover arrives with its contents,
+    /// although the journal names only the folder it was moved into.
+    #[test]
+    fn a_folder_moved_in_from_outside_the_index_arrives_with_its_contents() {
+        let root = scratch("moved-in", &["indexed", "outside/incoming/deep"]);
+        fs::write(root.join("outside/incoming/deep/inside.txt"), b"inside").unwrap();
+        let (index, tracker) = scanned(&root.join("indexed"));
+        let base = root.join("indexed").to_str().unwrap().to_owned();
+
+        fs::rename(root.join("outside/incoming"), root.join("indexed/incoming")).unwrap();
+        assert!(matches!(tracker.catch_up(&index).unwrap(), Outcome::Current { .. }));
+
+        let index = index.read();
+        assert_eq!(names(&index, &format!(r"{base}\incoming\deep")), ["inside.txt"]);
+        assert_eq!(index.size(index.lookup(&base).unwrap()), 6);
         drop(index);
         fs::remove_dir_all(&root).unwrap();
     }

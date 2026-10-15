@@ -32,21 +32,11 @@ mkdirSync(archive, { recursive: true });
 mkdirSync(outside);
 mkdirSync(long);
 writeFileSync(join(inbox, "notes.txt"), "notes");
-for (const name of ["report.txt", "moveme.txt", "photo.txt", "first.txt", "second.txt", "tauri.txt"]) {
+for (const name of ["report.txt", "moveme.txt", "photo.txt", "first.txt", "second.txt", "tauri.txt", "late.txt"]) {
   writeFileSync(join(outside, name), name);
 }
 for (let i = 0; i < 80; i++) writeFileSync(join(long, `file-${String(i).padStart(2, "0")}.txt`), "x");
 const onDisk = (...parts) => existsSync(join(...parts));
-/**
- * Waits up to two seconds for `check` to hold. The shell has finished a move when the drop
- * returns, yet a check made at that very moment has been seen to fail in integration runs and
- * pass a moment later (this script and the app may see %TEMP% through different file system
- * views; see the MSIX container note in CLAUDE.md).
- */
-async function settles(check) {
-  for (let waited = 0; !check() && waited < 2000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
-  return check();
-}
 
 const { browser, page } = await connectToKestrel();
 await page.reload();
@@ -232,10 +222,43 @@ try {
     await hook.enter([moveme], await centre(row("Archive")));
     const result = await hook.drop([moveme], await centre(row("Archive")));
     assert.deepEqual(result, { effect: "move", names: ["moveme.txt"] });
-    assert(await settles(() => onDisk(archive, "moveme.txt") && !onDisk(moveme)));
+    // The shell has finished the move when the drop returns.
+    assert(onDisk(archive, "moveme.txt") && !onDisk(moveme) && !onDisk(inbox, "moveme.txt"));
     // The folder on screen is not where the file went, so nothing new appears here.
     await page.waitForTimeout(300);
     assert.equal(await row("moveme.txt").count(), 0);
+    await hook.keys({ ctrl: false, shift: false });
+  });
+
+  await step("a drop on a folder row while the list refreshes still lands in that folder", async () => {
+    // A refreshed list fetches its rows again, and for a few milliseconds they carry no path.
+    // A drop in that moment used to be taken for one on empty space, which sent the file into
+    // the open folder instead of the row's. Here the drop happens exactly then.
+    const late = join(outside, "late.txt");
+    await hook.keys({ ctrl: false, shift: true });
+    const at = await centre(row("Archive"));
+    await hook.enter([late], at);
+    const { result, loading } = await page.evaluate(
+      ([paths, at]) =>
+        new Promise((resolve) => {
+          const rows = document.querySelector(".tab-panel.active .list-rows");
+          const observer = new MutationObserver(() => {
+            if (!document.querySelector(".tab-panel.active .row[data-index]:not([data-path])")) return;
+            observer.disconnect();
+            window.__kestrelDragDrop.drop(paths, at.x, at.y).then((result) => resolve({ result, loading: true }));
+          });
+          observer.observe(rows, { subtree: true, childList: true, attributes: true });
+          document.querySelector('.toolbar button[aria-label="Refresh"]').click();
+          setTimeout(() => {
+            observer.disconnect();
+            resolve({ result: null, loading: false });
+          }, 3000);
+        }),
+      [[late], at],
+    );
+    assert(loading, "the drop came while the refreshed rows were loading");
+    assert.deepEqual(result, { effect: "move", names: ["late.txt"] });
+    assert(onDisk(archive, "late.txt") && !onDisk(late) && !onDisk(inbox, "late.txt"), "the file is in Archive");
     await hook.keys({ ctrl: false, shift: false });
   });
 

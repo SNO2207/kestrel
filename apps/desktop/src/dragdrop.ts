@@ -89,8 +89,18 @@ function accepts(path: string): boolean {
   return !sources.every((source) => comparable(parentPath(source) ?? "") === destination);
 }
 
+/**
+ * Stands for a row or item under the cursor whose data has not arrived yet. A refreshed list
+ * fetches its rows again, and in the few milliseconds that takes they carry no path. Such a row
+ * is not empty space: taking it for the open folder once sent files dropped on a folder row
+ * into the folder around it instead.
+ */
+const LOADING = Symbol("loading");
+/** How long a drop waits for the row under it to arrive before giving up. */
+const LOADING_WAIT_MS = 2000;
+
 /** The drop target at a point in the window. */
-function targetAt(x: number, y: number): DropTarget | null {
+function targetAt(x: number, y: number): DropTarget | null | typeof LOADING {
   const element = document.elementFromPoint(x, y);
   if (!element) return null;
 
@@ -107,7 +117,8 @@ function targetAt(x: number, y: number): DropTarget | null {
 
   if (!element.closest(".tab-panel.active .filelist")) return null;
   // A details row, or an item of the icon, list and tile views.
-  const row = element.closest<HTMLElement>(".row[data-path], .view-item[data-path]");
+  const row = element.closest<HTMLElement>(".row[data-index], .view-item[data-index]");
+  if (row && row.dataset.path === undefined) return LOADING;
   if (row && row.dataset.folder !== undefined) {
     // A folder that can't take the drop (one being dragged, say) doesn't pass it on to the
     // folder around it, as in Explorer.
@@ -118,12 +129,27 @@ function targetAt(x: number, y: number): DropTarget | null {
   return tab && !isSearch(tab) && accepts(tab.path) ? { kind: "folder", path: tab.path, tabId: tab.id } : null;
 }
 
+/**
+ * The drop target at a point once the row there, if any, has loaded, or `null` if it doesn't
+ * in time: a drop is better refused than sent somewhere the user didn't point at.
+ */
+async function settledTargetAt(x: number, y: number): Promise<DropTarget | null> {
+  const giveUp = performance.now() + LOADING_WAIT_MS;
+  for (;;) {
+    const found = targetAt(x, y);
+    if (found !== LOADING) return found;
+    if (performance.now() > giveUp) return null;
+    await new Promise((resolve) => setTimeout(resolve, 16));
+  }
+}
+
 /** Looks again at what is under the cursor, which changes as the list scrolls or a folder opens. */
 function retarget() {
   if (!session) return;
   const point = session.point;
   const next = point ? targetAt(point.x, point.y) : null;
-  if (sameTarget(next, target())) return;
+  // A row still loading keeps whatever was under the cursor; the next frame looks again.
+  if (next === LOADING || sameTarget(next, target())) return;
   setTarget(next);
   setEffect("none");
   session.hintAt = 0;
@@ -232,9 +258,12 @@ async function drop(paths: string[], x: number, y: number): Promise<Dropped> {
   const current = session ?? begin(paths);
   current.paths = paths;
   current.sources = paths.map(comparable);
-  // Where the cursor is now decides, not where it was last seen.
-  const destination = targetAt(x, y);
-  end();
+  // Where the cursor is now decides, not where it was last seen. Nothing opens or scrolls
+  // while the row there finishes loading.
+  cancelAnimationFrame(current.frame);
+  clearTimeout(current.spring);
+  const destination = await settledTargetAt(x, y);
+  if (session === current) end();
   if (!destination) return NOTHING;
   try {
     const result = await api.dropItems(paths, destination.path, testKeys);

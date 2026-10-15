@@ -11,13 +11,14 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_NO_MORE_FILES, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_BOTH_DIR_INFO,
-    FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetFileInformationByHandle,
-    GetFileInformationByHandleEx, OPEN_EXISTING,
+    FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo,
+    FileIdType, GetFileInformationByHandle, GetFileInformationByHandleEx, OPEN_EXISTING,
+    OpenFileById,
 };
 
 use crate::builder::IndexBuilder;
@@ -109,6 +110,82 @@ pub fn list(dir: &str) -> io::Result<Vec<DirItem>> {
     })
     .map_err(|code| io::Error::from_raw_os_error(code as i32))?;
     Ok(items)
+}
+
+/// A volume whose folders can be listed by file id.
+///
+/// A change journal names folders by file id. Opening one by its id finds it wherever it is
+/// now, whereas the path an index holds for it is stale whenever a folder above it was moved
+/// or renamed in the same batch of changes, or since.
+pub struct Volume {
+    /// Any handle on the volume serves as the hint `OpenFileById` needs.
+    handle: HANDLE,
+}
+
+// SAFETY: the handle is only used through thread-safe Win32 calls.
+unsafe impl Send for Volume {}
+unsafe impl Sync for Volume {}
+
+impl Drop for Volume {
+    fn drop(&mut self) {
+        // SAFETY: opened by `Volume::open` and closed exactly once.
+        unsafe { CloseHandle(self.handle) };
+    }
+}
+
+impl Volume {
+    /// Opens the volume whose root is `root`, such as `C:\`. Needs no special rights.
+    pub fn open(root: &str) -> io::Result<Self> {
+        let wide: Vec<u16> = format!("{}\\", root.trim_end_matches(['\\', '/'])).encode_utf16().chain([0]).collect();
+        const FILE_READ_ATTRIBUTES: u32 = 0x80;
+        // SAFETY: `wide` is NUL-terminated and outlives the call.
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { handle })
+    }
+
+    /// Lists the folder with this file id, wherever it is on the volume now. Fails if it no
+    /// longer exists (the sequence number in the id tells a reused record apart) or cannot be
+    /// read.
+    pub fn list(&self, file_id: u64) -> io::Result<Vec<DirItem>> {
+        let descriptor = FILE_ID_DESCRIPTOR {
+            dwSize: size_of::<FILE_ID_DESCRIPTOR>() as u32,
+            Type: FileIdType,
+            Anonymous: FILE_ID_DESCRIPTOR_0 { FileId: file_id as i64 },
+        };
+        // SAFETY: `descriptor` is a valid FILE_ID_DESCRIPTOR that outlives the call.
+        let handle = unsafe {
+            OpenFileById(
+                self.handle,
+                &descriptor,
+                FILE_LIST_DIRECTORY,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null(),
+                FILE_FLAG_BACKUP_SEMANTICS,
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        let mut items = Vec::new();
+        read_handle(handle, |name, meta, _| {
+            items.push(DirItem { name: String::from_utf16_lossy(name), meta });
+        })
+        .map_err(|code| io::Error::from_raw_os_error(code as i32))?;
+        Ok(items)
+    }
 }
 
 /// Crawls `root` (for example `C:\`) and adds it and everything beneath it to `builder`.
@@ -204,12 +281,7 @@ fn visit<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared, mut path: Vec<u16>, n
 
 /// Enumerates the directory at `path`, calling `each(name, meta, reparse_tag)` for every entry
 /// except `.` and `..`. Returns the Win32 error code on failure.
-fn read_dir(path: &mut Vec<u16>, mut each: impl FnMut(&[u16], Meta, u32)) -> Result<(), u32> {
-    // 64 KiB, 8-byte aligned and deliberately uninitialised: zeroing it per directory would
-    // cost more than the enumeration itself.
-    let mut buffer = MaybeUninit::<[u64; BUFFER_WORDS]>::uninit();
-    let buffer_bytes = (BUFFER_WORDS * 8) as u32;
-
+fn read_dir(path: &mut Vec<u16>, each: impl FnMut(&[u16], Meta, u32)) -> Result<(), u32> {
     path.push(0);
     // SAFETY: `path` is NUL-terminated for the duration of the call.
     let handle = unsafe {
@@ -228,6 +300,15 @@ fn read_dir(path: &mut Vec<u16>, mut each: impl FnMut(&[u16], Meta, u32)) -> Res
         // SAFETY: plain FFI call with no arguments.
         return Err(unsafe { GetLastError() });
     }
+    read_handle(handle, each)
+}
+
+/// Enumerates the open directory `handle` as [`read_dir`] does, then closes it.
+fn read_handle(handle: HANDLE, mut each: impl FnMut(&[u16], Meta, u32)) -> Result<(), u32> {
+    // 64 KiB, 8-byte aligned and deliberately uninitialised: zeroing it per directory would
+    // cost more than the enumeration itself.
+    let mut buffer = MaybeUninit::<[u64; BUFFER_WORDS]>::uninit();
+    let buffer_bytes = (BUFFER_WORDS * 8) as u32;
 
     let mut class = FileIdBothDirectoryRestartInfo;
     let result = loop {
@@ -305,6 +386,26 @@ mod tests {
         assert!(idx.mtime(two) > 0);
         let deep = idx.lookup(&format!(r"{root_str}\sub\deeper\ünï.bin")).unwrap();
         assert_eq!(idx.path(deep), format!(r"{root_str}\sub\deeper\ünï.bin"));
+    }
+
+    #[test]
+    fn a_folder_is_listed_by_file_id_wherever_it_has_moved() {
+        let root = std::env::temp_dir().join(format!("kestrel-walk-id-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("before/inner")).unwrap();
+        fs::write(root.join("before/inner/a.txt"), b"a").unwrap();
+        // Extended-length paths take backslashes only.
+        let id = file_id_of(root.join("before").join("inner").to_str().unwrap()).unwrap();
+        fs::create_dir(root.join("after")).unwrap();
+        fs::rename(root.join("before/inner"), root.join("after/renamed")).unwrap();
+
+        let volume = Volume::open(r"C:\").unwrap();
+        let names: Vec<String> = volume.list(id).unwrap().into_iter().map(|item| item.name).collect();
+        assert_eq!(names, ["a.txt"]);
+        // A deleted folder's id no longer opens, even if its record is reused later.
+        fs::remove_dir_all(root.join("after/renamed")).unwrap();
+        assert!(volume.list(id).is_err());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
