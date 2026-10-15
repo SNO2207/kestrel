@@ -14,6 +14,7 @@ mod navigation;
 mod places;
 mod preview;
 mod previewview;
+mod projects;
 mod recycle;
 mod shellmenu;
 mod shortcuts;
@@ -317,6 +318,7 @@ fn main() {
     let icons = Arc::new(IconService::start());
     let thumbs = ThumbService::start(icons.clone());
     let database = open_database();
+    let projects = projects::Projects::new(engine.clone(), database.clone());
 
     tauri::Builder::default()
         // The window never leaves the app's own page; see navigation.rs.
@@ -326,6 +328,7 @@ fn main() {
         // The undo history is kept in the database, and brought back in `setup`.
         .manage(Journal::with_store(database.clone()))
         .manage(database)
+        .manage(projects.clone())
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
             thumbs.handle(&request, responder)
@@ -417,6 +420,18 @@ fn main() {
             shortcuts::workspaces::workspaces_save,
             shortcuts::workspaces::workspaces_rename,
             shortcuts::workspaces::workspaces_delete,
+            projects::projects_list,
+            projects::project_detail,
+            projects::project_set_status,
+            projects::project_set_tags,
+            projects::project_set_notes,
+            projects::project_set_pinned,
+            projects::project_set_dismissed,
+            projects::project_launch,
+            projects::project_run_script,
+            projects::git_badges,
+            projects::projects_probe,
+            projects::projects_probe_take,
         ]))
         .on_window_event(|_window, event| dragdrop::on_window_event(event))
         .setup(move |app| {
@@ -429,6 +444,7 @@ fn main() {
             std::thread::Builder::new()
                 .name("kestrel-undo-restore".into())
                 .spawn(move || restoring.state::<Journal>().restore())?;
+            projects.start(app.handle().clone());
             let handle = app.handle().clone();
             let engine = app.state::<Arc<Engine>>().inner().clone();
             std::thread::Builder::new()

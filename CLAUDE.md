@@ -54,6 +54,10 @@ Done and verified:
   folder, with Explorer's copy and move rules.
 - **Windows context menu and Open With** (`shellmenu.rs`, `apps/shellhost`): in a
   crash-isolated helper process.
+- **Projects** (`src-tauri/src/projects/`, `kestrel-db::projects`, `ProjectsHub.tsx`,
+  `ProjectDetail.tsx`, `projects.ts`, `lib/gitBadges.ts`, `projects.css`): discovery from the
+  index, git facts from a read-only git pool, the hub (Ctrl+Shift+P) and git badges in every
+  view. `e2e/projects.mjs`; branch `feature/projects`.
 
 All five feature branches (views, undo, preview, dragdrop, shellmenu) are merged on `main`,
 and every unit test and e2e suite passes there, `integration.mjs` covering where they meet.
@@ -90,6 +94,13 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and short
   `FileList.tsx` draws details rows itself and every other view's items through `ViewItem.tsx`;
   both share one set of item mouse handlers (`onItemMouseDown` and friends), so a change to
   how items respond to the mouse is made once and holds in every view.
+- `src-tauri/src/projects/`: `discover.rs` finds project roots in the index (marker files,
+  excluded locations), `facts.rs` walks a project's part of the index (sizes, languages,
+  activity, and a fingerprint of what git would see), `git.rs` runs git read-only with a
+  timeout, `badges.rs` answers folder views, `scripts.rs` and `launch.rs` serve the detail
+  panel. `mod.rs` owns the background look (debounced on `Engine::revision`, about 15 ms over
+  3.6 M entries), the git pool and cache, and the commands; `project-git` and
+  `projects-changed` events tell the UI. The hub's styles live in `src/projects.css`.
 - Result sets: a listing or search produces a set id; the UI fetches rows by range. The UI
   releases a set only after switching to its replacement (`show` in `state.ts`).
 - `crates/kestrel-db`: the app's own data (pins, projects, tags, history, settings) in one
@@ -215,6 +226,14 @@ Git:
 - `pnpm dev` (and so `tauri dev` and every e2e slot) builds `kestrel-shellhost` before the
   app, but the dev watcher does not rebuild it when its code changes: run
   `cargo build -p kestrel-shellhost` (with the slot's `CARGO_TARGET_DIR`) yourself.
+- Solid delegates `onKeyDown` and friends to a listener on the document, so stopping a key
+  event on an ancestor element kills the handlers inside it. The projects hub keeps its keys
+  from the window's shortcuts with a document listener added after Solid's (`guardKeys`).
+- `git check-ignore` refuses a whole batch over one path inside a submodule; `git::ignored`
+  drops the paths git names and asks again. `git status` without `--no-optional-locks` writes
+  the index file; every command in `projects/git.rs` passes it.
+- The sidebar's first `.place` is taken to be Home by `dragdrop.mjs`; the Projects entry is a
+  `.projects-entry`, not a place.
 - Shell commands outlive `InvokeCommand`: Properties opens its dialog on another thread
   without taking the process reference, and Copy leaves an OLE data object on the clipboard.
   The helper therefore waits for its windows to close and flushes the clipboard before it

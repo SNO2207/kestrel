@@ -122,6 +122,7 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+Shift+5 / 6 / 8 | List / details / tiles |
 | Ctrl+wheel | Larger or smaller icons |
 | Alt+P | Show or hide the preview pane (drag its left edge to resize it) |
+| Ctrl+Shift+P | Show or hide the projects hub |
 | Space | Quick Look; Space or Esc closes it, the arrow keys move to the previous or next item |
 | Ctrl+D | Pin the selection to the sidebar, or the folder when nothing is selected |
 | Ctrl+1 … Ctrl+9 | Open the first nine pins, or the pins given those numbers |
@@ -256,6 +257,42 @@ bundling is turned on, has to carry it too: copy the built helper to
 it with the app; Tauri puts sidecars next to the main executable, where the app looks. (With
 `externalBin` set, every build of the app needs that file first, which is why it isn't yet.)
 
+## Projects
+
+"Projects" at the top of the sidebar (or Ctrl+Shift+P) opens a hub of every project on the
+drive, found in the index: folders with `.git`, `Cargo.toml`, `package.json`,
+`pyproject.toml`, `go.mod`, `CMakeLists.txt`, a `.sln` or `.csproj`, a `.uproject`,
+`build.gradle`, `pom.xml`, `composer.json` or a `Gemfile`. A project's root is the outermost
+folder with `.git` (a submodule or nested clone is part of its repository), otherwise the
+topmost folder with a marker. Dependency, cache and system folders (`node_modules`, `target`,
+`vendor`, `.venv`, `.cargo`, `AppData`, `Program Files`, `Windows` and the like), drive roots
+and profile folders are never looked in. New projects appear while the hub is open; "Not a
+project" hides a folder for good (it can be restored from "Show dismissed folders").
+
+Each project shows its stack (from its build files and the share of source code by language),
+branch, upstream, commits ahead and behind, staged, modified and untracked changes, last
+commit, a link to its page on GitHub, GitLab or Bitbucket, last activity, size on disk and how
+much of that is build output (`node_modules`, `target`, `bin` and `obj`, `.venv`, `dist`,
+`build`, Unreal's `Intermediate`, Unity's `Library` and so on). Git facts come from the git
+command line, run read-only (`--no-optional-locks`, so even `git status` leaves the index file
+alone) in a pool of three with a timeout, and are refreshed when files in the project change or
+the hub is opened. The status (active, paused, archived, idea), tags, Markdown notes and
+pinning are the user's own, kept in `kestrel.db`.
+
+Selecting a project shows its README, notes, scripts (`package.json` scripts, Cargo's build,
+test and run, justfile recipes and Makefile targets, each run in a new Windows Terminal in the
+project folder), launchers (VS Code, Visual Studio for a `.sln`, Windows Terminal, Claude Code,
+the folder in Kestrel or Explorer, the web page), a year of activity (commits and changed
+files per day) and the files changed most recently that git does not ignore.
+
+In a folder inside a repository, every view marks items git sees as modified (a dot), added
+(a plus), untracked (a ring) or conflicted (a warning sign), a folder showing the most pressing
+change inside it, and dims what git ignores. Only the items on screen are asked about.
+
+Git runs commands named by a repository's own configuration in some cases (filter drivers, for
+instance); like any git client, the hub's `git status` does too. The file system monitor hook
+is switched off.
+
 ## Testing
 
 ```powershell
@@ -288,6 +325,7 @@ node e2e/dragdrop.mjs       # drops driven by synthetic drag events; drags out r
 node e2e/shellmenu.mjs      # Windows menu entries start the helper
 node e2e/shortcuts.mjs      # pins, groups, Go to folder, saved searches, tags, workspaces
 node e2e/integration.mjs    # the features together, in the icon, list and tile views
+node e2e/projects.mjs       # the projects hub and git badges, with repositories it makes
 node e2e/dev.mjs stop
 ```
 
@@ -310,6 +348,12 @@ than performed, so nothing is ever dropped on another program. `shellmenu.mjs` a
 `integration.mjs` switch the app's development hook on, which makes the Windows menu helper
 list the menu instead of showing it; showing the real menu and the Open With dialog are manual
 checks.
+
+`projects.mjs` makes repositories in its scratch folder with the git command line and needs
+a dev build: projects are found by the location rules, which leave out the temp folder, so it
+turns on a development hook that allows its folder and records what Run and the launchers
+would start instead of starting it. Opening VS Code, Windows Terminal or a browser for real is
+a manual check.
 
 `fileops.mjs` replaces the clipboard's contents, and with `KESTREL_E2E_RECYCLE=1` it also
 sends one small file to the Recycle Bin. `undo.mjs` and `batchrename.mjs` (undo, redo, batch

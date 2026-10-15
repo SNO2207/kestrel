@@ -5,6 +5,8 @@ import { formatSize } from "../lib/format";
 import { iconPixels, showsThumbnails, thumbPixels } from "../lib/viewLayout";
 import { LOCKED_MESSAGE } from "../lib/access";
 import { displayName, type ViewMode } from "../lib/views";
+import type { GitBadge } from "../lib/projectsApi";
+import { GitGlyph } from "./GitGlyph";
 import { LockGlyph } from "./LockGlyph";
 import { TagDots } from "./TagDots";
 
@@ -26,6 +28,8 @@ export function ViewItem(props: {
   dropTarget: boolean;
   /** Thumbnails may start loading: the view is not being scrolled. */
   loadThumbs: boolean;
+  /** The item's git status in a folder inside a repository; ignored items are dimmed. */
+  git?: GitBadge;
   onMouseDown: (event: MouseEvent) => void;
   onDblClick: (event: MouseEvent) => void;
   onContextMenu: (event: MouseEvent) => void;
@@ -57,7 +61,7 @@ export function ViewItem(props: {
       classList={{
         selected: props.selected,
         focused: props.focused,
-        dimmed: props.row?.hidden || props.locked,
+        dimmed: props.row?.hidden || props.locked || props.git?.ignored,
         locked: props.locked,
         "drop-target": props.dropTarget,
       }}
@@ -105,6 +109,7 @@ export function ViewItem(props: {
                     <Show when={props.locked}>
                       <LockGlyph />
                     </Show>
+                    <Show when={props.git?.change}>{(change) => <GitGlyph change={change()} dir={row().dir} />}</Show>
                     <TagDots path={row().path} />
                   </span>
                 }

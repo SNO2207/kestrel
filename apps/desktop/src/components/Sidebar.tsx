@@ -3,13 +3,17 @@ import { For, Show } from "solid-js";
 import { isDropPlace } from "../dragdrop";
 import { formatSize } from "../lib/format";
 import { activeTab, navigate, openTab, places } from "../state";
+import { closeProjects, projectsOpen, toggleProjects } from "../projects";
 import { Icon, hasIcon } from "./Icon";
 import { PinnedPlaces } from "./PinnedPlaces";
+import { ProjectIcon } from "./ProjectIcon";
 import { ShortcutLists } from "./ShortcutLists";
 
 export function Sidebar() {
-  const current = () => activeTab()?.path.toLowerCase() ?? "";
+  // While the projects hub covers the list, no place is the current one.
+  const current = () => (projectsOpen() ? "" : (activeTab()?.path.toLowerCase() ?? ""));
   const open = (path: string, event: MouseEvent) => {
+    closeProjects();
     const tab = activeTab();
     // Ctrl-click and middle-click open a new tab, as they do for links.
     if (event.ctrlKey || event.button === 1 || !tab) openTab(path);
@@ -18,7 +22,20 @@ export function Sidebar() {
 
   return (
     <nav class="sidebar" aria-label="Places">
+      <section>
+        <button
+          class="projects-entry"
+          classList={{ current: projectsOpen() }}
+          title="Projects (Ctrl+Shift+P)"
+          aria-pressed={projectsOpen()}
+          onClick={toggleProjects}
+        >
+          <ProjectIcon name="projects" />
+          <span>Projects</span>
+        </button>
+      </section>
       <PinnedPlaces />
+
       <section>
         <h2>Places</h2>
         <Show when={places().home}>
