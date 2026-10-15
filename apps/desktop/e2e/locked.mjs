@@ -99,8 +99,15 @@ try {
     await page.locator(".address-input").fill(privateFolder);
     await page.keyboard.press("Enter");
     await panel.locator(".list-error", { hasText: message }).waitFor();
+    // The tab is still in the sandbox, so going back leaves the message for the sandbox, not
+    // for the folder before it. The rows behind the message are the sandbox's either way, so
+    // the message going away is what tells the two apart.
     await page.keyboard.press("Alt+ArrowLeft");
+    await panel.locator(".list-error").waitFor({ state: "detached" });
     await row("private").waitFor();
+    assert.equal(await page.locator(".tab.active").getAttribute("title"), sandbox);
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator(".tab.active").getAttribute("title"), sandbox, "and stays there");
   });
 
   await step("a search result inside it shows the lock, and opening it says why", async () => {

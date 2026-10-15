@@ -30,6 +30,11 @@ export interface Tab {
   revision: number;
   sort: SortSpec;
   error: string | null;
+  /**
+   * The folder a navigation failed to reach, which `error` is about; the tab is still in
+   * `path`, and going back shows it again.
+   */
+  failed: string | null;
   selected: number;
   /** Selection to show when the current rows first appear, after a refresh or re-sort. */
   restore: Marks | null;
@@ -147,6 +152,7 @@ function show(tabId: number, listing: Listing, restore: Marks, change: (tab: Tab
     tab.restore = restore;
     tab.revision += 1;
     tab.error = null;
+    tab.failed = null;
   });
   // Released only now that the tab shows the new listing, so a late row request for the old
   // one is simply ignored rather than read as a stale index.
@@ -180,7 +186,10 @@ export function navigate(tabId: number, path: string, mode: NavigateMode = "push
         tab.query = "";
       });
     } catch (error) {
-      patch(tabId, (tab) => void (tab.error = String(error)));
+      patch(tabId, (tab) => {
+        tab.error = String(error);
+        tab.failed = samePath(path, tab.path) ? null : path;
+      });
     }
   });
 }
@@ -253,8 +262,9 @@ export function setEverywhere(value: boolean) {
 export function goBack(tabId: number) {
   const tab = find(tabId);
   if (!tab) return;
-  // Leaving a search counts as going back to the folder it was started from.
-  if (isSearch(tab)) return navigate(tabId, tab.path, "keep");
+  // Leaving a search counts as going back to the folder it was started from, and leaving the
+  // message that a folder can't be opened, as going back to the folder the tab is still in.
+  if (isSearch(tab) || tab.failed !== null) return navigate(tabId, tab.path, "keep");
   if (tab.cursor > 0) stepHistory(tab, -1);
 }
 
@@ -276,7 +286,7 @@ export function goUp(tabId: number) {
   if (parent) navigate(tabId, parent);
 }
 
-export const canGoBack = (tab: Tab) => isSearch(tab) || tab.cursor > 0;
+export const canGoBack = (tab: Tab) => isSearch(tab) || tab.failed !== null || tab.cursor > 0;
 export const canGoForward = (tab: Tab) => tab.cursor < tab.history.length - 1;
 export const canGoUp = (tab: Tab) => parentPath(tab.path) !== null;
 
@@ -472,6 +482,7 @@ export function openTab(path?: string) {
     revision: 0,
     sort: { ...DEFAULT_SORT },
     error: null,
+    failed: null,
     selected: 0,
     restore: null,
     pending: null,
