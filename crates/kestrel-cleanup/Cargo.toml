@@ -1,0 +1,28 @@
+[package]
+name = "kestrel-cleanup"
+description = "Cleanup recommendations and duplicate files, found in Kestrel's index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Full-content hashes of duplicate candidates; `rayon` hashes large reads on several cores.
+blake3 = { version = "1.8", features = ["rayon"] }
+kestrel-db = { workspace = true }
+kestrel-index = { workspace = true }
+parking_lot = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    # Which programs are running (browser and app caches are offered only while closed).
+    "Win32_System_Diagnostics_ToolHelp",
+    # Background-priority I/O for hashing.
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+] }

@@ -241,6 +241,21 @@ impl Projects {
         }
     }
 
+    /// Every project found, each with whether its owner dismissed it ("Not a project"), for the
+    /// cleanup rules: they protect projects' sources and offer stale projects' build output.
+    /// Looks for projects first if nothing has yet, or if the index changed since the last look.
+    pub fn roots_for_cleanup(&self) -> Vec<(String, bool)> {
+        self.ensure_found();
+        let current = self.inner.lock().looked_at == Some(self.engine.revision());
+        if !current && self.engine.status().state == "ready" {
+            self.look();
+        }
+        let dismissed: HashSet<String> = meta::all(&self.db)
+            .map(|all| all.into_iter().filter(|m| m.dismissed).map(|m| key(&m.root)).collect())
+            .unwrap_or_default();
+        self.inner.lock().projects.iter().map(|p| (p.root.clone(), dismissed.contains(&key(&p.root)))).collect()
+    }
+
     fn has_badge_interest(&self) -> bool {
         self.repos.lock().values().any(|repo| repo.badge_interest.is_some_and(|at| at.elapsed() < BADGE_INTEREST))
     }

@@ -4,6 +4,7 @@ import { api, type Row } from "./lib/api";
 import { locationKey, setViewMode, shortcutView } from "./lib/views";
 import { LOCKED_MESSAGE, isLocked, recheckAccess } from "./lib/access";
 import { BatchRenameDialog, openBatchRename } from "./components/BatchRename";
+import { CleanupPage } from "./components/CleanupPage";
 import { isDropFolder, listenForDrops } from "./dragdrop";
 import { DropHint } from "./components/DropHint";
 import { FileList, type ListCommand } from "./components/FileList";
@@ -180,6 +181,7 @@ export function App() {
         </For>
         <PreviewPane />
         <ProjectsHub />
+        <CleanupPage />
         <DropHint />
         <Show when={notice()}>
           <div class="notice" classList={{ info: noticeTone() === "info" }} role="alert">

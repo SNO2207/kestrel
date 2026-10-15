@@ -74,6 +74,14 @@ Done and verified:
   and the pins, frequent folders, saved searches and workspaces (`shortcuts/provider.rs`,
   front-end halves in `lib/paletteFeatures.ts`).
 
+- **Cleanup recommendations and duplicates** (`crates/kestrel-cleanup`, `src-tauri/src/cleanup/`,
+  `kestrel_db::cleanup`, `CleanupPanel.tsx`, `DuplicatesPanel.tsx`, `CleanupPage.tsx`,
+  `CleanupParts.tsx`, `cleanup.ts`, `lib/cleanupApi.ts`, `cleanup.css`): rules over the index in
+  three tiers, recycled through `fileops` into the undo journal after a confirmation, tools run
+  on a click; duplicates by size, then ends, then BLAKE3, hashes cached by file id. The panels are
+  made for the disk usage hub's tabs; until it has them, a page of their own opens from the
+  palette (branch `feature/cleanup`, not yet merged).
+
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette. Every unit test and all 16 e2e suites pass there
 in a dev build, and the ten that need no development hook (smoke, fileops, live-index, views,
@@ -138,6 +146,14 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and short
   its tables: it adds a module with its `Migration`s and lists them in `MIGRATIONS`. Migrations
   run once in name order, so name them `<yyyy_mm_dd>_<feature>_<what>` and never edit one that
   has shipped.
+- Cleanup: `crates/kestrel-cleanup` holds the rules (`rules/`, one module each, run in order and
+  claiming what they offer), `Locations` (every place they look; `Locations::under` lays a
+  machine out in a scratch folder for tests), the `Guard` (what is never offered: system and
+  owner's folders, also where OneDrive moved them from, projects' sources, links), `inuse`, and
+  `dupes` with `hash`. `src-tauri/src/cleanup/` keeps the latest scan and checks every action
+  against it; `cleanup_dev_sandbox` (dev builds) points the rules at a scratch folder and records
+  tools instead of running them. Run a scan's rules one per index lock (`Scan`), never the whole
+  scan under one.
 - Shortcuts: data in `kestrel_db::shortcuts` (pins and groups, frecency, saved searches, tags,
   workspaces), commands in `src-tauri/src/shortcuts/`, front end in `src/shortcuts.ts`,
   `lib/shortcutsApi.ts`, `shortcuts.css` and the `Pinned*`, `Shortcut*`, `GoToFolder`,
@@ -298,6 +314,12 @@ Git:
 - One process per data folder (`instance.rs`): a second launch of a slot's `kestrel.exe` asks
   the running one to show its window and exits. Stop a slot before starting it again with a
   new build, or the old binary keeps running.
+- On this machine Documents, Pictures and Desktop are backed up by OneDrive: their known folders
+  point into `OneDrive`, and the profile's own `Documents` still holds the owner's files. Anything
+  that protects "the owner's folders" must cover both (`Locations::protected`).
+- The index hears of a deletion or a restore a moment later (the journal is read every 300 ms):
+  a scan straight after recycling drops what is no longer on disk (`kestrel_cleanup::existing`),
+  and tests that look for a restored file search again until it is there.
 - Undo checks before acting that each item is still what the operation left: `undo_entries`
   stores a mark (file id, and for deletions a content fingerprint) per step. A file replaced by
   another program in the meantime is left alone rather than recycled.

@@ -3,6 +3,7 @@
 
 mod access;
 mod batchrename;
+mod cleanup;
 mod clipboard;
 mod dragdrop;
 mod engine;
@@ -328,6 +329,7 @@ fn main() {
     let thumbs = ThumbService::start(icons.clone());
     let database = open_database();
     let projects = projects::Projects::new(engine.clone(), database.clone());
+    let cleanup = cleanup::Cleanup::new(engine.clone(), database.clone(), projects.clone());
     // The command palette's providers; other features register theirs in `setup` (palette.rs).
     let palette = Arc::new(palette::Palette::new(database.clone()));
     palette.register(Arc::new(palette::files::FilesProvider::new(engine.clone())));
@@ -347,6 +349,7 @@ fn main() {
         .manage(Journal::with_store(database.clone()))
         .manage(database.clone())
         .manage(projects.clone())
+        .manage(cleanup)
         .manage(palette)
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
@@ -465,6 +468,16 @@ fn main() {
             launcher::launcher_dev_hotkey,
             launcher::launcher_dev_windows,
             launcher::launcher_dev_tray,
+            cleanup::cleanup_scan,
+            cleanup::cleanup_recycle,
+            cleanup::cleanup_run_tool,
+            cleanup::cleanup_open,
+            cleanup::dupes_defaults,
+            cleanup::dupes_scan,
+            cleanup::dupes_cancel,
+            cleanup::dupes_recycle,
+            cleanup::cleanup_dev_sandbox,
+            cleanup::cleanup_dev_take,
         ]))
         .on_window_event(|window, event| {
             dragdrop::on_window_event(event);

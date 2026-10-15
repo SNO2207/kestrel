@@ -9,6 +9,7 @@ rust-version = "1.92"
 publish = false
 
 [workspace.dependencies]
+kestrel-cleanup = { path = "crates/kestrel-cleanup" }
 kestrel-db = { path = "crates/kestrel-db" }
 kestrel-index = { path = "crates/kestrel-index" }
 kestrel-ntfs = { path = "crates/kestrel-ntfs" }

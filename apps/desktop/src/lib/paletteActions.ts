@@ -4,6 +4,7 @@
  * Actions run in the main window. The quick launcher lists them too, minus those that act on
  * the selected files, and hands a chosen one to the main window (palette.ts).
  */
+import { cleanupActions } from "../cleanup";
 import type { ListCommand } from "../components/FileList";
 import { openGoto } from "../components/GoToFolder";
 import { askName } from "../components/ShortcutDialogs";
@@ -121,6 +122,7 @@ function actions(): Action[] {
       keywords: "projects repositories git code hub",
       run: toggleProjects,
     },
+    ...cleanupActions(),
     { id: "search", title: "Search", hint: "Ctrl+F", icon: "search", keywords: "find", run: () => focusTargets.search?.() },
     {
       id: "search-scope",
