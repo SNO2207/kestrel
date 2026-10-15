@@ -5,6 +5,7 @@
 // Start the app as described in smoke.mjs, then run: node e2e/live-index.mjs
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import { connectToKestrel } from "./connect.mjs";
 
 const tag = `kestrelprobe${Date.now()}`;
 const sandbox = join(tmpdir(), `kestrel-e2e-live-${process.pid}`);
+const junction = join(sandbox, `${tag}-link`);
 rmSync(sandbox, { recursive: true, force: true });
 mkdirSync(join(sandbox, "nested", "deeper"), { recursive: true });
 
@@ -87,9 +89,29 @@ try {
     await expectResults(`${tag} in:${join(sandbox, "elsewhere", "moving", "inner")}`, [`${tag}-kept.txt`]);
   });
 
+  await step("a junction made by another program is indexed but never followed", async () => {
+    // What `npm link`, pnpm or `mklink /J` leave behind. Following it took the real folder's
+    // subfolders for moves and re-parented them under the link.
+    mkdirSync(join(sandbox, "real", "sub"), { recursive: true });
+    writeFileSync(join(sandbox, "real", "sub", `${tag}-inside.txt`), "inside");
+    await expectResults(`${tag}-inside`, [`${tag}-inside.txt`]);
+    execFileSync("cmd", ["/c", "mklink", "/J", junction, join(sandbox, "real")], { stdio: "ignore" });
+    await expectResults(`${tag}-link`, [`${tag}-link`]);
+    // Once more after the link is in: the real folder still holds its subfolder and file.
+    await page.waitForTimeout(1000);
+    await expectResults(`${tag}-inside in:${join(sandbox, "real", "sub")}`, [`${tag}-inside.txt`]);
+    await expectResults(`${tag}-inside in:${junction}`, []);
+  });
+
   console.log("\nall checks passed");
 } finally {
   await search.fill("").catch(() => {});
   await browser.close();
+  // The junction goes first, on its own, so that nothing is ever removed through it.
+  try {
+    execFileSync("cmd", ["/c", "rmdir", junction], { stdio: "ignore" });
+  } catch {
+    // Never made.
+  }
   rmSync(sandbox, { recursive: true, force: true });
 }

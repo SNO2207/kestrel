@@ -303,6 +303,74 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Makes `link` a directory junction to `target`, as `mklink /J` (and `npm link`, pnpm and
+    /// Yarn workspaces) do. Junctions need no special rights.
+    pub(crate) fn junction(link: &std::path::Path, target: &std::path::Path) {
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J failed");
+    }
+
+    /// Whether every live entry hangs under live folders all the way up to a root.
+    fn every_entry_has_a_live_parent(index: &Index) -> bool {
+        (0..index.len()).filter(|&id| !index.is_deleted(id)).all(|id| {
+            let parent = index.parent(id);
+            parent == crate::NO_ENTRY || !index.is_deleted(parent)
+        })
+    }
+
+    /// A junction made in an indexed folder is a name for another folder, which the index
+    /// already holds where it really is. Following it took the real folders' entries for moves
+    /// and re-parented them under the link.
+    #[test]
+    fn a_new_junction_is_indexed_but_never_followed() {
+        let root = scratch("junction", &["real/sub"]);
+        fs::write(root.join("real/sub/inner.txt"), b"inner").unwrap();
+        let (index, tracker) = scanned(&root);
+        let base = root.to_str().unwrap().to_owned();
+
+        junction(&root.join("link"), &root.join("real"));
+        assert!(matches!(tracker.catch_up(&index).unwrap(), Outcome::Current { .. }));
+
+        let index = index.read();
+        assert_eq!(names(&index, &base), ["link", "real"]);
+        assert_eq!(names(&index, &format!(r"{base}\real")), ["sub"]);
+        assert_eq!(names(&index, &format!(r"{base}\real\sub")), ["inner.txt"]);
+        assert!(names(&index, &format!(r"{base}\link")).is_empty(), "the junction is listed, not walked");
+        assert_eq!(index.size(index.lookup(&base).unwrap()), 5, "nothing is counted twice");
+        drop(index);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A junction to a folder above it, read by path: following it moved the folder's own
+    /// children under the link and left them hanging under a deleted entry.
+    #[test]
+    fn a_junction_to_its_own_parent_leaves_the_tree_whole() {
+        let root = scratch("junction-loop", &["proj/sub"]);
+        fs::write(root.join("proj/sub/x.txt"), b"x").unwrap();
+        let proj = root.join("proj");
+        let (index, _tracker) = scanned(&proj);
+        let base = proj.to_str().unwrap().to_owned();
+
+        junction(&proj.join("back"), &proj);
+        refresh_folders(&index, vec![walk::file_id_of(&base).unwrap()]);
+
+        let index = index.read();
+        assert_eq!(names(&index, &base), ["back", "sub"]);
+        assert_eq!(names(&index, &format!(r"{base}\sub")), ["x.txt"]);
+        assert!(names(&index, &format!(r"{base}\back")).is_empty());
+        assert!(every_entry_has_a_live_parent(&index));
+        drop(index);
+        // Removing the junction leaves its target alone.
+        fs::remove_dir(proj.join("back")).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn cursors_are_kept_per_volume() {
         assert_eq!(volume_root(r"c:"), r"C:\");

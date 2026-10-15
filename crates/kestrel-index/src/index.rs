@@ -39,6 +39,10 @@ pub struct Meta {
 pub struct DirItem {
     pub name: String,
     pub meta: Meta,
+    /// A junction or symbolic link to a folder: another name for a folder that lives
+    /// elsewhere. It is indexed as an entry of its own but never read through, or the folders
+    /// it leads to would be taken for moves and re-parented under it.
+    pub alias: bool,
 }
 
 /// How far an index has caught up with a volume's change journal.

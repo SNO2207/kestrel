@@ -9,6 +9,7 @@ mod engine;
 mod fileops;
 mod icons;
 mod indexer;
+mod instance;
 mod launcher;
 mod lru;
 mod navigation;
@@ -316,6 +317,12 @@ fn open_database() -> Arc<kestrel_db::Db> {
 }
 
 fn main() {
+    // Before anything touches the data folder: one Kestrel per folder (see instance.rs).
+    let background = std::env::args().any(|arg| arg == launcher::autostart::BACKGROUND_ARG);
+    let instance = match instance::claim(&indexer::data_dir(), !background) {
+        instance::Claim::First(instance) => instance,
+        instance::Claim::Running => return,
+    };
     let engine = Arc::new(Engine::default());
     let icons = Arc::new(IconService::start());
     let thumbs = ThumbService::start(icons.clone());
@@ -476,6 +483,9 @@ fn main() {
             projects.start(app.handle().clone());
             // The quick launcher, its shortcut and the tray icon; never fatal.
             launcher::setup(app.handle(), database.clone());
+            // Launching Kestrel again shows this one, wherever it is hiding.
+            let showing = app.handle().clone();
+            instance.listen(move || launcher::show_main(&showing));
             let handle = app.handle().clone();
             let engine = app.state::<Arc<Engine>>().inner().clone();
             std::thread::Builder::new()

@@ -84,7 +84,11 @@ impl Sync {
             }
             None => {
                 let new = index.insert(dir, &item.name, item.meta);
-                self.new_dirs.push(new);
+                // A junction or link leads to a folder indexed where it really is: reading it
+                // would take that folder's subfolders for moves and re-parent them under it.
+                if !item.alias {
+                    self.new_dirs.push(new);
+                }
                 self.stats.inserted += 1;
             }
         }
@@ -94,7 +98,7 @@ impl Sync {
     /// empty: it may have been moved in, contents and all, from somewhere the index does not
     /// cover or no longer holds it (a batch of changes can end between a folder leaving one
     /// place and arriving in another). Nothing else will name its contents, so a caller that
-    /// follows changes lists these folders too.
+    /// follows changes lists these folders too. Junctions and links are never among them.
     pub fn take_new_dirs(&mut self) -> Vec<EntryId> {
         std::mem::take(&mut self.new_dirs)
     }
@@ -140,11 +144,11 @@ mod tests {
     use crate::{IndexBuilder, Meta};
 
     fn file(name: &str, size: u64, file_id: u64) -> DirItem {
-        DirItem { name: name.into(), meta: Meta { size, alloc: size, file_id, ..Meta::default() } }
+        DirItem { name: name.into(), meta: Meta { size, alloc: size, file_id, ..Meta::default() }, alias: false }
     }
 
     fn folder(name: &str, file_id: u64) -> DirItem {
-        DirItem { name: name.into(), meta: Meta { attrs: attr::DIRECTORY, file_id, ..Meta::default() } }
+        DirItem { name: name.into(), meta: Meta { attrs: attr::DIRECTORY, file_id, ..Meta::default() }, alias: false }
     }
 
     /// C:\ { a (dir 10) { deep (dir 11) { x.txt 5 (21) } }, b (dir 12), one.txt 3 (20) }
@@ -267,6 +271,19 @@ mod tests {
         sync.dir(&mut index, root, vec![folder("a", 10), folder("b", 12), file("one.txt", 3, 20)]);
         assert!(sync.take_new_dirs().is_empty());
         sync.finish(&mut index);
+    }
+
+    #[test]
+    fn a_new_junction_is_added_but_not_reported_for_listing() {
+        let mut index = sample();
+        let b = index.lookup(r"C:\b").unwrap();
+        let mut sync = Sync::default();
+        let link = DirItem { alias: true, ..folder("link", 40) };
+        sync.dir(&mut index, b, vec![link, folder("fresh", 41)]);
+        let fresh = index.lookup(r"C:\b\fresh").unwrap();
+        assert_eq!(sync.take_new_dirs(), [fresh], "only the real folder is listed next");
+        sync.finish(&mut index);
+        assert!(index.lookup(r"C:\b\link").is_some_and(|link| index.is_dir(link)));
     }
 
     #[test]

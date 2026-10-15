@@ -10,7 +10,8 @@
 // step registers an unusual shortcut unique to this slot (Ctrl+Alt+Shift+F13 and up), checks
 // that the settings dialog reports it registered, then unregisters it; another has a separate
 // PowerShell process hold that shortcut, to see the clash reported. "Keep running in the tray"
-// is switched on for one step and off again; "Start with Windows" is never switched on.
+// is switched on for two steps and off again; "Start with Windows" is never switched on. One
+// step starts the slot's executable a second time, which must show this instance and exit.
 //
 // The window's view settings (local storage) are saved first and put back at the end.
 //
@@ -18,14 +19,14 @@
 // `KESTREL_SLOT=<n> node e2e/palette.mjs`. Screenshots go to e2e/out/palette, dark and light.
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { connectToKestrel } from "./connect.mjs";
-import { devUrl, slot } from "./slot.mjs";
+import { appExe, dataDir, devUrl, slot } from "./slot.mjs";
 
 const out = join(dirname(fileURLToPath(import.meta.url)), "out", "palette");
 mkdirSync(out, { recursive: true });
@@ -594,6 +595,24 @@ try {
     await until(async () => (await windows()).main_visible, "the window shows again");
     await invoke(page, "set_keep_in_tray", { keep: false });
     assert.equal((await invoke(page, "launcher_settings")).keep_in_tray, false);
+  });
+
+  await step("launching Kestrel again shows the one in the tray instead of starting a second", async () => {
+    await invoke(page, "set_keep_in_tray", { keep: true });
+    await page.locator(".window-controls .close").click();
+    await until(async () => !(await windows()).main_visible, "the window hides");
+    // What clicking its Start menu entry does: the same executable, on the same data folder.
+    const started = Date.now();
+    const second = spawnSync(appExe, [], {
+      env: { ...process.env, ...(dataDir ? { KESTREL_DATA_DIR: dataDir } : {}), KESTREL_GLOBAL_HOTKEY: "off" },
+      timeout: 30_000,
+      windowsHide: true,
+    });
+    assert.equal(second.status, 0, `the second process stands down at once (${second.error ?? second.status})`);
+    assert(Date.now() - started < 10_000, `it took ${Date.now() - started} ms`);
+    await until(async () => (await windows()).main_visible, "the running window shows");
+    assert.equal(await tabCount(), 1, "it is the same app, with its tab");
+    await invoke(page, "set_keep_in_tray", { keep: false });
   });
 
   console.log("\nall checks passed; screenshots are in", out);

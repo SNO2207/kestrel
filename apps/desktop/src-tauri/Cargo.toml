@@ -62,6 +62,8 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Ole",
     # The optional "start with Windows" entry under HKCU\...\Run (launcher.rs).
     "Win32_System_Registry",
+    # One Kestrel per data folder: a named mutex and events (instance.rs).
+    "Win32_System_Threading",
     "Win32_UI_Controls",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

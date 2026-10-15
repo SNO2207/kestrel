@@ -188,7 +188,6 @@ try {
       // Keep the name it was given, so the folder's creation is the operation to undo.
       await page.keyboard.press("Escape");
       await row("New folder").waitFor();
-      writeFileSync(join(sandbox, "New folder", "kestrel-test-inside.txt"), "inside");
 
       await list.focus();
       await page.keyboard.press("Control+z");
@@ -200,8 +199,17 @@ try {
       await page.keyboard.press("Control+y");
       await expectNotice("Redid creation of New folder");
       await row("New folder").waitFor();
-      assert.equal(readFileSync(join(sandbox, "New folder", "kestrel-test-inside.txt"), "utf8"), "inside");
+      assert(onDisk("New folder"));
       assert.equal(recycledFromSandbox(), 0);
+    });
+
+    await step("a new folder another program has saved into is not sent to the Recycle Bin", async () => {
+      writeFileSync(join(sandbox, "New folder", "kestrel-test-inside.txt"), "inside");
+      await list.focus();
+      await page.keyboard.press("Control+z");
+      await expectNotice("Couldn't undo the creation of New folder: it has changed since.");
+      assert.equal(readFileSync(join(sandbox, "New folder", "kestrel-test-inside.txt"), "utf8"), "inside");
+      assert.equal(recycledFromSandbox(), 0, "nothing went to the Recycle Bin");
     });
 
     await step("undoing a deletion restores exactly that item from the Recycle Bin", async () => {

@@ -64,14 +64,24 @@ fn terminal_safe(command: &str) -> String {
     command.replace(';', "\\;")
 }
 
-/// Searches the PATH for `name` (with any of the PATHEXT extensions).
+/// Searches the PATH for `name` (with any of the PATHEXT extensions). Relative entries would
+/// be read against Kestrel's own working folder, which means nothing, so they are skipped.
 fn on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    let exts = ["", ".exe", ".cmd", ".bat", ".com"];
+    let exts = [".exe", ".cmd", ".bat", ".com", ""];
     std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
         .flat_map(|dir| exts.iter().map(move |ext| dir.join(format!("{name}{ext}"))))
         .find(|candidate| candidate.is_file())
 }
+
+/// Starts Claude Code in the terminal's console. `cmd` looks for a bare command name in its
+/// working folder (the project) before the PATH, so a `claude.cmd` that came with a downloaded
+/// repository would run in place of the installed Claude Code. With
+/// `NoDefaultCurrentDirectoryInExePath` set it looks only on the PATH; the variable is cleared
+/// again once Claude Code exits, so the console left open behaves as usual. No path appears
+/// in the command, which keeps it clear of the quoting Windows Terminal and `cmd` each apply.
+const CLAUDE_COMMAND: &str = "set NoDefaultCurrentDirectoryInExePath=1& claude& set NoDefaultCurrentDirectoryInExePath=";
 
 /// Windows Terminal, when installed.
 fn terminal() -> Option<PathBuf> {
@@ -137,9 +147,16 @@ pub fn available(root: &Path) -> Available {
 /// Runs `command` in a new terminal in `root`, falling back to a console window without
 /// Windows Terminal. The terminal stays open afterwards so its output can be read.
 pub fn in_terminal(root: &str, command: Option<&str>) -> Launch {
-    match terminal() {
+    terminal_launch(terminal().as_deref(), root, command)
+}
+
+/// [`in_terminal`] with Windows Terminal at `wt`, or without it.
+fn terminal_launch(wt: Option<&Path>, root: &str, command: Option<&str>) -> Launch {
+    match wt {
         Some(wt) => {
-            let mut params = format!("-d {}", quote(root));
+            // Windows Terminal splits its whole command line at every unescaped `;`, quoted or
+            // not, so a folder name holding one would end the command there and start more.
+            let mut params = format!("-d {}", quote(&terminal_safe(root)));
             if let Some(command) = command {
                 params.push_str(&format!(" cmd /k {}", terminal_safe(command)));
             }
@@ -167,7 +184,7 @@ pub fn plan(launcher: Launcher, root: &str, web_url: Option<&str>) -> Result<Lau
             Launch { file: solution.display().to_string(), params: String::new(), dir }
         }
         Launcher::Terminal => in_terminal(root, None),
-        Launcher::Claude => in_terminal(root, Some("claude")),
+        Launcher::Claude => in_terminal(root, Some(CLAUDE_COMMAND)),
         Launcher::Explorer => Launch { file: "explorer.exe".to_owned(), params: quote(root), dir },
         Launcher::Web => {
             let url = web_url.ok_or("This project has no web page")?;
@@ -243,15 +260,72 @@ mod tests {
         assert_eq!(quote(""), r#""""#);
     }
 
+    const WT: &str = r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\wt.exe";
+
     #[test]
     fn terminal_commands_keep_semicolons_inside_the_command() {
-        let launch = in_terminal(r"C:\My Code\app", Some("npm run a;b"));
-        if launch.file.to_lowercase().ends_with("wt.exe") {
-            assert_eq!(launch.params, r#"-d "C:\My Code\app" cmd /k npm run a\;b"#);
-        } else {
-            assert_eq!(launch.params, "/k npm run a;b");
-        }
+        let launch = terminal_launch(Some(Path::new(WT)), r"C:\My Code\app", Some("npm run a;b"));
+        assert_eq!((launch.file.as_str(), launch.params.as_str()), (WT, r#"-d "C:\My Code\app" cmd /k npm run a\;b"#));
         assert_eq!(launch.dir, r"C:\My Code\app");
+        let console = terminal_launch(None, r"C:\My Code\app", Some("npm run a;b"));
+        assert_eq!((console.file.as_str(), console.params.as_str()), ("cmd.exe", "/k npm run a;b"));
+        assert_eq!(console.dir, r"C:\My Code\app");
+    }
+
+    /// A `;` in the folder's name ended Windows Terminal's command there, and the rest of the
+    /// name became commands of its own.
+    #[test]
+    fn a_semicolon_in_the_folder_name_stays_in_the_folder_name() {
+        let launch = terminal_launch(Some(Path::new(WT)), r"C:\Code\x;new-tab calc.exe", None);
+        assert_eq!(launch.params, r#"-d "C:\Code\x\;new-tab calc.exe""#);
+        let launch = terminal_launch(Some(Path::new(WT)), r"C:\Code\a;b", Some("cargo build"));
+        assert_eq!(launch.params, r"-d C:\Code\a\;b cmd /k cargo build");
+        // A folder whose name starts with `;` keeps its separator: Terminal removes one `\`.
+        let launch = terminal_launch(Some(Path::new(WT)), r"C:\Code\;b", None);
+        assert_eq!(launch.params, r"-d C:\Code\\;b");
+        assert_eq!(launch.dir, r"C:\Code\;b");
+    }
+
+    /// `cmd /k claude` looked in the project folder first and ran a `claude.cmd` found there.
+    #[test]
+    fn claude_code_is_found_on_the_path_only() {
+        let launch = terminal_launch(Some(Path::new(WT)), r"C:\Code\app", Some(CLAUDE_COMMAND));
+        assert_eq!(
+            launch.params,
+            r"-d C:\Code\app cmd /k set NoDefaultCurrentDirectoryInExePath=1& claude& set NoDefaultCurrentDirectoryInExePath="
+        );
+        let console = terminal_launch(None, r"C:\Code\app", Some(CLAUDE_COMMAND));
+        assert_eq!(console.params, "/k set NoDefaultCurrentDirectoryInExePath=1& claude& set NoDefaultCurrentDirectoryInExePath=");
+    }
+
+    /// What the console runs for the Claude launcher, run for real against a stand-in: a
+    /// `claude.cmd` in the project folder and another on the PATH. Only the PATH's may run.
+    #[test]
+    fn the_claude_command_never_runs_a_copy_in_the_project_folder() {
+        let base = std::env::temp_dir().join(format!("kestrel-launch-claude-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (project, bin) = (base.join("project"), base.join("bin"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(project.join("claude.cmd"), "@echo project copy\r\n").unwrap();
+        std::fs::write(bin.join("claude.cmd"), "@echo installed copy\r\n").unwrap();
+        let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())))
+            .unwrap();
+        let run = |command: &str| {
+            let output = std::process::Command::new("cmd")
+                .arg("/c")
+                .raw_arg(command)
+                .current_dir(&project)
+                .env("PATH", &path)
+                .env_remove("NoDefaultCurrentDirectoryInExePath")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        use std::os::windows::process::CommandExt;
+        assert_eq!(run("claude"), "project copy", "a bare name runs the project's copy");
+        assert_eq!(run(CLAUDE_COMMAND), "installed copy");
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

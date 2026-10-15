@@ -154,7 +154,10 @@ pastes, batch renames and drops all go into the history (the newest 100 operatio
 chosen from the Windows context menu are carried out by Windows and do not. The history is
 kept in the app's database as it changes, so it survives a restart, or a crash; when the app
 starts again, operations none of whose items are still where they were left (renamed or
-deleted since, or gone from the Recycle Bin) are dropped without a word.
+deleted since, or gone from the Recycle Bin) are dropped without a word. Items are known by
+their file ids as well as their paths, and an undo that would send something to the Recycle
+Bin only does so while it holds what the operation left: a new folder others have saved files
+in since, or a copy edited since, is left alone and the undo says why.
 
 Batch rename (F2 with several items selected) offers find and replace (plain or regular
 expression, optionally case-sensitive), a prefix and suffix, numbering (`Photo ###` from a
@@ -301,9 +304,13 @@ in each.
 or branch (`@rust`, `@paused`): Enter opens the project's folder, Shift+Enter its page in the
 hub. Typing `@` looks for projects as opening the hub does.
 
-Git runs commands named by a repository's own configuration in some cases (filter drivers, for
-instance); like any git client, the hub's `git status` does too. The file system monitor hook
-is switched off.
+Kestrel never runs a program a repository's own configuration names, so opening a downloaded
+or extracted repository is safe: git's file system monitor hook and every filter driver the
+repository's configuration sets up are switched off for its commands (drivers you installed
+yourself, such as Git LFS, stay on), and `git status` does not look inside submodules' working
+trees, whose configurations it would have to trust too. A submodule on another commit is
+marked; uncommitted changes inside one are not. Claude Code is started from the PATH only,
+never from a `claude.cmd` in the project folder.
 
 ## Command palette and quick launcher
 
@@ -341,7 +348,8 @@ Kestrel has an icon in the notification area with Show Kestrel, the quick launch
 settings and Quit. "Keep running in the tray when the window is closed" (off by default) keeps
 the index current and the shortcut working after the window closes. "Start Kestrel when you
 sign in to Windows" (off by default) adds an entry to your account's startup programs; with the
-tray option on, Kestrel then starts in the tray.
+tray option on, Kestrel then starts in the tray. Only one Kestrel runs at a time: starting it
+again (from the Start menu, say) shows the one already running.
 
 ## Testing
 

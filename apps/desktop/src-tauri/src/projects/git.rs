@@ -4,6 +4,14 @@
 //! never refreshes the index file as it otherwise would, and with the repository's file system
 //! monitor hook switched off, since that hook is a program named by the repository's own
 //! configuration. Commands run without a window and are killed if they outlast their timeout.
+//!
+//! A repository's configuration can name other programs too. The ones `git status` runs are
+//! filter drivers: to compare a file whose timestamps changed (as every file of an extracted
+//! archive's has) it hashes the file through the `clean` or `process` filter its attributes
+//! name. Merely opening a folder must never run a program a downloaded repository chose, so
+//! `status` runs with every filter driver the repository's own configuration touches switched
+//! off ([`run_on_worktree`]), and without looking into submodules' working trees, whose own
+//! configurations could define more. Drivers the user installed (Git LFS) stay on.
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -55,8 +63,97 @@ impl Output {
     }
 }
 
-/// Runs `git <args>` in `dir`, feeding it `input`, and gives up after `timeout`.
+/// Runs `git <args>` in `dir`, feeding it `input`, and gives up after `timeout`. Only for
+/// commands that never read the working tree's file contents; see [`run_on_worktree`].
 pub fn run(dir: &Path, args: &[&str], input: Option<&[u8]>, timeout: Duration) -> Result<Output, String> {
+    run_with(dir, args, input, timeout, &[])
+}
+
+/// Runs a command that may read the working tree's files (`status` hashes those whose
+/// timestamps changed) with every filter driver the repository's own configuration touches
+/// switched off, so it never runs a program the repository names.
+pub fn run_on_worktree(dir: &Path, args: &[&str], timeout: Duration) -> Result<Output, String> {
+    let drivers = untrusted_filter_drivers(dir, timeout)?;
+    run_with(dir, args, None, timeout, &neutral_filters(&drivers))
+}
+
+/// The names of the filter drivers (`filter.<name>.*`) the repository's own configuration
+/// (`.git/config`, `config.worktree` and whatever they include) defines or changes. Drivers
+/// set up only by the user's or the system's configuration, such as Git LFS, stay on: they are
+/// programs the user installed, and without them every changed-looking LFS file would show as
+/// modified. Reading configuration runs nothing.
+fn untrusted_filter_drivers(dir: &Path, timeout: Duration) -> Result<Vec<String>, String> {
+    let query = ["config", "--show-scope", "--name-only", "-z", "--get-regexp", r"^filter\."];
+    let output = run(dir, &query, None, timeout)?;
+    match output.code {
+        Some(0) => return Ok(parse_untrusted_drivers(&output.stdout)),
+        // Nothing matched.
+        Some(1) => return Ok(Vec::new()),
+        _ => {}
+    }
+    // Git before 2.26 has no `--show-scope`: switch off every driver, wherever it is set.
+    let output = run(dir, &query[..1].iter().chain(&query[2..]).copied().collect::<Vec<_>>(), None, timeout)?;
+    match output.code {
+        Some(0) => Ok(parse_drivers(output.stdout.split(|&b| b == 0))),
+        Some(1) => Ok(Vec::new()),
+        _ => Err(output.reason()),
+    }
+}
+
+/// The drivers in `git config --show-scope --name-only -z` output (scope and key, each ended
+/// by a NUL) that any scope but the system's, the user's or the command line's touches.
+fn parse_untrusted_drivers(raw: &[u8]) -> Vec<String> {
+    let mut fields = raw.split(|&b| b == 0);
+    let mut keys = Vec::new();
+    while let (Some(scope), Some(key)) = (fields.next(), fields.next()) {
+        if !matches!(scope, b"system" | b"global" | b"command") {
+            keys.push(key);
+        }
+    }
+    parse_drivers(keys.into_iter())
+}
+
+/// The driver names of `filter.<name>.<key>` keys, where the name may itself hold dots.
+fn parse_drivers<'a>(keys: impl Iterator<Item = &'a [u8]>) -> Vec<String> {
+    let mut names: Vec<String> = keys
+        .filter_map(|key| {
+            let key = String::from_utf8_lossy(key);
+            let rest = key.strip_prefix("filter.")?;
+            let (name, _) = rest.rsplit_once('.')?;
+            Some(name.to_owned())
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Configuration that switches each driver off: no clean, smudge or process command (git then
+/// passes contents through unchanged) and not required (so a missing filter is no error). It
+/// goes in through the environment (`GIT_CONFIG_COUNT`), which keeps key and value apart
+/// whatever the name holds, and overrides every configuration file.
+fn neutral_filters(drivers: &[String]) -> Vec<(String, String)> {
+    let mut settings = Vec::new();
+    for name in drivers {
+        for (key, value) in [("clean", ""), ("smudge", ""), ("process", ""), ("required", "false")] {
+            settings.push((format!("filter.{name}.{key}"), value.to_owned()));
+        }
+    }
+    let mut env = vec![("GIT_CONFIG_COUNT".to_owned(), settings.len().to_string())];
+    for (n, (key, value)) in settings.into_iter().enumerate() {
+        env.push((format!("GIT_CONFIG_KEY_{n}"), key));
+        env.push((format!("GIT_CONFIG_VALUE_{n}"), value));
+    }
+    env
+}
+
+fn run_with(
+    dir: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    timeout: Duration,
+    env: &[(String, String)],
+) -> Result<Output, String> {
     let mut child = Command::new("git")
         .args(SAFE_ARGS)
         .args(args)
@@ -64,6 +161,7 @@ pub fn run(dir: &Path, args: &[&str], input: Option<&[u8]>, timeout: Duration) -
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
+        .envs(env.iter().map(|(key, value)| (key, value)))
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -325,9 +423,15 @@ pub fn web_url(remote: &str) -> Option<String> {
     Some(format!("https://{lower}/{path}"))
 }
 
+/// Options for every `git status`: submodules' working trees are not looked into, as checking
+/// one runs `git status` inside it, under a configuration whose filter drivers were never seen
+/// here. A submodule on a different commit still shows; uncommitted changes inside it do not.
+const STATUS_SAFETY: &str = "--ignore-submodules=dirty";
+
 /// Reads the status of the repository at `root`.
 pub fn status(root: &Path) -> Result<Status, String> {
-    let output = run(root, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"], None, TIMEOUT)?;
+    let args = ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", STATUS_SAFETY];
+    let output = run_on_worktree(root, &args, TIMEOUT)?;
     if !output.ok() {
         return Err(output.reason());
     }
@@ -346,8 +450,8 @@ pub fn parse_ignored(raw: &[u8]) -> HashSet<String> {
 /// What git ignores in the working tree, as [`parse_ignored`] gives it. Ignored folders are
 /// reported once, not file by file.
 pub fn ignored_paths(root: &Path) -> Result<HashSet<String>, String> {
-    let args = ["status", "--porcelain=v2", "-z", "--ignored=traditional", "--untracked-files=normal"];
-    let output = run(root, &args, None, TIMEOUT)?;
+    let args = ["status", "--porcelain=v2", "-z", "--ignored=traditional", "--untracked-files=normal", STATUS_SAFETY];
+    let output = run_on_worktree(root, &args, TIMEOUT)?;
     if !output.ok() {
         return Err(output.reason());
     }
@@ -560,6 +664,28 @@ u UU N... 100644 100644 100644 100644 a b c clash.txt\0\
         assert!(path_within("libs/inner/", "libs/inner"));
         assert!(path_within("Libs/Inner/x.rs", "libs/inner"));
         assert!(!path_within("libs/innermost", "libs/inner"));
+    }
+
+    #[test]
+    fn filter_drivers_the_repository_touches_are_switched_off() {
+        // Git LFS as the user installed it stays on; what the repository sets goes off, even
+        // under a name a trusted driver has.
+        let raw = b"system\0filter.lfs.clean\0global\0filter.lfs.process\0command\0filter.mine.clean\0\
+local\0filter.evil.clean\0local\0filter.odd.name.process\0worktree\0filter.wt.clean\0";
+        assert_eq!(parse_untrusted_drivers(raw), ["evil", "odd.name", "wt"]);
+        let hijacked = b"global\0filter.lfs.process\0local\0filter.lfs.process\0";
+        assert_eq!(parse_untrusted_drivers(hijacked), ["lfs"]);
+
+        let drivers = parse_drivers([&b"filter.lfs.clean"[..], b"filter.lfs.smudge", b"filter.odd.name.clean"].into_iter());
+        assert_eq!(drivers, ["lfs", "odd.name"]);
+        let env = neutral_filters(&drivers);
+        assert_eq!(env[0], ("GIT_CONFIG_COUNT".to_owned(), "8".to_owned()));
+        let settings: Vec<(&str, &str)> =
+            env[1..].chunks(2).map(|pair| (pair[0].1.as_str(), pair[1].1.as_str())).collect();
+        assert!(settings.contains(&("filter.odd.name.clean", "")));
+        assert!(settings.contains(&("filter.lfs.process", "")));
+        assert!(settings.contains(&("filter.lfs.required", "false")));
+        assert!(parse_untrusted_drivers(b"").is_empty());
     }
 
     #[test]

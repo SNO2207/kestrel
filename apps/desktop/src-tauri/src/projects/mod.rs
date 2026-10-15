@@ -380,8 +380,12 @@ impl Projects {
         GitEvent { root: root.to_owned(), git: repo.facts.clone(), error: repo.error.clone() }
     }
 
-    /// The repository's status for badges, read now if there is none yet or it is too old to
-    /// trust.
+    /// The repository's status for badges, read now if it has not been read yet or the last
+    /// read is too old to trust.
+    ///
+    /// A read that failed (git missing, a refused owner, a broken worktree, a timeout) counts
+    /// as recent too, and answers with no status. Reading again at once would announce the
+    /// repository again, which makes the lists ask for its badges again, round and round.
     fn repo_view(&self, root: &Path) -> Option<Arc<RepoView>> {
         let root_text = root.to_string_lossy().into_owned();
         let k = key(&root_text);
@@ -391,9 +395,8 @@ impl Projects {
             let repo = repos.entry(k.clone()).or_default();
             repo.badge_interest = Some(Instant::now());
             let max_age = if indexed { GIT_MAX_AGE } else { UNINDEXED_MAX_AGE };
-            let fresh = repo.computed.is_some_and(|at| at.elapsed() < max_age);
-            if let (Some(view), true) = (&repo.view, fresh) {
-                return Some(view.clone());
+            if repo.computed.is_some_and(|at| at.elapsed() < max_age) {
+                return repo.view.clone();
             }
         }
         // Wake the watcher, which keeps this repository current from now on.

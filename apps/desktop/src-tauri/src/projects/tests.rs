@@ -360,3 +360,94 @@ fn slow_git_commands_are_abandoned() {
     let output = git::run(&std::env::temp_dir(), &["--version"], None, git::TIMEOUT).unwrap();
     assert!(output.ok() && output.text().starts_with("git version"));
 }
+
+/// A repository git can't read (here a worktree whose main repository is gone; equally git
+/// missing from the PATH, a refused owner or a timeout) has an error and no status. Each badge
+/// request used to read it again and announce it, and the announcement made the list ask
+/// again, forever. A failed read is trusted for as long as a successful one would be.
+#[test]
+fn a_repository_git_cannot_read_is_not_read_again_for_every_badge_request() {
+    let fixture = fixture("unreadable");
+    let projects = service(&fixture);
+    let broken = fixture.work.join("broken");
+    write(&broken.join(".git"), "gitdir: C:/kestrel-nowhere/missing.git\n");
+    write(&broken.join("a.txt"), "a\n");
+    let items = [Item { name: "a.txt".to_owned(), dir: false }];
+    let folder = broken.to_str().unwrap();
+
+    let (repo, badges) = projects.badges(folder, &items);
+    assert_eq!(repo.as_deref(), Some(folder));
+    assert_eq!(badges, [Badge::default()]);
+    let read_at = |projects: &Projects| {
+        let repos = projects.repos.lock();
+        let repo = repos.get(&key(folder)).expect("the repository is known");
+        assert!(repo.error.is_some() && repo.view.is_none(), "git can't read it");
+        repo.computed
+    };
+    let first = read_at(&projects);
+    for _ in 0..3 {
+        projects.badges(folder, &items);
+    }
+    assert_eq!(read_at(&projects), first, "git was not run again");
+}
+
+/// Sets a file's last write time back, as extracting an archive leaves it: git then hashes the
+/// file to tell whether it changed, through whatever filter its attributes name.
+fn backdate(path: &Path) {
+    let then = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+    fs::File::options().write(true).open(path).unwrap().set_modified(then).unwrap();
+}
+
+/// A repository extracted from an archive brings its own `.git/config`, which can name filter
+/// programs that `git status` runs on every file whose timestamps changed. Opening the folder
+/// in Kestrel must run none of them: not the repository's, and not an embedded repository's.
+#[test]
+fn reading_a_repository_never_runs_the_filter_programs_it_names() {
+    let base = std::env::temp_dir().join(format!("kestrel-projects-filters-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let repo = base.join("repo");
+    let inner = repo.join("inner");
+    fs::create_dir_all(&inner).unwrap();
+    let config = base.join("gitconfig");
+    fs::write(&config, "").unwrap();
+    let git = |dir: &Path, args: &[&str]| git(&config, dir, args);
+    let marker = |name: &str| base.join(name);
+    // The filter writes a marker, then passes the contents through unchanged.
+    let filter = |name: &str| format!("echo ran >> '{}'; cat", marker(name).to_str().unwrap().replace('\\', "/"));
+
+    write(&inner.join("c.txt"), "c\n");
+    git(&inner, &["init", "-q"]);
+    git(&inner, &["config", "filter.inner-evil.clean", &filter("inner.txt")]);
+    write(&inner.join(".git").join("info").join("attributes"), "* filter=inner-evil\n");
+    git(&inner, &["add", "."]);
+    git(&inner, &["commit", "-q", "-m", "Inner"]);
+
+    write(&repo.join("a.txt"), "a\n");
+    write(&repo.join("b.md"), "b\n");
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "Initial"]);
+    // Two drivers, one with dots in its name, applied by the repository's own attributes.
+    git(&repo, &["config", "filter.evil.clean", &filter("repo.txt")]);
+    git(&repo, &["config", "filter.odd.name.clean", &filter("repo.txt")]);
+    git(&repo, &["config", "filter.odd.name.required", "true"]);
+    write(&repo.join(".git").join("info").join("attributes"), "*.txt filter=evil\n*.md filter=odd.name\n");
+    for file in [repo.join("a.txt"), repo.join("b.md"), inner.join("c.txt")] {
+        backdate(&file);
+    }
+
+    // The fixture is armed: a plain `git status` runs both repositories' filters (without
+    // writing the index, which would record the new timestamps and disarm it).
+    git(&repo, &["--no-optional-locks", "status", "--porcelain"]);
+    assert!(marker("repo.txt").exists() && marker("inner.txt").exists(), "a plain status runs the filters");
+    fs::remove_file(marker("repo.txt")).unwrap();
+    fs::remove_file(marker("inner.txt")).unwrap();
+
+    let status = git::status(&repo).unwrap();
+    assert!(status.entries.is_empty(), "nothing changed: {:?}", status.entries);
+    git::ignored_paths(&repo).unwrap();
+    read_repo(&repo).unwrap();
+    assert!(!marker("repo.txt").exists(), "the repository's filters never ran");
+    assert!(!marker("inner.txt").exists(), "the embedded repository's filter never ran");
+    fs::remove_dir_all(&base).unwrap();
+}

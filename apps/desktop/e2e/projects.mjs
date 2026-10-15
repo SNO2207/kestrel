@@ -16,7 +16,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,8 @@ const app = join(work, "fixture-app");
 const plain = join(work, "fixture-plain");
 const merge = join(work, "fixture-merge");
 const late = join(work, "fixture-late");
+const outside = join(sandbox, "outside");
+const OUTSIDE_FOLDERS = 20;
 rmSync(sandbox, { recursive: true, force: true });
 mkdirSync(work, { recursive: true });
 const gitConfig = join(sandbox, "gitconfig");
@@ -126,6 +128,14 @@ function makeFixture() {
   write(join(plain, "pyproject.toml"), '[project]\nname = "fixture-plain"\n');
   write(join(plain, "main.py"), "print('hi')\n");
   write(join(plain, "justfile"), "fmt:\n    ruff format\n");
+
+  // Plain folders outside any repository, for browsing through.
+  for (let n = 0; n < OUTSIDE_FOLDERS; n++) {
+    for (let f = 0; f < 5; f++) write(join(outside, `folder-${n}`, `file-${n}-${f}.txt`), "x\n");
+  }
+  for (let dir = sandbox; dirname(dir) !== dir; dir = dirname(dir)) {
+    assert(!existsSync(join(dir, ".git")), `the sandbox must not be inside a repository (${dir})`);
+  }
 }
 
 makeFixture();
@@ -303,7 +313,8 @@ try {
       vscode: (r) => /Code\.exe$/i.test(r.file) && r.params === quoted,
       "visual-studio": (r) => r.file === join(app, "App.sln"),
       terminal: (r) => (/wt\.exe$/i.test(r.file) ? r.params === `-d ${quoted}` : r.file === "cmd.exe"),
-      claude: (r) => r.params.endsWith("claude"),
+      // Claude Code from the PATH only, never a claude.cmd in the project folder.
+      claude: (r) => r.params.endsWith("/k set NoDefaultCurrentDirectoryInExePath=1& claude& set NoDefaultCurrentDirectoryInExePath="),
       explorer: (r) => r.file === "explorer.exe" && r.params === quoted,
       web: (r) => r.file === "https://github.com/kestrel-test/fixture-app",
     };
@@ -465,6 +476,21 @@ try {
     await shotBoth("7-badges-icons");
     await page.keyboard.press("Control+Shift+Digit6");
     await panel.locator('.filelist[data-view="details"]').waitFor();
+  });
+
+  await step("badge answers are kept only for the folders shown lately, and only in repositories", async () => {
+    const kept = () => page.evaluate(() => window.__kestrelGitBadges.kept());
+    const glyph = (name) => item(name).locator(".git-glyph");
+    await openFolder(app, "notes.txt");
+    await glyph("src").waitFor({ timeout: 15_000 });
+    assert(await kept() > 0, "the repository's answers are kept while it is shown");
+    // Twenty folders outside any repository, one after another, as a long session would.
+    for (let n = 0; n < OUTSIDE_FOLDERS; n++) await openFolder(join(outside, `folder-${n}`), `file-${n}-0.txt`);
+    await page.waitForTimeout(500);
+    assert.equal(await kept(), 0, "nothing kept for folders outside a repository, or for the repository left long ago");
+    await openFolder(app, "notes.txt");
+    await glyph("src").waitFor({ timeout: 15_000 });
+    assert.equal(await glyph("notes.txt").getAttribute("data-change"), "untracked", "badges come back when it is shown again");
   });
 
   await step("the hub closes when another place is opened", async () => {

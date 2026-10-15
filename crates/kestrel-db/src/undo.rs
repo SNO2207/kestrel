@@ -1,24 +1,29 @@
 //! The undo history, kept between runs. The app's `undo.rs` decides what an operation is and
-//! how it is reversed; here each one is a row with its label and its results as JSON, on the
-//! undo or the redo stack, in the order of its id.
+//! how it is reversed; here each one is a row with its label, its results as JSON and what
+//! the items it left looked like (also JSON), on the undo or the redo stack, in the order of
+//! its id.
 
 use rusqlite::{OptionalExtension, params};
 
 use crate::{Db, Migration, Result};
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    name: "2026_10_16_undo_history",
-    sql: "CREATE TABLE undo_entries (
-              id INTEGER PRIMARY KEY,
-              stack TEXT NOT NULL CHECK (stack IN ('undo', 'redo')),
-              label TEXT NOT NULL,
-              steps TEXT NOT NULL
-          );
-          CREATE TABLE undo_erased (
-              only INTEGER PRIMARY KEY CHECK (only = 1),
-              subjects TEXT NOT NULL
-          );",
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        name: "2026_10_16_undo_history",
+        sql: "CREATE TABLE undo_entries (
+                  id INTEGER PRIMARY KEY,
+                  stack TEXT NOT NULL CHECK (stack IN ('undo', 'redo')),
+                  label TEXT NOT NULL,
+                  steps TEXT NOT NULL
+              );
+              CREATE TABLE undo_erased (
+                  only INTEGER PRIMARY KEY CHECK (only = 1),
+                  subjects TEXT NOT NULL
+              );",
+    },
+    // Rows written before it have none: their items can only be matched by path.
+    Migration { name: "2026_10_17_undo_marks", sql: "ALTER TABLE undo_entries ADD COLUMN marks TEXT;" },
+];
 
 /// Which stack an operation is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -46,6 +51,9 @@ pub struct StoredEntry {
     pub label: String,
     /// What it did, as JSON.
     pub steps: String,
+    /// What the items it left looked like just after, as JSON; `None` for operations stored
+    /// before this was kept.
+    pub marks: Option<String>,
 }
 
 /// A change to the stored history.
@@ -63,7 +71,7 @@ impl Db {
     /// Every stored operation, oldest first.
     pub fn undo_entries(&self) -> Result<Vec<StoredEntry>> {
         self.with(|c| {
-            let mut query = c.prepare("SELECT id, stack, label, steps FROM undo_entries ORDER BY id")?;
+            let mut query = c.prepare("SELECT id, stack, label, steps, marks FROM undo_entries ORDER BY id")?;
             let rows = query.query_map([], |row| {
                 let stack: String = row.get(1)?;
                 Ok(StoredEntry {
@@ -71,6 +79,7 @@ impl Db {
                     stack: if stack == "redo" { Stack::Redo } else { Stack::Undo },
                     label: row.get(2)?,
                     steps: row.get(3)?,
+                    marks: row.get(4)?,
                 })
             })?;
             rows.collect()
@@ -97,8 +106,8 @@ impl Db {
             }
             for entry in change.written {
                 t.execute(
-                    "INSERT OR REPLACE INTO undo_entries (id, stack, label, steps) VALUES (?1, ?2, ?3, ?4)",
-                    params![entry.id as i64, entry.stack.name(), entry.label, entry.steps],
+                    "INSERT OR REPLACE INTO undo_entries (id, stack, label, steps, marks) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![entry.id as i64, entry.stack.name(), entry.label, entry.steps, entry.marks],
                 )?;
             }
             match change.erased {
@@ -122,7 +131,17 @@ mod tests {
     use super::*;
 
     fn entry(id: u64, stack: Stack, label: &str) -> StoredEntry {
-        StoredEntry { id, stack, label: label.into(), steps: format!("[{id}]") }
+        StoredEntry { id, stack, label: label.into(), steps: format!("[{id}]"), marks: Some(format!("[{{\"id\":{id}}}]")) }
+    }
+
+    #[test]
+    fn rows_from_before_marks_were_kept_read_back_without_them() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| c.execute("INSERT INTO undo_entries (id, stack, label, steps) VALUES (1, 'undo', 'rename of a.txt', '[]')", []))
+            .unwrap();
+        let stored = db.undo_entries().unwrap();
+        assert_eq!(stored[0].marks, None);
+        assert_eq!(stored[0].steps, "[]");
     }
 
     #[test]

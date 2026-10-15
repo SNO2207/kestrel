@@ -14,11 +14,11 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_NO_MORE_FILES, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_BOTH_DIR_INFO,
-    FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo,
-    FileIdType, GetFileInformationByHandle, GetFileInformationByHandleEx, OPEN_EXISTING,
-    OpenFileById,
+    BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0,
+    FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo,
+    FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdType, GetFileInformationByHandle,
+    GetFileInformationByHandleEx, OPEN_EXISTING, OpenFileById,
 };
 
 use crate::builder::IndexBuilder;
@@ -102,14 +102,92 @@ pub fn file_id_of(path: &str) -> Option<u64> {
     }
 }
 
+/// Whether an entry with these attributes and reparse tag is an alias for another folder (a
+/// junction or a directory symbolic link), which is never descended into.
+fn is_alias_entry(attrs: u32, reparse_tag: u32) -> bool {
+    attrs & attr::DIRECTORY != 0 && attrs & attr::REPARSE_POINT != 0 && reparse_tag & NAME_SURROGATE_BIT != 0
+}
+
+fn dir_item(name: &[u16], meta: Meta, reparse_tag: u32) -> DirItem {
+    DirItem { name: String::from_utf16_lossy(name), meta, alias: is_alias_entry(meta.attrs, reparse_tag) }
+}
+
+/// Opens the file or folder at `path` itself, never what a link leads to, to read its
+/// attributes, and hands the handle to `read`, closing it afterwards. `None` if it cannot be
+/// opened.
+fn read_item<T>(path: &str, read: impl FnOnce(HANDLE) -> Option<T>) -> Option<T> {
+    let mut wide = extended_path(path);
+    // A drive root such as `\\?\C:\` must keep its separator; other paths must not have one.
+    if !path.trim_end_matches(['\\', '/']).ends_with(':') {
+        wide.pop();
+    }
+    wide.push(0);
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    // SAFETY: `wide` is NUL-terminated and outlives the call.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let result = read(handle);
+    // SAFETY: `handle` was returned by CreateFileW and is closed exactly once.
+    unsafe { CloseHandle(handle) };
+    result
+}
+
+/// What a file or folder is now, read from the item itself (current even while its folder's
+/// listing lags) without following a link. `None` if it cannot be opened.
+pub fn info(path: &str) -> Option<Meta> {
+    read_item(path, |handle| {
+        // SAFETY: all zeroes is a valid BY_HANDLE_FILE_INFORMATION (integers only).
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: `handle` is open and `info` is valid and writable for the call.
+        let ok = unsafe { GetFileInformationByHandle(handle, &mut info) } != 0;
+        ok.then(|| Meta {
+            size: (info.nFileSizeHigh as u64) << 32 | info.nFileSizeLow as u64,
+            alloc: 0,
+            mtime: ((info.ftLastWriteTime.dwHighDateTime as u64) << 32 | info.ftLastWriteTime.dwLowDateTime as u64) as i64,
+            attrs: info.dwFileAttributes,
+            file_id: (info.nFileIndexHigh as u64) << 32 | info.nFileIndexLow as u64,
+        })
+    })
+}
+
 /// Lists a single directory without descending into it.
 pub fn list(dir: &str) -> io::Result<Vec<DirItem>> {
     let mut items = Vec::new();
-    read_dir(&mut extended_path(dir), |name, meta, _| {
-        items.push(DirItem { name: String::from_utf16_lossy(name), meta });
-    })
-    .map_err(|code| io::Error::from_raw_os_error(code as i32))?;
+    read_dir(&mut extended_path(dir), |name, meta, reparse_tag| items.push(dir_item(name, meta, reparse_tag)))
+        .map_err(|code| io::Error::from_raw_os_error(code as i32))?;
     Ok(items)
+}
+
+/// Whether the folder at `path` is itself a junction or a directory symbolic link. Listing it
+/// by path reads the folder it leads to, which is indexed where it really is. `false` when it
+/// cannot be read.
+pub fn is_alias(path: &str) -> bool {
+    read_item(path, |handle| {
+        let mut info = FILE_ATTRIBUTE_TAG_INFO { FileAttributes: 0, ReparseTag: 0 };
+        // SAFETY: `info` is a valid, writable FILE_ATTRIBUTE_TAG_INFO of the size given.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                handle,
+                FileAttributeTagInfo,
+                (&mut info as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+                size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+            )
+        } != 0;
+        Some(ok && is_alias_entry(info.FileAttributes, info.ReparseTag))
+    })
+    .unwrap_or(false)
 }
 
 /// A volume whose folders can be listed by file id.
@@ -180,10 +258,8 @@ impl Volume {
             return Err(io::Error::last_os_error());
         }
         let mut items = Vec::new();
-        read_handle(handle, |name, meta, _| {
-            items.push(DirItem { name: String::from_utf16_lossy(name), meta });
-        })
-        .map_err(|code| io::Error::from_raw_os_error(code as i32))?;
+        read_handle(handle, |name, meta, reparse_tag| items.push(dir_item(name, meta, reparse_tag)))
+            .map_err(|code| io::Error::from_raw_os_error(code as i32))?;
         Ok(items)
     }
 }
@@ -253,8 +329,7 @@ fn visit<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared, mut path: Vec<u16>, n
         let name_len = (batch.names.len() - start) as u32;
 
         let is_dir = meta.attrs & attr::DIRECTORY != 0;
-        let is_alias = meta.attrs & attr::REPARSE_POINT != 0 && reparse_tag & NAME_SURROGATE_BIT != 0;
-        let node = if is_dir && !is_alias {
+        let node = if is_dir && !is_alias_entry(meta.attrs, reparse_tag) {
             let node = shared.next_node.fetch_add(1, Ordering::Relaxed);
             subdirs.push((name.to_vec(), node));
             node
@@ -405,6 +480,22 @@ mod tests {
         // A deleted folder's id no longer opens, even if its record is reused later.
         fs::remove_dir_all(root.join("after/renamed")).unwrap();
         assert!(volume.list(id).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_item_is_read_as_it_is_now() {
+        let root = std::env::temp_dir().join(format!("kestrel-walk-info-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("dir")).unwrap();
+        fs::write(root.join("a.txt"), b"12345").unwrap();
+        let file = info(root.join("a.txt").to_str().unwrap()).unwrap();
+        assert_eq!(file.size, 5);
+        assert!(file.mtime > 0 && file.attrs & attr::DIRECTORY == 0);
+        assert_eq!(Some(file.file_id), file_id_of(root.join("a.txt").to_str().unwrap()));
+        let dir = info(root.join("dir").to_str().unwrap()).unwrap();
+        assert!(dir.attrs & attr::DIRECTORY != 0);
+        assert!(info(root.join("missing").to_str().unwrap()).is_none());
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -272,7 +272,13 @@ impl Engine {
         let sort_spec = spec.resolve(true);
 
         let mut index = self.index.write();
-        let indexed = index.lookup(&path).filter(|&dir| index.is_dir(dir));
+        // A junction or folder link is listed through to the folder it leads to, which the
+        // index holds where it really is: reconciling that listing with the link's entry would
+        // re-parent the real folder's subfolders under the link. Such folders are shown live.
+        let indexed = index
+            .lookup(&path)
+            .filter(|&dir| index.is_dir(dir))
+            .filter(|&dir| index.attrs(dir) & attr::REPARSE_POINT == 0 || !walk::is_alias(&path));
         let (rows, shown_path, max_size) = match indexed {
             Some(dir) => {
                 let mut sync = Sync::default();
@@ -627,6 +633,42 @@ mod tests {
         assert_eq!(rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["b-dir", "a.TXT"]);
         assert_eq!(rows[1].ext, "txt");
         assert_eq!(rows[1].path, format!(r"{}\a.TXT", root.to_str().unwrap()));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Opening a junction lists the folder it leads to. That listing used to be reconciled with
+    /// the junction's own entry, which moved the real folder's subfolders under the link.
+    #[test]
+    fn opening_a_junction_lists_it_live_and_leaves_the_index_alone() {
+        let root = std::env::temp_dir().join(format!("kestrel-engine-junction-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("real/sub")).unwrap();
+        fs::write(root.join("real/sub/inner.txt"), b"inner").unwrap();
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(root.join("link"))
+            .arg(root.join("real"))
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J failed");
+        let root_str = root.to_str().unwrap().to_owned();
+        let engine = Engine::default();
+        let mut builder = IndexBuilder::new();
+        walk::walk(&root_str, &mut builder).unwrap();
+        engine.install(builder.finish());
+        assert!(walk::is_alias(&format!(r"{root_str}\link")));
+        assert!(!walk::is_alias(&format!(r"{root_str}\real")));
+
+        let listing = engine.list_dir(&format!(r"{root_str}\link"), BY_NAME).unwrap();
+        assert_eq!(names(&engine, &listing), ["sub"]);
+        engine.with_index(|index| {
+            let sub = index.lookup(&format!(r"{root_str}\real\sub")).expect("the real folder keeps its subfolder");
+            assert_eq!(index.children(sub).count(), 1);
+            let link = index.lookup(&format!(r"{root_str}\link")).unwrap();
+            assert_eq!(index.children(link).count(), 0, "the junction gains no children");
+        });
+        fs::remove_dir(root.join("link")).unwrap();
         fs::remove_dir_all(&root).unwrap();
     }
 
