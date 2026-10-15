@@ -54,8 +54,10 @@ const [status, setStatus] = createSignal<IndexStatus>({
 const [places, setPlaces] = createSignal<Places>({ home: "", folders: [], drives: [] });
 const [everywhere, setEverywhereSignal] = createSignal(localStorage.getItem("search-scope") !== "folder");
 const [notice, setNotice] = createSignal<string | null>(null);
+/** Whether the notice reports a failure or simply says what happened. */
+const [noticeTone, setNoticeTone] = createSignal<"error" | "info">("error");
 
-export { tabs, activeId, status, places, everywhere, notice };
+export { tabs, activeId, status, places, everywhere, notice, noticeTone };
 
 export const activeTab = () => tabs.find((tab) => tab.id === activeId());
 export const isSearch = (tab: Tab) => tab.listing?.path === "";
@@ -64,7 +66,8 @@ let nextTabId = 1;
 let noticeTimer: number | undefined;
 
 /** Shows a short message, such as why an operation failed, that clears itself. */
-export function notify(message: unknown) {
+export function notify(message: unknown, tone: "error" | "info" = "error") {
+  setNoticeTone(tone);
   setNotice(String(message));
   clearTimeout(noticeTimer);
   noticeTimer = window.setTimeout(() => setNotice(null), NOTICE_MS);
@@ -284,6 +287,10 @@ export const setRenaming = (tabId: number, active: boolean) =>
 
 export const clearPending = (tabId: number) => patch(tabId, (tab) => void (tab.pending = null));
 
+/** Selects the items with these names once the tab's listing shows them. */
+export const selectWhenListed = (tabId: number, names: string[]) =>
+  patch(tabId, (tab) => void (tab.pending = names.length > 0 ? { names, rename: false } : null));
+
 // ---------- file operations ----------
 
 /** The selection of a tab that is showing rows, or `null` if nothing is selected. */
@@ -295,7 +302,7 @@ function selected(tabId: number) {
 }
 
 /** Fetches the selected rows, lowest first, up to `limit`. */
-async function selectedRows(tabId: number, limit: number): Promise<Row[]> {
+export async function selectedRows(tabId: number, limit: number): Promise<Row[]> {
   const current = selected(tabId);
   if (!current) return [];
   const rows: Row[] = [];
@@ -350,9 +357,9 @@ export function createFolder(tabId: number) {
 
 export function rename(tabId: number, row: Row, name: string) {
   void operate(tabId, async () => {
-    if (await api.renameItem(row.path, name)) {
-      patch(tabId, (tab) => void (tab.pending = { names: [name], rename: false }));
-    }
+    // The shell may settle on another name, such as "name (2)" after a conflict.
+    const renamed = await api.renameItem(row.path, name);
+    if (renamed) patch(tabId, (tab) => void (tab.pending = { names: [renamed], rename: false }));
   });
 }
 

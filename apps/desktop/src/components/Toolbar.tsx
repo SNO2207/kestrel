@@ -1,5 +1,6 @@
 import { For, Show, createEffect, createSignal } from "solid-js";
 
+import { recheckAccess } from "../lib/access";
 import { breadcrumbs } from "../lib/format";
 import {
   activeTab,
@@ -58,7 +59,7 @@ export function Toolbar(props: { focusList: () => void }) {
         <button title="Up (Alt+Up)" aria-label="Up" disabled={!tab() || !canGoUp(tab()!)} onClick={() => goUp(tab()!.id)}>
           <Icon name="up" />
         </button>
-        <button title="Refresh (F5)" aria-label="Refresh" disabled={!tab()} onClick={() => refresh(tab()!.id)}>
+        <button title="Refresh (F5)" aria-label="Refresh" disabled={!tab()} onClick={() => (recheckAccess(), refresh(tab()!.id))}>
           <Icon name="refresh" />
         </button>
       </div>

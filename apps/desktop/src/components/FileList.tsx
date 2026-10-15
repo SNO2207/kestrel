@@ -1,9 +1,11 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 
 import { api, iconUrl, type Listing, type Marks, type Row, type SortKey, type SortSpec } from "../lib/api";
+import { LOCKED_MESSAGE, checkFolders, foldersOf, isLocked } from "../lib/access";
 import { formatDate, formatSize } from "../lib/format";
 import { Selection } from "../lib/selection";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
+import { LockGlyph } from "./LockGlyph";
 
 const ROW_HEIGHT = 28;
 const PAGE_SIZE = 128;
@@ -29,7 +31,10 @@ export type ListCommand =
   | "new-folder"
   | "properties"
   | "folder-properties"
-  | "refresh";
+  | "refresh"
+  | "undo"
+  | "redo"
+  | "batch-rename";
 
 interface Props {
   listing: Listing | null;
@@ -153,8 +158,7 @@ export function FileList(props: Props) {
     const listing = props.listing;
     if (!pending || !listing) return;
     const key = contentKey();
-    const ranges = await api.locateNames(listing.set, pending.names);
-    // Not there yet: a later refresh will carry them, and `pending` stays set until then.
+    const ranges = await api.locateNames(listing.set, pending.names);    // Not there yet: a later refresh will carry them, and `pending` stays set until then.
     if (contentKey() !== key || ranges.length === 0) return;
     const first = ranges[0][0];
     setSelection(Selection.of(ranges));
@@ -211,6 +215,17 @@ export function FileList(props: Props) {
     return pages().get(Math.floor(row / PAGE_SIZE))?.[row % PAGE_SIZE];
   };
 
+  // Whether the rows on screen sit in folders this account can't open is asked lazily, for
+  // those rows only, so even a search with millions of results stays instant.
+  createEffect(() => {
+    const folders: string[] = [];
+    for (const index of visibleRows()) {
+      const data = rowAt(index);
+      if (data) folders.push(...foldersOf(data));
+    }
+    checkFolders(folders);
+  });
+
   createEffect(() => {
     const listing = props.listing;
     if (!listing || total() === 0) return;
@@ -265,6 +280,8 @@ export function FileList(props: Props) {
 
   const select = (row: number, mode: { extend?: boolean; toggle?: boolean } = {}) => {
     if (row < 0 || row >= total()) return;
+    // What the user picks wins over a selection still waiting for an operation's results.
+    if (props.pending) props.onPendingDone();
     if (mode.extend && anchor >= 0) {
       setSelection(mode.toggle ? selection().add(anchor, row) : Selection.range(anchor, row));
     } else if (mode.toggle) {
@@ -330,8 +347,22 @@ export function FileList(props: Props) {
     const count = selection().count;
     const sole = soleRow() >= 0 ? rowAt(soleRow()) : undefined;
     const browsing = !isSearch();
-    const canPaste = browsing && (await api.canPaste().catch(() => false));
+    const [canPaste, history] = await Promise.all([
+      browsing && api.canPaste().catch(() => false),
+      api.undoState().catch(() => null),
+    ]);
     const command = (name: ListCommand) => () => props.onCommand(name);
+    const undo: MenuEntry = history?.erased
+      ? { label: "Can't undo a permanent delete", disabled: true, run: () => {} }
+      : {
+          label: history?.undo ? `Undo ${history.undo}` : "Undo",
+          hint: "Ctrl+Z",
+          disabled: !history?.undo,
+          run: command("undo"),
+        };
+    const redo: MenuEntry[] = history?.redo
+      ? [{ label: `Redo ${history.redo}`, hint: "Ctrl+Y", run: command("redo") }]
+      : [];
 
     const forItems: MenuEntry[] = [
       { label: "Open", hint: "Enter", disabled: !sole, run: () => open(soleRow()) },
@@ -341,7 +372,9 @@ export function FileList(props: Props) {
       { label: "Copy", hint: "Ctrl+C", run: command("copy") },
       { label: count > 1 ? "Copy as paths" : "Copy as path", hint: "Ctrl+Shift+C", run: command("copy-path") },
       "separator",
-      { label: "Rename", hint: "F2", disabled: !sole, run: startRename },
+      count > 1
+        ? { label: `Rename ${count} items`, hint: "F2", run: command("batch-rename") }
+        : { label: "Rename", hint: "F2", disabled: !sole, run: startRename },
       { label: "Delete", hint: "Del", danger: true, run: command("delete") },
       "separator",
       { label: "Properties", hint: "Alt+Enter", disabled: !sole, run: command("properties") },
@@ -349,6 +382,9 @@ export function FileList(props: Props) {
     const forFolder: MenuEntry[] = [
       { label: "New folder", hint: "Ctrl+Shift+N", disabled: !browsing, run: command("new-folder") },
       { label: "Paste", hint: "Ctrl+V", disabled: !canPaste, run: command("paste") },
+      "separator",
+      undo,
+      ...redo,
       "separator",
       { label: "Refresh", hint: "F5", run: command("refresh") },
       "separator",
@@ -374,7 +410,7 @@ export function FileList(props: Props) {
     if (event.ctrlKey && key === "v") return run("paste");
     if (event.altKey && key === "enter") return has && run("properties");
     if (key === "delete") return has && run(event.shiftKey ? "erase" : "delete");
-    if (key === "f2") return startRename(), true;
+    if (key === "f2") return selection().count > 1 ? run("batch-rename") : (startRename(), true);
     if (key === "contextmenu" || (event.shiftKey && key === "f10")) {
       const box = viewport.getBoundingClientRect();
       const row = Math.max(0, focused());
@@ -506,14 +542,20 @@ export function FileList(props: Props) {
             <For each={visibleRows()}>
               {(index) => {
                 const row = createMemo(() => rowAt(index));
+                const locked = () => {
+                  const data = row();
+                  return data !== undefined && isLocked(data);
+                };
                 return (
                   <div
                     class="row"
                     classList={{
                       selected: selection().has(index),
                       focused: focused() === index,
-                      dimmed: row()?.hidden,
+                      dimmed: row()?.hidden || locked(),
+                      locked: locked(),
                     }}
+                    title={locked() ? LOCKED_MESSAGE : undefined}
                     role="row"
                     aria-rowindex={index + 1}
                     aria-selected={selection().has(index)}
@@ -558,6 +600,9 @@ export function FileList(props: Props) {
                                   if (event.key === "Escape") finishRename(index, null);
                                 }}
                               />
+                            </Show>
+                            <Show when={locked()}>
+                              <LockGlyph />
                             </Show>
                           </div>
                           <Show when={isSearch()}>

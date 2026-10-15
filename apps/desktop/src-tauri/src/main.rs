@@ -1,27 +1,30 @@
 // Keeps a console window from opening alongside the app in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod access;
+mod batchrename;
 mod clipboard;
 mod engine;
 mod fileops;
 mod icons;
 mod indexer;
 mod places;
+mod recycle;
+mod undo;
 mod watch;
 
-use std::collections::HashSet;
 use std::ptr::null;
 use std::sync::Arc;
 
-use kestrel_index::walk;
 use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow};
 use windows_sys::Win32::UI::Shell::{SHObjectProperties, ShellExecuteW};
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 use engine::{Engine, IndexStatus, Listing, Marks, Row, SortSpec};
-use fileops::{Options, Request, Transfer};
+use fileops::{Done, Options, Request, Transfer};
 use icons::{IconKey, IconService};
+use undo::Journal;
 use watch::Watcher;
 
 /// `SHOP_FILEPATH`: the object name passed to `SHObjectProperties` is a file system path.
@@ -101,6 +104,7 @@ fn interactive(window: &WebviewWindow) -> Options {
 fn delete_items(
     window: WebviewWindow,
     engine: Shared,
+    journal: State<Journal>,
     set: u32,
     ranges: Vec<(u32, u32)>,
     permanent: bool,
@@ -109,20 +113,36 @@ fn delete_items(
     if paths.is_empty() {
         return Ok(false);
     }
-    fileops::perform(Request::Delete { paths, permanent }, interactive(&window))
+    let outcome = fileops::execute(Request::Delete { paths, permanent }, interactive(&window))?;
+    journal.record(&outcome);
+    Ok(outcome.completed)
 }
 
+/// Renames an item and returns the name it ended up with, which differs from the one asked
+/// for when the user resolves a conflict by keeping both. `None` if nothing was renamed.
 #[tauri::command(async)]
-fn rename_item(window: WebviewWindow, path: String, new_name: String) -> Result<bool, String> {
-    fileops::perform(Request::Rename { path, new_name }, interactive(&window))
+fn rename_item(window: WebviewWindow, journal: State<Journal>, path: String, new_name: String) -> Result<Option<String>, String> {
+    let outcome = fileops::execute(Request::Rename { path, new_name }, interactive(&window))?;
+    journal.record(&outcome);
+    Ok(outcome.results().find_map(|done| match done {
+        Done::Renamed { to, .. } => Some(fileops::file_name(to).to_owned()),
+        _ => None,
+    }))
 }
 
-/// Creates a folder with the first unused "New folder" name and returns that name.
+/// Creates a folder with the first unused "New folder" name and returns the name it got.
 #[tauri::command(async)]
-fn new_folder(window: WebviewWindow, parent: String) -> Result<String, String> {
+fn new_folder(window: WebviewWindow, journal: State<Journal>, parent: String) -> Result<String, String> {
     let name = fileops::unused_name(&parent, "New folder");
-    fileops::perform(Request::NewFolder { parent, name: name.clone() }, interactive(&window))?;
-    Ok(name)
+    let outcome = fileops::execute(Request::NewFolder { parent, name: name.clone() }, interactive(&window))?;
+    journal.record(&outcome);
+    Ok(outcome
+        .results()
+        .find_map(|done| match done {
+            Done::Created { path } => Some(fileops::file_name(path).to_owned()),
+            _ => None,
+        })
+        .unwrap_or(name))
 }
 
 /// Puts the selected rows on the clipboard as files. Returns how many.
@@ -146,36 +166,27 @@ fn can_paste() -> bool {
     clipboard::has_files()
 }
 
-/// Copies or moves the clipboard's files into `destination`. Returns the names of the items
-/// pasted, or an empty list if there was nothing to paste or the user cancelled.
+/// Copies or moves the clipboard's files into `destination`. Returns the names the pasted
+/// items ended up with there ("name - Copy" and conflict renames included), or an empty list
+/// if there was nothing to paste or the user cancelled.
 #[tauri::command(async)]
-fn paste_items(window: WebviewWindow, destination: String) -> Result<Vec<String>, String> {
+fn paste_items(window: WebviewWindow, journal: State<Journal>, destination: String) -> Result<Vec<String>, String> {
     let Some(clip) = clipboard::files(owner(&window))? else { return Ok(Vec::new()) };
-    let source_names: Vec<String> = clip
-        .paths
-        .iter()
-        .filter_map(|path| std::path::Path::new(path).file_name()?.to_str().map(str::to_owned))
-        .collect();
-    let names_in = |dir: &str| -> HashSet<String> {
-        walk::list(dir).map(|items| items.into_iter().map(|item| item.name).collect()).unwrap_or_default()
-    };
-    let before = names_in(&destination);
-
     let kind = if clip.cut { Transfer::Move } else { Transfer::Copy };
-    let request = Request::Transfer { sources: clip.paths, destination: destination.clone(), kind };
-    if !fileops::perform(request, interactive(&window))? {
-        return Ok(Vec::new());
-    }
+    let request = Request::Transfer { sources: clip.paths, destination, kind };
+    let outcome = fileops::execute(request, interactive(&window))?;
+    journal.record(&outcome);
     // Cut files can only be pasted once.
-    if clip.cut {
+    if clip.cut && outcome.completed {
         let _ = clipboard::clear(owner(&window));
     }
-
-    // Duplicating in place gives the copies new names ("name - Copy"), which only a
-    // before-and-after comparison reveals. When nothing new appeared, existing items were
-    // replaced, and those carry the source names.
-    let created: Vec<String> = names_in(&destination).into_iter().filter(|name| !before.contains(name)).collect();
-    Ok(if created.is_empty() { source_names } else { created })
+    Ok(outcome
+        .results()
+        .filter_map(|done| match done {
+            Done::Copied { to, .. } | Done::Moved { to, .. } => Some(fileops::file_name(to).to_owned()),
+            _ => None,
+        })
+        .collect())
 }
 
 /// Opens the standard Windows Properties dialog for a file or folder.
@@ -210,7 +221,13 @@ fn open_path(path: String) -> Result<(), String> {
         ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), wide.as_ptr(), null(), null(), SW_SHOWNORMAL)
     };
     // ShellExecute reports success as a value greater than 32.
-    if result as usize > 32 { Ok(()) } else { Err(format!("Windows couldn't open {path}")) }
+    if result as usize > 32 {
+        Ok(())
+    } else if access::is_locked(&fileops::parent(&path)) {
+        Err(access::LOCKED.to_owned())
+    } else {
+        Err(format!("Windows couldn't open {path}"))
+    }
 }
 
 fn percent_decode(text: &str) -> String {
@@ -262,6 +279,7 @@ fn main() {
     tauri::Builder::default()
         .manage(engine.clone())
         .manage(Watcher::default())
+        .manage(Journal::default())
         .register_asynchronous_uri_scheme_protocol("icon", move |_context, request, responder| {
             let respond = move |status: StatusCode, body: Vec<u8>| {
                 let response = Response::builder()
@@ -299,6 +317,12 @@ fn main() {
             can_paste,
             paste_items,
             show_properties,
+            undo::undo,
+            undo::redo,
+            undo::undo_state,
+            batchrename::preview_renames,
+            batchrename::batch_rename,
+            access::locked_folders,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

@@ -19,20 +19,24 @@ kestrel-query = { workspace = true }
 parking_lot = { workspace = true }
 png = "0.18"
 rayon = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
 # COM interfaces (IFileOperation and friends) need the full bindings; plain functions use
-# the lighter windows-sys.
+# the lighter windows-sys. The progress sink is a COM object written in Rust: the `implement`
+# macro (built into windows 0.62) expands to paths in `windows-core`, hence that dependency.
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_UI_Shell",
 ] }
+windows-core = "0.62"
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_DataExchange",

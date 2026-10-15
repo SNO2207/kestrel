@@ -1793,11 +1793,13 @@ dependencies = [
  "parking_lot",
  "png 0.18.1",
  "rayon",
+ "regex",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "windows",
+ "windows-core",
  "windows-sys 0.61.2",
 ]
 

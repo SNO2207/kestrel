@@ -6,9 +6,14 @@
 //!
 //! Usage, from an administrator terminal:
 //!   kestrel-broker install     copy to Program Files, register and start the service
+//!     --journal-mb N           also enlarge each fixed NTFS drive's change journal to N MB
 //!   kestrel-broker uninstall   stop and remove it
 //!   kestrel-broker console     serve in the foreground until Ctrl+C, for testing
+//!
+//! Enlarging the journals is the one change the install makes to drives, and only when asked;
+//! the service itself still only reads.
 
+mod journal;
 mod pipe;
 mod service;
 
@@ -30,7 +35,7 @@ const DESCRIPTION: &str = "Reads drives' file tables so the Kestrel file explore
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("install") => install(),
+        Some("install") => install(&args),
         Some("uninstall") => uninstall(),
         Some("service") => service::run(),
         Some("console") => {
@@ -39,7 +44,7 @@ fn main() -> Result<()> {
             pipe::serve(&allowed, &Default::default())
         }
         _ => {
-            println!("usage: kestrel-broker install | uninstall | console");
+            println!("usage: kestrel-broker install [--journal-mb N] | uninstall | console");
             Ok(())
         }
     }
@@ -61,7 +66,9 @@ fn installed_path() -> PathBuf {
     base.join("Kestrel").join("kestrel-broker.exe")
 }
 
-fn install() -> Result<()> {
+fn install(args: &[String]) -> Result<()> {
+    // Read before anything changes, so a mistyped option changes nothing.
+    let journal_mb = journal::requested_mb(args)?;
     let user = pipe::current_user_sid().context("finding the current account")?;
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)
         .context("opening the service manager; run this from an administrator terminal")?;
@@ -98,6 +105,9 @@ fn install() -> Result<()> {
     service.set_description(DESCRIPTION)?;
     service.start::<&str>(&[]).context("starting the service")?;
     println!("installed {} as the {SERVICE_NAME} service, for account {user}", target.display());
+    if let Some(mb) = journal_mb {
+        journal::enlarge_all(mb);
+    }
     Ok(())
 }
 

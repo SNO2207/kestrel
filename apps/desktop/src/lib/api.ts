@@ -67,6 +67,47 @@ export interface Places {
   drives: Drive[];
 }
 
+/** What Undo and Redo would do now, such as "rename of report.txt". */
+export interface UndoState {
+  undo: string | null;
+  redo: string | null;
+  /** Set when the latest operation was a permanent deletion, which can't be undone. */
+  erased: string | null;
+}
+
+/** What an undo or redo did, and where the items it put back now are. */
+export interface UndoReport {
+  message: string;
+  folder: string | null;
+  names: string[];
+}
+
+export type RenameCase = "keep" | "lower" | "upper" | "title";
+export type RenamePart = "name" | "extension" | "both";
+
+/** How a batch rename makes each new name. */
+export interface RenameRules {
+  find: string;
+  replace: string;
+  regex: boolean;
+  matchCase: boolean;
+  prefix: string;
+  suffix: string;
+  /** Replaces the name when set: `#` runs take the number, `*` the current name. */
+  numbering: string;
+  start: number;
+  case: RenameCase;
+  part: RenamePart;
+}
+
+/** One item's name before and after a batch rename, and why the new one can't be used. */
+export interface RenamePreview {
+  path: string;
+  old: string;
+  new: string;
+  problem: string | null;
+}
+
 export const api = {
   indexStatus: () => invoke<IndexStatus>("index_status"),
   /**
@@ -88,7 +129,8 @@ export const api = {
   /** Recycles the rows, or erases them when `permanent`. Resolves to false if cancelled. */
   deleteItems: (set: number, ranges: RowRange[], permanent: boolean) =>
     invoke<boolean>("delete_items", { set, ranges, permanent }),
-  renameItem: (path: string, newName: string) => invoke<boolean>("rename_item", { path, newName }),
+  /** Renames an item and resolves to the name it ended up with, or null if nothing changed. */
+  renameItem: (path: string, newName: string) => invoke<string | null>("rename_item", { path, newName }),
   /** Creates a folder and resolves to the name it was given. */
   newFolder: (parent: string) => invoke<string>("new_folder", { parent }),
   /** Puts the rows on the clipboard as files; `cut` marks them to be moved on paste. */
@@ -106,6 +148,16 @@ export const api = {
   openPath: (path: string) => invoke<void>("open_path", { path }),
   onIndexStatus: (handler: (status: IndexStatus) => void) =>
     listen<IndexStatus>("index-status", (event) => handler(event.payload)),
+  undoState: () => invoke<UndoState>("undo_state"),
+  /** Reverses the latest file operation, with the shell's progress and conflict windows. */
+  undo: () => invoke<UndoReport>("undo"),
+  redo: () => invoke<UndoReport>("redo"),
+  previewRenames: (paths: string[], rules: RenameRules) =>
+    invoke<RenamePreview[]>("preview_renames", { paths, rules }),
+  /** Renames every item by the rules as one undoable operation; resolves to the new names. */
+  batchRename: (paths: string[], rules: RenameRules) => invoke<string[]>("batch_rename", { paths, rules }),
+  /** For each folder, whether this account can't open it. */
+  lockedFolders: (paths: string[]) => invoke<boolean[]>("locked_folders", { paths }),
 };
 
 /** Extensions whose files each carry their own icon rather than sharing one per type. */
