@@ -2,11 +2,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod access;
+mod address;
 mod batchrename;
 mod clipboard;
 mod dragdrop;
 mod engine;
 mod fileops;
+mod foldertree;
 mod icons;
 mod indexer;
 mod instance;
@@ -19,8 +21,10 @@ mod preview;
 mod previewview;
 mod projects;
 mod recycle;
+mod recyclebin;
 mod shellmenu;
 mod shortcuts;
+mod thispc;
 mod thumbs;
 mod undo;
 mod visibility;
@@ -348,6 +352,8 @@ fn main() {
         .manage(database.clone())
         .manage(projects.clone())
         .manage(palette)
+        // This PC's drives, each asked about on a thread of its own (thispc.rs).
+        .manage(Arc::new(thispc::Drives::default()))
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
             thumbs.handle(&request, responder)
@@ -465,6 +471,22 @@ fn main() {
             launcher::launcher_dev_hotkey,
             launcher::launcher_dev_windows,
             launcher::launcher_dev_tray,
+            thispc::this_pc,
+            thispc::eject_drive,
+            shellmenu::shell_paths_menu,
+            recyclebin::recycle_bin_items,
+            recyclebin::recycle_bin_stamp,
+            recyclebin::recycle_bin_restore,
+            recyclebin::recycle_bin_delete,
+            recyclebin::recycle_bin_empty,
+            foldertree::tree_children,
+            foldertree::tree_reveal,
+            foldertree::tree_subtree,
+            foldertree::sidebar_state,
+            foldertree::set_sidebar_section,
+            foldertree::set_expand_to_open_folder,
+            address::address_resolve,
+            address::address_suggest,
         ]))
         .on_window_event(|window, event| {
             dragdrop::on_window_event(event);
@@ -486,6 +508,14 @@ fn main() {
             // Launching Kestrel again shows this one, wherever it is hiding.
             let showing = app.handle().clone();
             instance.listen(move || launcher::show_main(&showing));
+            // Places: drives coming and going, late drive details, and index changes the
+            // sidebar's folder tree follows.
+            thispc::watch(app.handle().clone());
+            let late = app.handle().clone();
+            app.state::<Arc<thispc::Drives>>().on_late(move |drive| {
+                let _ = late.emit("drive-details", drive);
+            });
+            foldertree::watch(app.handle().clone(), app.state::<Arc<Engine>>().inner().clone());
             let handle = app.handle().clone();
             let engine = app.state::<Arc<Engine>>().inner().clone();
             std::thread::Builder::new()

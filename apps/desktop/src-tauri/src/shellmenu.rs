@@ -268,6 +268,46 @@ pub async fn shell_folder_menu(
     show_blocking(request, Some(geometry)).await
 }
 
+/// Shows the Windows context menu for items given by path, such as a folder in the sidebar's
+/// tree or a drive on This PC, and runs the command chosen from it.
+#[tauri::command]
+pub async fn shell_paths_menu(
+    window: Window,
+    paths: Vec<String>,
+    x: f64,
+    y: f64,
+    dark: bool,
+    extended: bool,
+) -> Result<ShellChoice, String> {
+    if paths.is_empty() {
+        return Ok(ShellChoice::default());
+    }
+    let geometry = Geometry::of(&window)?;
+    let at = geometry.to_screen(x, y);
+    let request = Request::Menu { paths, at, owner: owner(&window), dark, extended, background: false };
+    show_blocking(request, Some(geometry)).await
+}
+
+/// Runs one command of the items' Windows menu by its canonical verb, such as `eject` for a
+/// drive, in the helper, without showing the menu. Waits until the helper is done.
+pub fn invoke_verb(verb: &str, paths: &[String], owner: Option<isize>) -> Result<(), String> {
+    let helper = helper_path()?;
+    let mut args: Vec<String> = vec!["invoke".into(), "--verb".into(), verb.into()];
+    if let Some(owner) = owner {
+        args.extend(["--owner".into(), owner.to_string()]);
+    }
+    args.push("--".into());
+    args.extend(paths.iter().cloned());
+    let output = Command::new(&helper)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Couldn't start {}: {e}", helper.display()))?;
+    interpret("The command", output.status.code(), &output.stdout, &output.stderr).map(|_| ())
+}
+
 /// Shows Windows' Open With dialog for a file.
 #[tauri::command]
 pub async fn open_with(window: Window, path: String) -> Result<(), String> {

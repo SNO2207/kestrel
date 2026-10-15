@@ -2,8 +2,8 @@
 
 A fast file explorer for Windows 11. One in-memory index of every file on the drive powers
 instant search, instant folder listings with folder sizes, a command palette that reaches
-every folder and file, and the projects on the drive with their git status; disk analysis is
-to come.
+every folder and file, the projects on the drive with their git status, This PC with every
+drive, the Recycle Bin, and a folder tree in the sidebar; disk analysis is to come.
 
 *Kestrel is a working name.*
 
@@ -104,9 +104,9 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 
 | Keys | Action |
 |---|---|
-| Ctrl+L, Alt+D | Edit the address |
+| Ctrl+L, Alt+D | Edit the address; Up and Down choose a suggestion, Tab completes it |
 | Ctrl+F, Ctrl+E, F3 | Search |
-| Alt+Left / Alt+Right / Alt+Up, Backspace | Back / forward / up |
+| Alt+Left / Alt+Right / Alt+Up, Backspace | Back / forward / up (up from a drive goes to This PC) |
 | Ctrl+T / Ctrl+W / Ctrl+Tab | New tab / close tab / next tab |
 | F5 | Refresh (folders also refresh themselves when their contents change) |
 | Type letters | Jump to a name |
@@ -134,6 +134,51 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 Every view (details, list, tiles and icons) has the same mouse and keyboard handling: click,
 Ctrl+click and Shift+click to select, Ctrl+A, arrow keys, typing to jump to a name, rename in
 place, both context menus, dragging out and dropping in.
+
+## This PC, the Recycle Bin and the folder tree
+
+A tab can show places that are not folders. **This PC** (type `This PC`, `Computer` or
+`shell:MyComputerFolder` in the address bar, or choose it in the folder tree or the palette)
+shows your folders (Desktop, Documents, Downloads, Music, Pictures, Videos, wherever Windows
+keeps them, OneDrive included), then devices and drives, then network locations: each drive
+with its name, label and letter, file system, a bar that turns red from 90 % full, as
+Explorer's does, and "N GB free of M GB". Mapped network drives are listed connected or not;
+a drive that is slow to answer (a server that is away) says "Reading…" and fills in when it
+answers, without holding up the page. Drives that come and go (USB sticks, mapped drives)
+appear and disappear by themselves. Double-click or Enter opens a drive; its menu has Open,
+Open in new tab, Eject for removable media and discs, Properties and the Windows menu. Up from
+a drive's root goes to This PC, whose name leads every drive's path in the address bar.
+
+The **Recycle Bin** (`Recycle Bin` or `shell:RecycleBinFolder`, or Places in the sidebar)
+lists everything in the bin of every drive: name, original location, date deleted, size and
+type, sortable by any column, with the same selection keys as the file list. Restore puts the
+selection back where it was deleted from, making the folder again if it has gone (name
+conflicts get the shell's own dialog), and goes into the undo history like any other
+operation, so Ctrl+Z sends it back to the bin. Restore all, Delete permanently (Del) and Empty
+Recycle Bin each ask first; deleting says how many items will go. The page follows the bin:
+items deleted anywhere show up within a couple of seconds.
+
+The **folder tree** at the bottom of the sidebar is Explorer's navigation pane: This PC, its
+drives, and their folders, straight from the index (no disk access on indexed drives; shares
+and removable drives are read from disk), hidden folders only with "Show hidden items". The
+folder the tab shows is highlighted and, with "Expand to open folder" (on by default, in a
+folder's menu), revealed. Keys as in Explorer: Up and Down move, Left collapses or goes to the
+parent, Right expands or goes to the first folder inside, typing jumps to a name, `*` expands
+everything below, Enter opens (Ctrl+Enter in a new tab), and resting on a folder opens it.
+Folders made, renamed or deleted by any program appear in the tree as they do in the index,
+every folder in it takes drops, and a drive expanded all the way down (820,000 folders on the
+owner's 3.7-million-entry drive) scrolls as smoothly as a short list. The sections above the
+tree (pins, places, frequent folders, searches, tags, workspaces) fold away from their
+headings and scroll on their own, and the sidebar's right edge drags to make it wider.
+
+The **address bar** suggests the folders in the folder typed so far as you type: names
+starting with what you typed first, then names containing it. Up and Down choose one, Tab
+completes it and lists what is inside, Enter goes. It takes addresses the way Explorer does:
+environment variables (`%USERPROFILE%\Documents`, `%APPDATA%`), `~`, every `shell:` name
+(`shell:downloads`, `shell:startup`, `shell:sendto`, `shell:recent`…, suggested after
+`shell:`), forward slashes, quotes, `\\?\` long paths, shares (`\\server\share`; `\\server\`
+lists the server's shares), paths relative to the open folder, and a file's path, which opens
+its folder with the file selected.
 
 ## File operations, undo and batch rename
 
@@ -386,6 +431,7 @@ node e2e/integration.mjs    # the features together, in the icon, list and tile 
 node e2e/projects.mjs       # the projects hub and git badges, with repositories it makes
 node e2e/palette.mjs        # command palette, quick launcher, shortcut settings and tray option
 node e2e/connections.mjs    # where the palette, shortcuts, projects and preview meet
+node e2e/places.mjs         # This PC, the Recycle Bin page, the folder tree, address completion
 node e2e/dev.mjs stop
 ```
 
@@ -394,8 +440,8 @@ instead: it runs `tauri build` (no installer) with the slot's identity and start
 `kestrel.exe` that produced, whose front end is built in. `smoke.mjs`, `fileops.mjs`,
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
 `shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`,
-`integration.mjs`, `shortcuts.mjs`, `projects.mjs`, `palette.mjs` and `connections.mjs` need a
-dev build, whose test hooks they use. A release build has the Windows menu's test hook only
+`integration.mjs`, `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs` and
+`places.mjs` need a dev build, whose test hooks they use. A release build has the Windows menu's test hook only
 when started with `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
 Run the suites one after another, not side by side: several use the clipboard or the window's
@@ -433,3 +479,13 @@ with two tiny files named `kestrel-test-*` and runs by default, and the helper's
 `invoking_copy_leaves_the_file_on_the_clipboard` replaces the clipboard's contents.
 `locked.mjs` and `integration.mjs` use `icacls` to remove, then restore, the permissions of
 one scratch folder.
+
+`places.mjs` passes two small files named `kestrel-test-*` from its scratch folder through the
+real Recycle Bin: it restores one and deletes the other permanently from the bin's page, and
+only ever selects rows whose original location is its scratch folder. It reads the bin's other
+items before and after (those not deleted from the temp folder, where other test runs work)
+and fails if any changed. Restore all and Empty Recycle Bin are never clicked, and emptying the
+bin has no test hook at all. Ejecting, drives coming and going, disconnected network drives
+and the shell's conflict dialog on a restore are manual checks. The unit test
+`recyclebin::tests::lists_restores_and_erases_items_it_recycled_itself` does the same as the
+suite with two files, through the backend, and runs by default.

@@ -1,0 +1,586 @@
+/*
+ * Places: This PC, the Recycle Bin page, the sidebar's folder tree and collapsible sections,
+ * address completion and the confirmation dialog. Loaded after styles.css, whose tokens it
+ * uses; it has no colours of its own.
+ */
+
+/* ---------- special locations ---------- */
+
+/* A tab at a special location shows its page; the list stays mounted underneath, hidden. */
+.tab-panel.location-panel > .filelist {
+  display: none;
+}
+
+/* ---------- sidebar: sections above, the folder tree below ---------- */
+
+/*
+ * The sections and the tree scroll separately, so a deep tree never pushes the pins out of
+ * reach, and the tree keeps at least a fair share of the height.
+ */
+.sidebar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  /* Its two parts scroll themselves; the edge's handle reaches a little past it. */
+  overflow: visible;
+}
+
+/* The sidebar is as wide as the user drags it (SidebarResizer.tsx). */
+.app {
+  grid-template-columns: var(--sidebar-width, 228px) minmax(0, 1fr);
+}
+
+/* Over the sidebar's border, clear of the scrollbars' thumbs. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 3;
+  width: 7px;
+  cursor: col-resize;
+  outline: 0;
+}
+
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 3px;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 120ms;
+}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizer:focus-visible::after,
+.sidebar-resizer.dragging::after {
+  background: var(--accent);
+}
+
+.sidebar-shelves {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 10px 8px 12px;
+}
+
+.sidebar section.collapsible > h2,
+.sidebar section.collapsible > .shelf-head > h2 {
+  display: flex;
+  align-items: center;
+  border-radius: 3px;
+}
+
+.sidebar section.collapsible > h2:hover,
+.sidebar section.collapsible > .shelf-head > h2:hover {
+  color: var(--muted);
+}
+
+/* A chevron after the heading: shown on hover, and always while the section is folded. */
+.sidebar section.collapsible > h2::after,
+.sidebar section.collapsible > .shelf-head > h2::after {
+  content: "";
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 7px;
+  border-right: 1.4px solid currentColor;
+  border-bottom: 1.4px solid currentColor;
+  transform: rotate(45deg);
+  opacity: 0;
+}
+
+.sidebar section.collapsible > h2:hover::after,
+.sidebar section.collapsible > h2:focus-visible::after,
+.sidebar section.collapsible > .shelf-head > h2:hover::after,
+.sidebar section.collapsible > .shelf-head > h2:focus-visible::after,
+.sidebar section.collapsed > h2::after,
+.sidebar section.collapsed > .shelf-head > h2::after {
+  opacity: 1;
+}
+
+.sidebar section.collapsed > h2::after,
+.sidebar section.collapsed > .shelf-head > h2::after {
+  margin-top: 0;
+  transform: rotate(-45deg);
+}
+
+.sidebar section.collapsed > :not(h2):not(.shelf-head) {
+  display: none;
+}
+
+.tree-section {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: clamp(160px, 42%, 420px);
+  border-top: 1px solid var(--line);
+}
+
+/* Folded to This PC alone, the tree gives its room back to the sections. */
+.tree-section.folded {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.tree-scroller {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 6px 8px 10px;
+}
+
+.tree {
+  position: relative;
+  outline: 0;
+}
+
+.tree-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding-right: 8px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  white-space: nowrap;
+  /* A transparent edge the focus ring can occupy without shifting anything. */
+  box-shadow: inset 0 0 0 1px transparent;
+}
+
+.tree-row:hover {
+  background: var(--raised);
+}
+
+.tree-row.current {
+  background: var(--select);
+  color: var(--accent);
+}
+
+.tree:focus .tree-row.focused {
+  box-shadow: inset 0 0 0 1px var(--select-line);
+}
+
+.tree-row.drop-target {
+  background: var(--select);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+.tree-row.dimmed > .icon,
+.tree-row.dimmed > .tree-label {
+  opacity: 0.55;
+}
+
+.tree-chevron {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  color: var(--faint);
+  transition: transform 100ms ease-out;
+}
+
+.tree-chevron.open {
+  transform: rotate(90deg);
+}
+
+.tree-chevron:not(.none):hover {
+  background: var(--line);
+  color: var(--text);
+}
+
+.tree-chevron.busy {
+  opacity: 0.4;
+}
+
+.tree-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tree-chevron {
+    transition: none;
+  }
+}
+
+/* ---------- address bar ---------- */
+
+.address {
+  position: relative;
+}
+
+.crumb-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  padding-left: 4px;
+  color: var(--muted);
+}
+
+.address-suggest {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: -1px;
+  right: -1px;
+  z-index: 25;
+  max-height: min(380px, 60vh);
+  padding: 4px;
+  overflow-y: auto;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.28);
+  cursor: default;
+}
+
+.address-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.address-suggestion.chosen {
+  background: var(--select);
+}
+
+.address-suggestion-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.address-suggestion-detail {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+/* ---------- This PC ---------- */
+
+.pc-page {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 18px 24px 32px;
+  outline: 0;
+}
+
+.pc-group + .pc-group {
+  margin-top: 26px;
+}
+
+.pc-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 0 4px 7px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pc-group-count {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 6px 10px;
+}
+
+.pc-tile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 64px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  color: var(--muted);
+  box-shadow: inset 0 0 0 1px transparent;
+}
+
+.pc-tile:hover {
+  background: var(--raised);
+}
+
+.pc-tile.selected {
+  background: var(--select);
+  color: var(--accent);
+}
+
+.pc-page:focus .pc-tile.selected {
+  box-shadow: inset 0 0 0 1px var(--select-line);
+}
+
+.pc-tile.drop-target {
+  background: var(--select);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+.pc-tile-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+}
+
+.pc-tile.unavailable .pc-tile-icon {
+  opacity: 0.55;
+}
+
+.pc-tile-body {
+  display: grid;
+  flex: 1;
+  gap: 5px;
+  min-width: 0;
+}
+
+.pc-tile-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.meter.pc-meter {
+  height: 6px;
+  border-radius: 3px;
+}
+
+.pc-tile-detail {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-free {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pc-fs {
+  flex: none;
+  margin-left: auto;
+  color: var(--faint);
+}
+
+.pc-empty {
+  margin: 40px 0;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* ---------- Recycle Bin ---------- */
+
+.bin-page {
+  --bin-columns: minmax(180px, 1.3fr) minmax(170px, 1.6fr) 156px 96px minmax(120px, 0.9fr);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.bin-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  height: 40px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.bin-action {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  color: var(--text);
+}
+
+.bin-action:hover:not(:disabled) {
+  background: var(--raised);
+}
+
+.bin-action:disabled {
+  color: var(--faint);
+}
+
+.bin-action.danger:not(:disabled) {
+  color: var(--danger);
+}
+
+.bin-bar-spacer {
+  flex: 1;
+}
+
+.bin-header,
+.bin-row {
+  display: grid;
+  grid-template-columns: var(--bin-columns);
+  padding: 0 14px 0 8px;
+}
+
+.bin-header {
+  flex: none;
+  height: 30px;
+  padding-right: calc(14px + var(--scrollbar));
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.bin-column {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.bin-column:hover,
+.bin-column.sorted {
+  color: var(--text);
+}
+
+.bin-column.numeric {
+  justify-content: flex-end;
+}
+
+.bin-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  outline: 0;
+  scrollbar-gutter: stable;
+}
+
+.bin-spacer {
+  position: relative;
+}
+
+.bin-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  align-items: center;
+  height: 28px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px transparent;
+}
+
+.bin-row:hover {
+  background: var(--raised);
+}
+
+.bin-row.selected {
+  background: var(--select);
+}
+
+.bin-viewport:focus .bin-row.focused {
+  box-shadow: inset 0 0 0 1px var(--select-line);
+}
+
+.bin-cell {
+  min-width: 0;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.bin-cell.name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text);
+}
+
+.bin-cell.name img {
+  flex: none;
+}
+
+.bin-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bin-cell.deleted,
+.bin-cell.size {
+  font-variant-numeric: tabular-nums;
+}
+
+.bin-cell.size {
+  text-align: right;
+}
+
+/* ---------- confirmation ---------- */
+
+.confirm-dialog {
+  width: min(440px, 100%);
+}
+
+.confirm-message {
+  margin: 0;
+  padding: 6px 20px 2px;
+  color: var(--muted);
+  user-select: text;
+}
+
+.confirm-spacer {
+  flex: 1;
+}
+
+.dialog-button.primary.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--accent-ink);
+}
+
+.dialog-button.primary.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+}

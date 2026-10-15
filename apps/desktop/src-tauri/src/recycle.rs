@@ -77,7 +77,10 @@ pub unsafe fn entries() -> windows::core::Result<Vec<Entry>> {
 }
 
 /// For each item that was deleted from a path within a window of time, the Recycle Bin item
-/// it became, or `None` if it is no longer there. When several match, the latest deletion wins.
+/// it became, or `None` if it is no longer there. When several match, one deleted within the
+/// window itself wins over one only within the slack around it, then the latest deletion; so
+/// a window of a single instant (the Recycle Bin page restoring an item it listed) finds
+/// exactly that item.
 ///
 /// # Safety
 /// COM must be initialised on the calling thread.
@@ -94,7 +97,7 @@ pub unsafe fn find(wanted: &[(String, Window)]) -> windows::core::Result<Vec<Opt
                 .iter()
                 .enumerate()
                 .filter(|(at, entry)| !used.contains(at) && key(&entry.original) == wanted && widened.contains(entry.deleted))
-                .max_by_key(|(_, entry)| entry.deleted)
+                .max_by_key(|(_, entry)| (window.contains(entry.deleted), entry.deleted))
                 .map(|(at, _)| at)?;
             used.insert(best);
             Some(entries[best].item.clone())

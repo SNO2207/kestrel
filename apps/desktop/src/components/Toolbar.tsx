@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createSignal } from "solid-js";
 
 import { recheckAccess } from "../lib/access";
-import { breadcrumbs } from "../lib/format";
+import { crumbsOf, locationOf, locationTitle } from "../lib/locations";
 import {
   activeTab,
   canGoBack,
@@ -16,6 +16,7 @@ import {
   setEverywhere,
   setQuery,
 } from "../state";
+import { AddressInput } from "./AddressInput";
 import { Icon } from "./Icon";
 import { ViewMenu } from "./ViewMenu";
 import { PreviewToggle } from "./PreviewPane";
@@ -72,12 +73,13 @@ export function Toolbar(props: { focusList: () => void }) {
           when={editing()}
           fallback={
             <div class="crumbs">
-              <For each={breadcrumbs(tab()?.path ?? "")}>
+              <For each={crumbsOf(tab()?.path ?? "")}>
                 {(crumb, i) => (
                   <>
                     <Show when={i() > 0}>
                       <Icon name="chevron" size={12} />
                     </Show>
+                    <Show when={crumb.icon}>{(icon) => <span class="crumb-icon"><Icon name={icon()} size={14} /></span>}</Show>
                     <button
                       class="crumb"
                       onClick={(event) => {
@@ -93,19 +95,14 @@ export function Toolbar(props: { focusList: () => void }) {
             </div>
           }
         >
-          <input
-            ref={addressInput}
-            class="address-input"
-            aria-label="Address"
-            spellcheck={false}
-            value={tab()?.path ?? ""}
-            onBlur={() => setEditing(false)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") go(event.currentTarget.value);
-              if (event.key === "Escape") {
-                setEditing(false);
-                props.focusList();
-              }
+          <AddressInput
+            ref={(input) => (addressInput = input)}
+            tabId={tab()?.id}
+            initial={locationTitle(tab()?.path ?? "") ?? tab()?.path ?? ""}
+            onDone={(went) => {
+              setEditing(false);
+              if (!went) props.focusList();
+              else queueMicrotask(props.focusList);
             }}
           />
         </Show>
@@ -116,7 +113,7 @@ export function Toolbar(props: { focusList: () => void }) {
         <input
           ref={searchInput}
           aria-label="Search"
-          placeholder={everywhere() ? "Search everywhere" : "Search this folder"}
+          placeholder={everywhere() || locationOf(tab()?.path ?? "") ? "Search everywhere" : "Search this folder"}
           spellcheck={false}
           value={tab()?.query ?? ""}
           onInput={(event) => tab() && setQuery(tab()!.id, event.currentTarget.value)}

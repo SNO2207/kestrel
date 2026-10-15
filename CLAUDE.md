@@ -73,6 +73,12 @@ Done and verified:
   cover the actions, the index, typed paths, `@` projects (`projects/provider.rs`), `#` tags,
   and the pins, frequent folders, saved searches and workspaces (`shortcuts/provider.rs`,
   front-end halves in `lib/paletteFeatures.ts`).
+- **Places** (branch `feature/places`: `lib/locations.ts`, `places.ts`, `placesSetup.ts`,
+  `ThisPC.tsx`, `RecycleBin.tsx`, `FolderTree.tsx`, `AddressInput.tsx`, `thispc.rs`,
+  `recyclebin.rs`, `foldertree.rs`, `address.rs`, `kestrel_db::places`, `places.css`): special
+  locations (This PC, the Recycle Bin) in tabs, the sidebar's virtualised folder tree with
+  collapsible sections, and address completion; `e2e/places.mjs`. Expanding all of C: in the
+  tree (820,756 folders) took 0.7 s and scrolled at a 7.6 ms average frame.
 
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette. Every unit test and all 16 e2e suites pass there
@@ -138,6 +144,29 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and short
   its tables: it adds a module with its `Migration`s and lists them in `MIGRATIONS`. Migrations
   run once in name order, so name them `<yyyy_mm_dd>_<feature>_<what>` and never edit one that
   has shipped.
+- Special locations (`lib/locations.ts`): a tab can show a place that is not a folder. A
+  location is registered with `registerLocation({ address, title, icon, page, aliases })`
+  from a module of the feature's own that App.tsx imports (This PC and the Recycle Bin are
+  registered in `placesSetup.ts`). The tab keeps the address in `Tab.path` and its history,
+  with `listing` null; `navigate` in state.ts sends any spelling of it there, and the tab
+  panel draws `page` (given `LocationPageProps`: tab id, address, whether active, a revision
+  bumped by Refresh, and `focusRef`) over the hidden file list. Back and Forward, tab titles,
+  the breadcrumb (`crumbsOf`), Up (`parentOf`), the sidebar's highlight, workspaces, searches
+  (which go everywhere from a location) and the palette (`lib/paletteLocations.ts`) follow by
+  themselves. A family of addresses (inside an archive) gives `claims(address)` and its own
+  `title`, `crumbs` and `parent`; `adopts(path)` makes a location the parent of file system
+  roots (This PC adopts drive roots). Pages report the status bar's text with
+  `setLocationStatus`. Code that takes `tab.path` as a folder must check `locationOf` first.
+- Places (`places.ts`, backend `thispc.rs`, `recyclebin.rs`, `foldertree.rs`, `address.rs`):
+  This PC's drives are probed on a thread each with a time limit (`thispc::Drives`) and a
+  watcher emits `drives-changed`; late answers come as `drive-details`. The bin is read through
+  the shell's Recycle Bin folder, and every command takes item identities (the item's `$R`
+  path); restores run as `Op::Restore` through `fileops` and are recorded in the undo journal;
+  `recycle::find` prefers an exact deletion time, so a restore of one listed item is exact.
+  The tree's folders come from the index (`tree_children`, `tree_reveal`, `tree_subtree`), and
+  `folders-changed` (the engine's revision) makes it ask again for the folders in view. The
+  disk usage hub opens on a drive through `setDiskUsageHandler` in places.ts. The sidebar's
+  collapsed sections and "Expand to open folder" are in `kestrel_db::places`.
 - Shortcuts: data in `kestrel_db::shortcuts` (pins and groups, frecency, saved searches, tags,
   workspaces), commands in `src-tauri/src/shortcuts/`, front end in `src/shortcuts.ts`,
   `lib/shortcutsApi.ts`, `shortcuts.css` and the `Pinned*`, `Shortcut*`, `GoToFolder`,
@@ -298,6 +327,16 @@ Git:
 - One process per data folder (`instance.rs`): a second launch of a slot's `kestrel.exe` asks
   the running one to show its window and exits. Stop a slot before starting it again with a
   new build, or the old binary keeps running.
+- The sidebar has two scroll regions: the sections (`.sidebar-shelves`) and the folder tree
+  (`.tree-scroller`); `.sidebar` itself does not scroll. Sections fold from their `h2` when
+  they have an `aria-label` (`lib/sidebarSections.ts`), remembered in the slot's database: a
+  suite that folds one unfolds it again in its `finally`.
+- The folder tree draws only the rows in view: a row scrolled away is not in the DOM (the dev
+  build's `window.__kestrelTree.rows()` lists them all). Deep in the tree a row's middle can
+  fall on its chevron, so tests click a row's `.tree-label`.
+- The Recycle Bin page acts on the owner's real bin. Tests select only rows whose original
+  location is their own scratch folder, compare the bin's other items before and after, and
+  never click Restore all or Empty Recycle Bin; emptying has no test hook.
 - Undo checks before acting that each item is still what the operation left: `undo_entries`
   stores a mark (file id, and for deletions a content fingerprint) per step. A file replaced by
   another program in the meantime is left alone rather than recycled.

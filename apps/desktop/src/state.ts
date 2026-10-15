@@ -13,7 +13,7 @@ import {
   type SortKey,
   type SortSpec,
 } from "./lib/api";
-import { parentPath } from "./lib/format";
+import { locationOf, parentOf, resolveLocation } from "./lib/locations";
 import { Selection } from "./lib/selection";
 import { SEARCH_LOCATION, folderKey, locationKey, recall, remember } from "./lib/views";
 
@@ -161,11 +161,39 @@ function show(tabId: number, listing: Listing, restore: Marks, change: (tab: Tab
 
 type NavigateMode = "push" | "keep";
 
+/**
+ * Shows a special location (lib/locations.ts) in the tab: its page takes the list's place, so
+ * the tab keeps no listing. Showing the one already there is a refresh, which the page sees
+ * as a new revision.
+ */
+function showLocation(tabId: number, address: string, mode: NavigateMode) {
+  const previous = find(tabId)?.listing?.set;
+  patch(tabId, (tab) => {
+    if (mode === "push" && tab.history[tab.cursor] !== address) {
+      tab.history.splice(tab.cursor + 1);
+      tab.history.push(address);
+      tab.cursor = tab.history.length - 1;
+    }
+    tab.path = address;
+    tab.query = "";
+    tab.listing = null;
+    tab.restore = null;
+    tab.pending = null;
+    tab.selected = 0;
+    tab.revision += 1;
+    tab.error = null;
+    tab.failed = null;
+  });
+  if (previous !== undefined) void api.releaseSet(previous);
+}
+
 /** Shows `path` in the tab. `push` records it in the tab's history; `keep` leaves history alone. */
 export function navigate(tabId: number, path: string, mode: NavigateMode = "push") {
   enqueue(tabId, async () => {
     const tab = find(tabId);
     if (!tab) return;
+    const location = resolveLocation(path);
+    if (location !== null) return showLocation(tabId, location, mode);
     try {
       // Re-listing the folder already on screen is a refresh, which keeps the selection.
       const refreshing = !isSearch(tab) && tab.listing !== null && samePath(path, tab.path);
@@ -199,7 +227,8 @@ function runSearch(tabId: number, keepSelection = false) {
     const tab = find(tabId);
     if (!tab || tab.query.trim() === "") return;
     try {
-      const scope = everywhere() ? null : tab.path;
+      // A special location has no folder to search beneath, so its searches go everywhere.
+      const scope = everywhere() || locationOf(tab.path) ? null : tab.path;
       // Search results keep a sort of their own, separate from any folder's.
       const sort = { ...(recall(SEARCH_LOCATION).sort ?? DEFAULT_SORT) };
       const listing = await api.search(tab.query, scope, sort);
@@ -282,13 +311,14 @@ function stepHistory(tab: Tab, step: 1 | -1) {
 
 export function goUp(tabId: number) {
   const tab = find(tabId);
-  const parent = tab && parentPath(tab.path);
+  // A drive's parent is This PC, as in Explorer (lib/locations.ts).
+  const parent = tab && parentOf(tab.path);
   if (parent) navigate(tabId, parent);
 }
 
 export const canGoBack = (tab: Tab) => isSearch(tab) || tab.failed !== null || tab.cursor > 0;
 export const canGoForward = (tab: Tab) => tab.cursor < tab.history.length - 1;
-export const canGoUp = (tab: Tab) => parentPath(tab.path) !== null;
+export const canGoUp = (tab: Tab) => parentOf(tab.path) !== null;
 
 /** Sizes and dates start with the largest and newest, as Explorer does. */
 export const startsDescending = (key: SortKey) => key === "size" || key === "modified";

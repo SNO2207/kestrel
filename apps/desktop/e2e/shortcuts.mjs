@@ -534,11 +534,13 @@ try {
     await open(sandbox, "report final.txt");
     await row("report final.txt").click();
     await page.waitForTimeout(300);
-    await sidebar.evaluate((element) => (element.scrollTop = 0));
+    // The sections scroll in their own part of the sidebar, above the folder tree.
+    const shelves = sidebar.locator(".sidebar-shelves");
+    await shelves.evaluate((element) => (element.scrollTop = 0));
     await shotBoth("12-sidebar-top");
-    await sidebar.evaluate((element) => (element.scrollTop = element.scrollHeight));
+    await shelves.evaluate((element) => (element.scrollTop = element.scrollHeight));
     await shotBoth("13-sidebar-bottom");
-    await sidebar.evaluate((element) => (element.scrollTop = 0));
+    await shelves.evaluate((element) => (element.scrollTop = 0));
   });
 
   await step("groups, saved searches, tags and workspaces are deleted from their menus", async () => {

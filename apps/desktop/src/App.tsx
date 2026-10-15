@@ -1,6 +1,10 @@
 import { For, Show, onCleanup, onMount } from "solid-js";
+import { Dynamic } from "solid-js/web";
 
 import { api, type Row } from "./lib/api";
+import { locationOf } from "./lib/locations";
+import { startPlaces } from "./placesSetup";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import { locationKey, setViewMode, shortcutView } from "./lib/views";
 import { LOCKED_MESSAGE, isLocked, recheckAccess } from "./lib/access";
 import { BatchRenameDialog, openBatchRename } from "./components/BatchRename";
@@ -54,7 +58,11 @@ import { registerStepper, setFocusedRow } from "./previewState";
 export function App() {
   /** Focus functions for each tab's list, so shortcuts can hand focus back to the files. */
   const listFocus = new Map<number, () => void>();
-  const focusList = () => listFocus.get(activeId())?.();
+  /** The same for the page of a tab at a special location (lib/locations.ts), which wins. */
+  const pageFocus = new Map<number, () => void>();
+  const focusList = () => (pageFocus.get(activeId()) ?? listFocus.get(activeId()))?.();
+  /** The special location a tab's page shows, unless it shows search results or a failure. */
+  const pageOf = (tab: (typeof tabs)[number]) => (tab.query === "" && tab.listing === null && !tab.error ? locationOf(tab.path) : null);
 
   const open = (tabId: number, row: Row, inNewTab: boolean) => {
     if (isLocked(row)) notify(LOCKED_MESSAGE, "info");
@@ -138,6 +146,7 @@ export function App() {
       window.removeEventListener("contextmenu", onContextMenu);
     });
     void start().then(focusList);
+    startPlaces();
     const stopDrops = listenForDrops();
     onCleanup(() => void stopDrops.then((stop) => stop()));
   });
@@ -150,7 +159,27 @@ export function App() {
       <main class="content">
         <For each={tabs}>
           {(tab) => (
-            <div class="tab-panel" classList={{ active: tab.id === activeId(), "drop-target": isDropFolder(tab.id) }}>
+            <div
+              class="tab-panel"
+              classList={{ active: tab.id === activeId(), "drop-target": isDropFolder(tab.id), "location-panel": pageOf(tab) !== null }}
+            >
+              <Show when={pageOf(tab)}>
+                {(location) => (
+                  <Dynamic
+                    component={location().page}
+                    tabId={tab.id}
+                    address={tab.path}
+                    active={tab.id === activeId()}
+                    revision={tab.revision}
+                    focusRef={(focus: () => void) => {
+                      pageFocus.set(tab.id, focus);
+                      onCleanup(() => {
+                        if (pageFocus.get(tab.id) === focus) pageFocus.delete(tab.id);
+                      });
+                    }}
+                  />
+                )}
+              </Show>
               <FileList
                 listing={tab.listing}
                 revision={tab.revision}
@@ -196,6 +225,7 @@ export function App() {
       <ShortcutsLayer focusList={focusList} />
       <PaletteOverlay runCommand={(command) => runCommand(activeId(), command)} focusList={focusList} />
       <LauncherSettingsDialog onClose={focusList} />
+      <ConfirmDialog onClose={focusList} />
     </div>
   );
 }

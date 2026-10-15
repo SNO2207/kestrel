@@ -1,6 +1,7 @@
-import { Show } from "solid-js";
+import { For, Show } from "solid-js";
 
 import { formatCount, formatDuration } from "../lib/format";
+import { locationStatus } from "../lib/locations";
 import { activeTab, isSearch, status } from "../state";
 
 export function StatusBar() {
@@ -14,11 +15,21 @@ export function StatusBar() {
 
   return (
     <footer class="statusbar">
-      <span>
-        {formatCount(count())} {noun()}
-      </span>
-      <Show when={(tab()?.selected ?? 0) > 0}>
-        <span>{formatCount(tab()!.selected)} selected</span>
+      {/* A special location's page (This PC, the Recycle Bin) says what it shows itself. */}
+      <Show
+        when={tab() && !tab()!.listing && !tab()!.query && locationStatus(tab()!.id)}
+        fallback={
+          <>
+            <span>
+              {formatCount(count())} {noun()}
+            </span>
+            <Show when={(tab()?.selected ?? 0) > 0}>
+              <span>{formatCount(tab()!.selected)} selected</span>
+            </Show>
+          </>
+        }
+      >
+        {(parts) => <For each={parts()}>{(part) => <span>{part}</span>}</For>}
       </Show>
       <Show when={tab()?.listing}>
         {(listing) => (
