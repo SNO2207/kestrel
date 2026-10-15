@@ -12,6 +12,7 @@ import { batch, createEffect, createSignal, onCleanup } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 
 import { api } from "./lib/api";
+import { closeProjects } from "./projects";
 import { baseName, parentPath } from "./lib/format";
 import {
   shortcutsApi as backend,
@@ -160,9 +161,13 @@ export async function pinFolder(tabId: number) {
   if (tab && !isSearch(tab) && tab.path) await pinPaths([tab.path]);
 }
 
-/** Opens a folder in the active tab or a new one, or a file in its default app. */
+/**
+ * Opens a folder in the active tab or a new one, or a file in its default app. Going to a
+ * folder closes the projects hub, even when the tab is already there under it.
+ */
 export function openPlace(path: string, dir: boolean, inNewTab = false) {
   if (!dir) return void api.openPath(path).catch(notify);
+  closeProjects();
   const tab = activeTab();
   if (inNewTab || !tab) openTab(path);
   else navigate(tab.id, path);

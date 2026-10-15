@@ -281,6 +281,8 @@ export function ProjectsHub() {
     }
     if (event.ctrlKey && event.shiftKey && key === "p") return;
     if (event.ctrlKey && (key === "t" || key === "w" || key === "tab")) return;
+    // Going elsewhere closes the hub, so Go to folder and the pins' number keys get through.
+    if (event.ctrlKey && !event.shiftKey && !event.altKey && (key === "g" || /^Digit[1-9]$/.test(event.code))) return;
     event.stopPropagation();
   };
 
