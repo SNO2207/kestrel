@@ -112,6 +112,12 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Alt+P | Show or hide the preview pane (drag its left edge to resize it) |
 | Space | Quick Look; Space or Esc closes it, the arrow keys move to the previous or next item |
 
+Every view (details, list, tiles and icons) has the same mouse and keyboard handling: click,
+Ctrl+click and Shift+click to select, Ctrl+A, arrow keys, typing to jump to a name, rename in
+place, both context menus, dragging out and dropping in.
+
+## File operations, undo and batch rename
+
 File operations run through the Windows shell's own copy engine, so progress and conflict
 dialogs, the Recycle Bin and Explorer's undo behave exactly as they do in Explorer. A progress
 sink records what each operation actually did (the name a copy got, where a moved item went,
@@ -124,7 +130,9 @@ what reached the Recycle Bin), which is what selects new items and what undo wor
 - a permanent deletion can't be undone, and the app says so.
 
 Each undo or redo is one shell operation with the usual progress and conflict windows. Undo
-and redo are also on the folder background's context menu.
+and redo are also on the folder background's context menu. New folders, renames, deletions,
+pastes, batch renames and drops all go into the history (up to 100 operations, kept while the
+app runs); commands chosen from the Windows context menu are carried out by Windows and do not.
 
 Batch rename (F2 with several items selected) offers find and replace (plain or regular
 expression, optionally case-sensitive), a prefix and suffix, numbering (`Photo ###` from a
@@ -144,7 +152,28 @@ Icon and tile views show thumbnails rendered by the Windows shell, cached in
 are only in the cloud, such as OneDrive files not kept on this device, show their icon instead,
 so browsing never downloads them.
 
-### Drag and drop
+## Preview pane and Quick Look
+
+Alt+P (or the toolbar button at the right) shows the preview pane beside the list; drag its
+left edge to resize it. It shows the focused item, or the folder itself when nothing is
+focused: images (SVG only through `<img>`), video, audio, PDF (the web view's own viewer), text
+and code with highlighting (the first megabyte), Markdown rendered and sanitised, JSON
+re-indented, and details for folders and everything else. Online-only cloud files are read
+only when you click to download them. Space opens the same preview large, as Quick Look; the
+arrow keys step through the items without closing it.
+
+File bytes reach the preview through the `preview` protocol (`src-tauri/src/preview.rs`),
+which serves regular files only, honours `Range`, shows HTML and other active content as
+text, and whose frames may not call the app's commands.
+
+## Locked folders
+
+Search results in folders your account can't open, and such folders themselves, show dimmed
+with a padlock in every view. Opening one, typing its address or opening a file inside says
+"Your account can't open this folder" instead of failing. Only the rows on screen are checked,
+and answers are remembered for two minutes; F5 or Refresh checks again.
+
+## Drag and drop
 
 Drag selected items out of the list to Explorer, the desktop, an email or any other program: it
 is a native Windows drag with the shell's drag image, and the target decides between copy,
@@ -153,7 +182,8 @@ Kestrel itself, go into the folder row, sidebar place or tab under the cursor, o
 folder. As in Explorer, they move within a drive and are copied to another; hold Ctrl to copy
 or Shift to move. A hint at the bottom of the list says which will happen. Hovering a folder,
 place or tab for a second opens it, and the list scrolls when the cursor nears its top or
-bottom edge. Dropped items are selected where they land.
+bottom edge (its left or right edge in the list view, whose columns scroll sideways). Dropped
+items are selected where they land, and Ctrl+Z puts them back.
 
 ## The Windows context menu
 
@@ -173,6 +203,12 @@ kestrel-shellhost menu --x 400 --y 300 -- C:\Notes\todo.txt
 kestrel-shellhost openwith C:\Notes\todo.txt
 ```
 
+`tauri build` does not build or bundle the helper yet. For a release, build it with
+`cargo build --release -p kestrel-shellhost`, copy it to
+`apps/desktop/src-tauri/binaries/kestrel-shellhost-x86_64-pc-windows-msvc.exe`, add
+`"externalBin": ["binaries/kestrel-shellhost"]` under `bundle` in `tauri.conf.json`, and sign
+it with the app; Tauri puts sidecars next to the main executable, where the app looks.
+
 ## Testing
 
 ```powershell
@@ -184,40 +220,47 @@ cargo run --release -p kestrel-cli -- mft C:\ --compare   # as administrator: re
 cargo run --release -p kestrel-cli -- remote C:\      # ask the installed broker for an index
 ```
 
-End-to-end, against the real window:
+End-to-end, against the real window. Each test instance ("slot") has its own ports, app
+identity, build folder and data folder, so it never disturbs your own copy of Kestrel; the
+first start of a slot builds the app and takes a few minutes:
 
 ```powershell
 cd apps\desktop
-$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9333"
-pnpm tauri dev          # in one terminal
-node e2e/smoke.mjs      # in another: navigation, search, sorting; read-only
-node e2e/fileops.mjs    # file operations, confined to a scratch folder under %TEMP%
-node e2e/live-index.mjs # files changed by another program show up in search
-node e2e/undo.mjs       # undo and redo, in a scratch folder
-node e2e/batchrename.mjs # batch rename and its preview, in a scratch folder
-node e2e/locked.mjs     # a scratch folder this account can't open shows locked
-node e2e/preview.mjs    # preview pane and Quick Look, confined to a scratch folder under %TEMP%
-node e2e/dragdrop.mjs   # drops driven by synthetic drag events, in a scratch folder under %TEMP%
-node e2e/shellmenu.mjs  # Windows menu entries start the helper (shown menus are a manual check)
+$env:KESTREL_SLOT = 6
+node e2e/dev.mjs start      # builds if needed and returns once the window is up
+node e2e/smoke.mjs          # navigation, search, sorting; read-only
+node e2e/fileops.mjs        # file operations, in a scratch folder under %TEMP%
+node e2e/live-index.mjs     # files changed by another program show up in search
+node e2e/views.mjs          # view modes, thumbnails, hidden items and extensions
+node e2e/undo.mjs           # undo and redo
+node e2e/batchrename.mjs    # batch rename and its preview
+node e2e/locked.mjs         # a folder this account can't open shows locked
+node e2e/preview.mjs        # preview pane and Quick Look
+node e2e/dragdrop.mjs       # drops driven by synthetic drag events; drags out rehearsed
+node e2e/shellmenu.mjs      # Windows menu entries start the helper
+node e2e/integration.mjs    # the features together, in the icon, list and tile views
+node e2e/dev.mjs stop
 ```
 
-The preview pane shows images (SVG only through `<img>`), video, audio, PDF (the web view's own
-viewer), text and code with highlighting (the first megabyte), Markdown rendered and sanitised,
-JSON re-indented, and details for folders and everything else. File bytes reach it through the
-`preview` protocol (`src-tauri/src/preview.rs`), which serves regular files only, honours
-`Range`, shows HTML and other active content as text, and whose frames may not call the app's
-commands.
+Run the suites one after another, not side by side: several use the clipboard or the window's
+settings. Every suite works in its own scratch folder under `%TEMP%` and removes it afterwards;
+`views.mjs` and `integration.mjs` save the window's view and preview settings first and put
+them back at the end. Screenshots, in the dark and light themes, go to `e2e/out`.
 
-`dragdrop.mjs` needs a dev build: it drives drops through the test hook such a build exposes,
-since a real mouse drag can't be scripted. Drags out are rehearsed rather than performed, so
-nothing is ever dropped on another program.
+`dragdrop.mjs` and `integration.mjs` need a dev build: they drive drops through the test hook
+such a build exposes, since a real mouse drag can't be scripted. Drags out are rehearsed rather
+than performed, so nothing is ever dropped on another program. `shellmenu.mjs` and
+`integration.mjs` switch the app's development hook on, which makes the Windows menu helper
+list the menu instead of showing it; showing the real menu and the Open With dialog are manual
+checks.
 
 `fileops.mjs` replaces the clipboard's contents, and with `KESTREL_E2E_RECYCLE=1` it also
 sends one small file to the Recycle Bin. `undo.mjs` and `batchrename.mjs` (undo, redo, batch
-rename) and `locked.mjs` (a folder the account can't open) work in scratch folders and leave
-the clipboard alone; with `KESTREL_E2E_RECYCLE=1`, `undo.mjs` also undoes a new folder and a
-deletion, which passes two items from a scratch folder named `kestrel-test-*` through the
-Recycle Bin and brings both back. The unit test
-`undo::tests::restores_recycled_items_from_the_recycle_bin` does the same with two tiny files
-named `kestrel-test-*` and runs by default; `locked.mjs` uses `icacls` to remove, then
-restore, the permissions of one scratch folder.
+rename) and `locked.mjs` (a folder the account can't open) leave the clipboard alone; with
+`KESTREL_E2E_RECYCLE=1`, `undo.mjs` also undoes a new folder and a deletion, which passes two
+items from a scratch folder named `kestrel-test-*` through the Recycle Bin and brings both
+back. The unit test `undo::tests::restores_recycled_items_from_the_recycle_bin` does the same
+with two tiny files named `kestrel-test-*` and runs by default, and the helper's CLI test
+`invoking_copy_leaves_the_file_on_the_clipboard` replaces the clipboard's contents.
+`locked.mjs` and `integration.mjs` use `icacls` to remove, then restore, the permissions of
+one scratch folder.

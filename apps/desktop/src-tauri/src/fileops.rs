@@ -172,11 +172,6 @@ pub fn parent(path: &str) -> String {
     }
 }
 
-/// Performs `request` and waits for it. Returns `Ok(false)` if the user cancelled.
-pub fn perform(request: Request, options: Options) -> Result<bool, String> {
-    execute(request, options).map(|outcome| outcome.completed)
-}
-
 /// Performs `request`, waits for it, and reports exactly what happened.
 pub fn execute(request: Request, options: Options) -> Result<Outcome, String> {
     let mut rename_on_collision = false;
@@ -728,7 +723,7 @@ pub mod tests {
         assert!(dir.join("Renamed").is_dir() && !dir.join("New folder").exists());
         let expected = Done::Renamed { from: text(&dir.join("New folder")), to: text(&dir.join("Renamed")) };
         assert_eq!(renamed.results().collect::<Vec<_>>(), [&expected]);
-        assert!(perform(Request::Rename { path: text(&dir.join("Renamed")), new_name: "a:b".into() }, QUIET).is_err());
+        assert!(execute(Request::Rename { path: text(&dir.join("Renamed")), new_name: "a:b".into() }, QUIET).is_err());
 
         fs::write(dir.join("Renamed/file.txt"), b"x").unwrap();
         let erased = execute(Request::Delete { paths: vec![text(&dir.join("Renamed"))], permanent: true }, QUIET).unwrap();

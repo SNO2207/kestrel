@@ -28,6 +28,32 @@ Done and verified:
   The broker is installed as the `KestrelBroker` service (LocalSystem, auto-start, binary in
   `C:\Program Files\Kestrel`); a non-admin request returns the whole drive in about 5 s, and
   the app's first launch without a saved index is ready about 2 s after its window opens.
+- **Views** (`ViewMenu.tsx`, `ViewItem.tsx`, `lib/viewLayout.ts`, `lib/views.ts`, `thumbs.rs`,
+  `visibility.rs`): details, list, tiles and icons from 32 to 256 px, each folder remembering
+  its view and sort; shell thumbnails cached on disk and in memory; "Show hidden items" and
+  "Show file extensions".
+- **Exact results, undo and redo, batch rename** (`fileops.rs` progress sink, `undo.rs`,
+  `recycle.rs`, `batchrename.rs`, `BatchRename.tsx`): every operation, drops included, goes
+  into an in-memory journal of 100; deletions to the Recycle Bin come back from it.
+- **Locked results** (`access.rs`, `lib/access.ts`): rows in or being folders the account can't
+  open are dimmed with a padlock in every view and explain themselves when opened.
+- **Broker journal size** (`apps/broker/src/journal.rs`): `install --journal-mb N`, unit
+  tested only; the elevated install that uses it has not been run.
+- **Preview pane and Quick Look** (`preview.rs`, `PreviewPane.tsx`, `PreviewBody.tsx`,
+  `QuickLook.tsx`, `previewState.ts`): Alt+P and Space; the `preview` protocol, and
+  `preview::guard`, which refuses app commands from any frame that isn't the app's own.
+- **Drag and drop** (`dragdrop.rs`, `dragdrop.ts`, `DropHint.tsx`): native drags out
+  (`SHDoDragDrop` on the window's thread), drops in onto rows, icons, places, tabs or the open
+  folder, with Explorer's copy and move rules.
+- **Windows context menu and Open With** (`shellmenu.rs`, `apps/shellhost`): in a
+  crash-isolated helper process.
+
+All five feature branches (views, undo, preview, dragdrop, shellmenu) are merged on `main`,
+and every unit test and e2e suite passes there, `integration.mjs` covering where they meet.
+
+Not done yet: release packaging of `kestrel-shellhost.exe` (it needs a Tauri sidecar entry,
+see README), Explorer's Content view (Ctrl+Shift+7), marquee selection, shortcuts on drop
+(Alt), and an undo history that survives a restart.
 
 ## How the app fits together
 
@@ -37,16 +63,22 @@ Done and verified:
 - `crates/kestrel-query`: query parsing, parallel search and sorting over an index.
 - `crates/kestrel-ntfs`: NTFS journal, MFT record parsing and raw volume reads.
 - `apps/desktop/src-tauri/src`: the backend. `main.rs` registers every Tauri command in one
-  `generate_handler!` list and every custom protocol (`icon://` today). `engine.rs` owns the
-  index and the result sets the UI pages through; `indexer.rs` keeps the index current and
-  owns the data folder (`data_dir()`, overridable with `KESTREL_DATA_DIR`); `fileops.rs` runs
-  file operations through the shell's copy engine; `clipboard.rs`, `watch.rs`, `icons.rs`,
-  `places.rs` do what their names say. `shellmenu.rs` runs the Windows context menu and Open
-  With in `apps/shellhost` (`kestrel-shellhost.exe`), a helper process found next to
-  `kestrel.exe`, so third-party shell extensions never load into the app.
+  `generate_handler!` list, wrapped in `preview::guard(...)`, and every custom protocol
+  (`icon`, `thumb`, `preview`). `engine.rs` owns the index and the result sets the UI pages
+  through; `indexer.rs` keeps the index current and owns the data folder (`data_dir()`,
+  overridable with `KESTREL_DATA_DIR`); `fileops.rs` runs file operations through the shell's
+  copy engine and reports exactly what each did; `undo.rs` keeps the journal they are recorded
+  in (anything new that changes files calls `fileops::execute`, then `journal.record`);
+  `clipboard.rs`, `watch.rs`, `icons.rs`, `places.rs` do what their names say. `shellmenu.rs`
+  runs the Windows context menu and Open With in `apps/shellhost` (`kestrel-shellhost.exe`),
+  a helper process found next to `kestrel.exe`, so third-party shell extensions never load
+  into the app.
 - `apps/desktop/src`: the front end. `state.ts` holds tabs and every action; `lib/api.ts`
   wraps every backend command; `components/` has one file per piece of UI; `styles.css` holds
   the design tokens (slate surfaces, one ochre accent, light and dark) and all styles.
+  `FileList.tsx` draws details rows itself and every other view's items through `ViewItem.tsx`;
+  both share one set of item mouse handlers (`onItemMouseDown` and friends), so a change to
+  how items respond to the mouse is made once and holds in every view.
 - Result sets: a listing or search produces a set id; the UI fetches rows by range. The UI
   releases a set only after switching to its replacement (`show` in `state.ts`).
 
@@ -129,6 +161,17 @@ Git:
   why every test slot has its own build directory.
 - A folder listing reports the size NTFS last recorded in the directory entry, which lags
   for files held open for writing; the MFT's own size is current.
+- WebView2 copies Tauri's command bridge, and its key, into every frame, and Tauri treats
+  every custom protocol host as local. Pages served by a custom protocol must never run
+  script; `preview::guard` refuses app commands from other frames, but Tauri's own plugin
+  commands are not covered by it.
+- `styles.css` has no build-time check: a lost brace once hid every style after it (the
+  browser reads the rest as one broken rule). After editing it, check the page's rule count
+  (`document.styleSheets[0].cssRules.length`) or look at the screenshots.
+- The e2e suites assume the details view and a closed preview pane. `views.mjs`,
+  `preview.mjs` and `integration.mjs` change them and put them back in their `finally`
+  blocks; if one of them is killed, reset the slot's `kestrel.views` and `preview-open` local
+  storage entries.
 - `pnpm dev` (and so `tauri dev` and every e2e slot) builds `kestrel-shellhost` before the
   app, but the dev watcher does not rebuild it when its code changes: run
   `cargo build -p kestrel-shellhost` (with the slot's `CARGO_TARGET_DIR`) yourself.
