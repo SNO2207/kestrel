@@ -21,9 +21,18 @@ const JOURNAL_POLL: Duration = Duration::from_millis(300);
 /// How often a changed index is saved, bounding the catch-up needed after a crash.
 const SAVE_EVERY: Duration = Duration::from_secs(10 * 60);
 
-pub fn snapshot_path() -> PathBuf {
+/// Where the app keeps its index and other data: `%LOCALAPPDATA%\Kestrel`, unless
+/// `KESTREL_DATA_DIR` names another folder, as isolated test instances do.
+pub fn data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("KESTREL_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join("Kestrel").join("index.kidx")
+    base.join("Kestrel")
+}
+
+pub fn snapshot_path() -> PathBuf {
+    data_dir().join("index.kidx")
 }
 
 pub fn save(engine: &Engine, path: &Path) {

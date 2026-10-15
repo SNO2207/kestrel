@@ -5,6 +5,7 @@ A fast Windows 11 file explorer: Rust engine, Tauri 2 shell, SolidJS front end. 
 
 The approved build plan is at
 `C:\Users\levil\.claude\plans\pasted-content-id-3bd2-i-want-tranquil-whale.md`.
+The repository is private on GitHub: https://github.com/SNO2207/kestrel (branch `main`).
 
 ## Status
 
@@ -28,22 +29,71 @@ Done and verified:
   `C:\Program Files\Kestrel`); a non-admin request returns the whole drive in about 5 s, and
   the app's first launch without a saved index is ready about 2 s after its window opens.
 
-Next, in plan order:
+## How the app fits together
 
-1. Rest of M2: icon/thumbnail grid, preview pane, drag and drop, native shell context menu
-   in a helper process, dual pane, zip, Recycle Bin view.
-2. M3 projects and shortcuts, M4 disk analysis, M5 AI photo/video search, M6 extras.
+- `crates/kestrel-index`: the index (`index.rs`), its builder, snapshots, crawl (`walk.rs`),
+  MFT build (`mft.rs`), folder reconciliation (`sync.rs`), journal following (`live.rs`) and
+  the broker client (`broker.rs`).
+- `crates/kestrel-query`: query parsing, parallel search and sorting over an index.
+- `crates/kestrel-ntfs`: NTFS journal, MFT record parsing and raw volume reads.
+- `apps/desktop/src-tauri/src`: the backend. `main.rs` registers every Tauri command in one
+  `generate_handler!` list and every custom protocol (`icon://` today). `engine.rs` owns the
+  index and the result sets the UI pages through; `indexer.rs` keeps the index current and
+  owns the data folder (`data_dir()`, overridable with `KESTREL_DATA_DIR`); `fileops.rs` runs
+  file operations through the shell's copy engine; `clipboard.rs`, `watch.rs`, `icons.rs`,
+  `places.rs` do what their names say.
+- `apps/desktop/src`: the front end. `state.ts` holds tabs and every action; `lib/api.ts`
+  wraps every backend command; `components/` has one file per piece of UI; `styles.css` holds
+  the design tokens (slate surfaces, one ochre accent, light and dark) and all styles.
+- Result sets: a listing or search produces a set id; the UI fetches rows by range. The UI
+  releases a set only after switching to its replacement (`show` in `state.ts`).
 
-## Rules for working here
+## Working on Kestrel (agents read this)
 
-- Anything needing elevation (MFT scans, installing the broker) is the owner's to run. Ask
-  before raising a UAC prompt; they declined one unannounced repeat.
-- File-operation tests touch only scratch folders under `%TEMP%`. Never exercise delete,
-  move or rename against real user data.
-- Deletion defaults to the Recycle Bin. Nothing is ever deleted automatically.
-- Large downloads (models, GPU runtime, ffmpeg) need the owner's confirmation with name,
-  source and size.
-- Commit only when asked.
+Code:
+- Match the surrounding style: Rust 2024, small functions, doc comments that explain why,
+  `// SAFETY:` on every `unsafe` block, no `unwrap()` outside tests and proven invariants.
+  `windows-sys` for plain Win32 calls, the `windows` crate for COM.
+- TypeScript is strict; in Solid components never destructure props. UI copy is sentence
+  case, plain verbs, no all-caps labels, no decorative arrows; reuse the tokens in
+  `styles.css` rather than new colours.
+- New backend features go in a new module with its commands; add them to the
+  `generate_handler!` list in `main.rs`. New UI goes in a new component file. Keep edits to
+  shared files (`main.rs`, `engine.rs`, `state.ts`, `App.tsx`, `api.ts`, `styles.css`)
+  small and additive, because several branches are merged together.
+- Write Rust edits with the editor tools: backslashes in Rust char literals are lost in
+  shell heredocs.
+
+Testing (every change ships with tests, and you run them):
+- `cargo test --workspace` and, in `apps/desktop`, `pnpm install` once then `pnpm typecheck`.
+- End-to-end: pick your slot number (given in your task; never 0 unless told) and run
+  `KESTREL_SLOT=<n> node e2e/dev.mjs start`, then `KESTREL_SLOT=<n> node e2e/<suite>.mjs`,
+  then `KESTREL_SLOT=<n> node e2e/dev.mjs stop`. Each slot has its own ports, app identity,
+  build directory (`target/slots/slot<n>`) and data folder, so slots run side by side. The
+  first start of a slot builds the app and takes a few minutes.
+- New features get a new suite `e2e/<feature>.mjs` modelled on `fileops.mjs`: use
+  `connectToKestrel()` from `e2e/connect.mjs` (it refuses any window not titled Kestrel),
+  confine file changes to a fresh folder under `%TEMP%`, and save screenshots to `e2e/out`.
+  Look at your screenshots; a passing test with a broken-looking screen is not done.
+- `fileops.mjs` uses the system clipboard; do not run it while other agents may be running
+  tests. Whoever integrates branches runs every suite, one after another.
+- Things a script cannot do (a real mouse drag between apps, a native dialog) are listed as
+  manual checks in your report rather than claimed as tested.
+
+Safety rules:
+- File changes in tests happen only in scratch folders under `%TEMP%`. Never touch the
+  owner's real files, and never empty the Recycle Bin.
+- No elevation: never start a UAC prompt, install services or change system settings.
+- No large downloads (models, GPU runtimes, ffmpeg). Features that need one download only
+  when the user clicks a button that states what, from where and how big; tests never click
+  it. Ordinary `cargo` and `pnpm` dependencies are fine.
+- Nothing is deleted automatically; deletions go to the Recycle Bin unless the user chose
+  permanent deletion in a confirmation.
+
+Git:
+- When working in a git worktree, commit your work on that worktree's branch, ending each
+  message with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never push, never
+  rewrite history, never commit build output (`target/`, `node_modules/`, `e2e/out/`).
 
 ## Gotchas
 
@@ -56,8 +106,6 @@ Next, in plan order:
   the toolbar box and the results list once broke the layout.
 - Vite's dev server can serve a stale transform when a file is written twice in quick
   succession. If the running window disagrees with the source, `touch` the file.
-- In shell heredocs a backslash inside a Rust char literal is easily lost; write Rust edits
-  with the editor tools rather than through `python - <<EOF`.
 - The unprivileged journal read (`FSCTL_READ_UNPRIVILEGED_USN_JOURNAL`) needs a handle to a
   folder on the volume (`C:\`), not to the volume itself, and a start position that is a real
   record boundary (a previous `next_usn`, or `first_usn`); anything else is error 87.
@@ -72,8 +120,10 @@ Next, in plan order:
   and a crawl from inside sees that merged view. An index or snapshot made there is not the
   one the owner's own launches use. The broker (a service, outside the container) sees the
   real disk, which makes it the way to check where files really are.
-- Another of the owner's WebView2 apps (AI Binary Workbench) holds debugging port 9222. The
-  e2e scripts use 9333 and `e2e/connect.mjs` refuses any page that is not titled Kestrel;
-  never point automation at a page without that check.
+- Another of the owner's WebView2 apps (AI Binary Workbench) holds debugging port 9222, so
+  the e2e harness uses 9333 and up, and `e2e/connect.mjs` refuses any page not titled
+  Kestrel. Never point automation at a page without that check.
+- Tauri compiles each instance's settings (identifier, dev URL) into its binary, which is
+  why every test slot has its own build directory.
 - A folder listing reports the size NTFS last recorded in the directory entry, which lags
   for files held open for writing; the MFT's own size is current.
