@@ -2,6 +2,8 @@ import { For, Show, onCleanup, onMount } from "solid-js";
 
 import { api, type Row } from "./lib/api";
 import { FileList, type ListCommand } from "./components/FileList";
+import { PreviewPane } from "./components/PreviewPane";
+import { QuickLook } from "./components/QuickLook";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { TitleBar } from "./components/TitleBar";
@@ -34,6 +36,7 @@ import {
   start,
   tabs,
 } from "./state";
+import { registerStepper, setFocusedRow } from "./previewState";
 
 export function App() {
   /** Focus functions for each tab's list, so shortcuts can hand focus back to the files. */
@@ -134,10 +137,13 @@ export function App() {
                   listFocus.set(tab.id, focus);
                   onCleanup(() => listFocus.delete(tab.id));
                 }}
+                onFocusRow={(row) => setFocusedRow(tab.id, row)}
+                stepRef={(step) => onCleanup(registerStepper(tab.id, step))}
               />
             </div>
           )}
         </For>
+        <PreviewPane />
         <Show when={notice()}>
           <div class="notice" role="alert">
             <span>{notice()}</span>
@@ -148,6 +154,7 @@ export function App() {
         </Show>
       </main>
       <StatusBar />
+      <QuickLook focusList={focusList} />
     </div>
   );
 }

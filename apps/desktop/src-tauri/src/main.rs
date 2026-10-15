@@ -7,6 +7,7 @@ mod fileops;
 mod icons;
 mod indexer;
 mod places;
+mod preview;
 mod watch;
 
 use std::collections::HashSet;
@@ -280,7 +281,10 @@ fn main() {
                 None => respond(StatusCode::BAD_REQUEST, Vec::new()),
             }
         })
-        .invoke_handler(tauri::generate_handler![
+        // File bytes for the preview pane; see `preview.rs` for why it is safe to expose.
+        .register_asynchronous_uri_scheme_protocol("preview", preview::protocol)
+        // Commands are refused to frames other than the app's own, such as previewed content.
+        .invoke_handler(preview::guard(tauri::generate_handler![
             index_status,
             list_dir,
             search,
@@ -299,7 +303,10 @@ fn main() {
             can_paste,
             paste_items,
             show_properties,
-        ])
+            preview::preview_text,
+            preview::preview_details,
+            preview::open_link,
+        ]))
         .setup(move |app| {
             let handle = app.handle().clone();
             let engine = app.state::<Arc<Engine>>().inner().clone();

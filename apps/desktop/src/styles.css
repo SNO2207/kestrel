@@ -788,3 +788,508 @@ code {
   background: var(--line);
   color: var(--text);
 }
+
+/* ---------- preview pane and Quick Look ---------- */
+
+/*
+ * The pane sits at the right of the content area and the tab panels make room for it. Its
+ * width comes from --preview-width (set by PreviewPane), capped so the list keeps 300px.
+ */
+.content:has(> .preview-pane) > .tab-panel {
+  right: min(var(--preview-width, 380px), calc(100% - 300px));
+}
+
+.preview-pane {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(var(--preview-width, 380px), calc(100% - 300px));
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+}
+
+.preview-pane.dragging {
+  cursor: col-resize;
+}
+
+.preview-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  z-index: 1;
+  width: 8px;
+  cursor: col-resize;
+  outline: 0;
+}
+
+.preview-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+}
+
+.preview-resizer:hover::after,
+.preview-resizer:focus-visible::after,
+.preview-pane.dragging .preview-resizer::after {
+  background: var(--accent);
+}
+
+.preview-toggle {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+.preview-toggle:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.preview-toggle.on {
+  color: var(--accent);
+}
+
+.preview-body,
+.preview-empty {
+  height: 100%;
+  min-width: 0;
+}
+
+.preview-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-empty {
+  display: grid;
+  place-content: center;
+  padding: 24px;
+  text-align: center;
+  color: var(--faint);
+}
+
+.preview-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.preview-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.preview-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.preview-type {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.preview-close {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+.preview-close:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.preview-stage {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.preview-message,
+.preview-summary {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.preview-message p,
+.preview-summary p {
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.preview-reason {
+  font-size: 12px;
+  color: var(--faint);
+  user-select: text;
+}
+
+.preview-action {
+  margin-top: 6px;
+  padding: 5px 12px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.preview-summary .preview-count {
+  margin-top: 6px;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.preview-total {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Images are centred and never enlarged; a checkerboard shows through transparency. */
+.preview-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 14px;
+}
+
+.preview-image {
+  position: absolute;
+  inset: 0;
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
+  background: repeating-conic-gradient(var(--raised) 0 25%, var(--surface) 0 50%) 0 0 / 16px 16px;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.preview-video,
+.preview-pdf {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: var(--chrome);
+}
+
+.preview-audio {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px;
+}
+
+.preview-audio audio {
+  width: 100%;
+  max-width: 360px;
+}
+
+.preview-text {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  user-select: text;
+}
+
+.preview-notice {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--raised);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.preview-code {
+  margin: 0;
+  padding: 12px 14px 16px;
+  font: 12px/1.55 "Cascadia Mono", Consolas, monospace;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.preview-code.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.preview-code > code,
+.preview-markdown pre > code {
+  display: block;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  font: inherit;
+}
+
+.preview-details {
+  display: grid;
+  flex: none;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 14px;
+  max-height: 45%;
+  margin: 0;
+  padding: 10px 14px 12px;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.preview-detail {
+  display: contents;
+}
+
+.preview-details dt {
+  color: var(--muted);
+}
+
+.preview-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-details.compact {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 20px;
+}
+
+.preview-details.compact .preview-detail {
+  display: flex;
+  gap: 6px;
+}
+
+/* Rendered Markdown. */
+.preview-markdown {
+  padding: 14px 18px 28px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.preview-markdown > :first-child {
+  margin-top: 0;
+}
+
+.preview-markdown h1,
+.preview-markdown h2,
+.preview-markdown h3,
+.preview-markdown h4 {
+  margin: 1.2em 0 0.5em;
+  line-height: 1.25;
+}
+
+.preview-markdown h1 {
+  font-size: 1.6em;
+}
+
+.preview-markdown h2 {
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--line);
+  font-size: 1.3em;
+}
+
+.preview-markdown h3 {
+  font-size: 1.1em;
+}
+
+.preview-markdown p,
+.preview-markdown ul,
+.preview-markdown ol,
+.preview-markdown blockquote,
+.preview-markdown pre,
+.preview-markdown table {
+  margin: 0 0 0.9em;
+}
+
+.preview-markdown a[href] {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.preview-markdown blockquote {
+  padding: 0 0 0 12px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+
+.preview-markdown pre {
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: var(--radius);
+  background: var(--chrome);
+  font: 12px/1.5 "Cascadia Mono", Consolas, monospace;
+}
+
+.preview-markdown table {
+  border-collapse: collapse;
+}
+
+.preview-markdown th,
+.preview-markdown td {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+}
+
+.preview-markdown hr {
+  height: 1px;
+  border: 0;
+  background: var(--line);
+}
+
+.preview-markdown img {
+  max-width: 100%;
+}
+
+.preview-markdown img.blocked-image {
+  display: inline-block;
+  min-width: 18px;
+  min-height: 18px;
+  border: 1px dashed var(--line);
+}
+
+/* Syntax colours, drawn from the palette. */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-doctag {
+  color: var(--accent);
+}
+
+/* Mixed toward the text colour, which keeps them readable on the light surface too. */
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-template-tag {
+  color: color-mix(in srgb, var(--weight-folder) 80%, var(--text));
+}
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-variable.constant_ {
+  color: color-mix(in srgb, var(--weight) 70%, var(--text));
+}
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-title.class_ {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.hljs-type,
+.hljs-built_in,
+.hljs-name,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: color-mix(in srgb, var(--weight-folder) 55%, var(--text));
+}
+
+.hljs-attr,
+.hljs-meta,
+.hljs-tag,
+.hljs-params {
+  color: var(--muted);
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.hljs-deletion {
+  color: var(--danger);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 600;
+}
+
+/* Quick Look: the focused item, large, over everything. */
+.quicklook-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgb(0 0 0 / 0.45);
+}
+
+.quicklook {
+  display: flex;
+  width: min(1120px, 100%);
+  height: min(840px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 0.4);
+  outline: 0;
+}
+
+.quicklook > * {
+  flex: 1;
+}
+
+.quicklook .preview-canvas {
+  margin: 20px;
+}
+
+.quicklook .preview-code,
+.quicklook .preview-markdown {
+  font-size: 13px;
+}
+
+.quicklook .preview-markdown {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 22px 28px 36px;
+}

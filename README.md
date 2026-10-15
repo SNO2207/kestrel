@@ -86,6 +86,8 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+Shift+C | Copy as path |
 | Alt+Enter | Properties |
 | Right-click, Shift+F10 | Context menu |
+| Alt+P | Show or hide the preview pane (drag its left edge to resize it) |
+| Space | Quick Look; Space or Esc closes it, the arrow keys move to the previous or next item |
 
 File operations run through the Windows shell's own copy engine, so progress and conflict
 dialogs, the Recycle Bin and Explorer's undo behave exactly as they do in Explorer.
@@ -110,7 +112,15 @@ pnpm tauri dev          # in one terminal
 node e2e/smoke.mjs      # in another: navigation, search, sorting; read-only
 node e2e/fileops.mjs    # file operations, confined to a scratch folder under %TEMP%
 node e2e/live-index.mjs # files changed by another program show up in search
+node e2e/preview.mjs    # preview pane and Quick Look, confined to a scratch folder under %TEMP%
 ```
+
+The preview pane shows images (SVG only through `<img>`), video, audio, PDF (the web view's own
+viewer), text and code with highlighting (the first megabyte), Markdown rendered and sanitised,
+JSON re-indented, and details for folders and everything else. File bytes reach it through the
+`preview` protocol (`src-tauri/src/preview.rs`), which serves regular files only, honours
+`Range`, shows HTML and other active content as text, and whose frames may not call the app's
+commands.
 
 `fileops.mjs` replaces the clipboard's contents, and with `KESTREL_E2E_RECYCLE=1` it also
 sends one small file to the Recycle Bin. One unit test does the same and is ignored by

@@ -16,6 +16,7 @@ import {
   setQuery,
 } from "../state";
 import { Icon } from "./Icon";
+import { PreviewToggle } from "./PreviewPane";
 
 /** Lets the app's keyboard shortcuts focus the address and search fields. */
 export const focusTargets: { address?: () => void; search?: () => void } = {};
@@ -138,6 +139,8 @@ export function Toolbar(props: { focusList: () => void }) {
           <Icon name={everywhere() ? "globe" : "folder"} size={14} />
         </button>
       </div>
+
+      <PreviewToggle />
     </div>
   );
 }

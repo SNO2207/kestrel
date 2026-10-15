@@ -11,6 +11,9 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.3",
+    "dompurify": "3.4.16",
+    "highlight.js": "11.12.0",
+    "marked": "18.0.14",
     "solid-js": "^1.9.17"
   },
   "devDependencies": {
