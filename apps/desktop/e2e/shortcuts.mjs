@@ -432,7 +432,7 @@ try {
     await shelf("Tags", "Urgent").waitFor();
     await shotBoth("8-tag-dots-details");
 
-    for (const [digit, mode] of [[2, "large"], [5, "list"], [8, "tiles"], [4, "small"]]) {
+    for (const [digit, mode] of [[2, "large"], [5, "list"], [7, "tiles"], [4, "small"]]) {
       await list.focus();
       await page.keyboard.press(`Control+Shift+Digit${digit}`);
       await panel.locator(`.filelist[data-view="${mode}"]`).waitFor();
@@ -496,7 +496,7 @@ try {
     await panel.locator(".column-header.size").click();
     await page.waitForFunction(() => document.querySelector(".tab-panel.active .column-header.size")?.getAttribute("aria-sort") === "descending");
     await list.focus();
-    await page.keyboard.press("Control+Shift+Digit8");
+    await page.keyboard.press("Control+Shift+Digit7");
     await panel.locator('.filelist[data-view="tiles"]').waitFor();
     await page.keyboard.press("Control+t");
     await page.locator(".tab").nth(1).waitFor();

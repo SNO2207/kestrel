@@ -15,6 +15,7 @@ use serde::de::DeserializeOwned;
 
 pub use rusqlite;
 
+pub mod layout;
 pub mod palette;
 pub mod places;
 pub mod projects;
@@ -28,8 +29,15 @@ pub struct Migration {
 }
 
 /// Every migration, from every feature. Order here does not matter; names decide.
-pub const MIGRATIONS: &[&[Migration]] =
-    &[SETTINGS, undo::MIGRATIONS, shortcuts::MIGRATIONS, projects::MIGRATIONS, palette::MIGRATIONS, places::MIGRATIONS];
+pub const MIGRATIONS: &[&[Migration]] = &[
+    SETTINGS,
+    undo::MIGRATIONS,
+    shortcuts::MIGRATIONS,
+    projects::MIGRATIONS,
+    palette::MIGRATIONS,
+    places::MIGRATIONS,
+    layout::MIGRATIONS,
+];
 
 const SETTINGS: &[Migration] = &[Migration {
     name: "2026_10_15_core_settings",

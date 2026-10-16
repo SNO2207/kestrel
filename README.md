@@ -107,7 +107,11 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+L, Alt+D | Edit the address; Up and Down choose a suggestion, Tab completes it |
 | Ctrl+F, Ctrl+E, F3 | Search |
 | Alt+Left / Alt+Right / Alt+Up, Backspace | Back / forward / up (up from a drive goes to This PC) |
-| Ctrl+T / Ctrl+W / Ctrl+Tab | New tab / close tab / next tab |
+| Ctrl+T / Ctrl+W / Ctrl+Tab | New tab / close tab / next tab (in the pane with the keyboard) |
+| Ctrl+Shift+D | Show or hide the second pane |
+| Tab | With two panes, move the keyboard from one pane's list to the other's |
+| Alt+C / Alt+X | Copy / move the selection to the folder the other pane shows |
+| Ctrl+Shift+L | Filter the folder by name; Esc clears and closes the filter |
 | F5 | Refresh (folders also refresh themselves when their contents change) |
 | Type letters | Jump to a name |
 | F2 | Rename; with several items selected, batch rename |
@@ -120,7 +124,7 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Right-click, Menu key | Context menu |
 | Shift+right-click, Shift+F10 | The Windows context menu, with every shell extension's commands |
 | Ctrl+Shift+1 / 2 / 3 / 4 | Extra large / large / medium / small icons |
-| Ctrl+Shift+5 / 6 / 8 | List / details / tiles |
+| Ctrl+Shift+5 / 6 / 7 / 8 | List / details / tiles / content, as in Explorer |
 | Ctrl+wheel | Larger or smaller icons |
 | Alt+P | Show or hide the preview pane (drag its left edge to resize it) |
 | Ctrl+Shift+P | Show or hide the projects hub |
@@ -131,9 +135,10 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+K | Command palette: every action, folders and files, pins, saved searches, workspaces, `@` projects, `#` tags |
 | Ctrl+Alt+Space | The quick launcher, from anywhere in Windows (changeable) |
 
-Every view (details, list, tiles and icons) has the same mouse and keyboard handling: click,
-Ctrl+click and Shift+click to select, Ctrl+A, arrow keys, typing to jump to a name, rename in
-place, both context menus, dragging out and dropping in.
+Every view (details, list, tiles, content and icons) has the same mouse and keyboard handling:
+click, Ctrl+click and Shift+click to select, a rectangle drawn from empty space (Ctrl adds to the
+selection), Ctrl+A, arrow keys, typing to jump to a name, rename in place, both context menus,
+dragging out and dropping in.
 
 ## This PC, the Recycle Bin and the folder tree
 
@@ -212,18 +217,69 @@ everything as one undoable operation.
 
 ## Views
 
-The View button in the toolbar picks the view (details, list, tiles, or icons from 32 to 256
-pixels), the sort order, and two options: "Show hidden items" (off by default; hidden files,
-protected system files among them, are then left out of folders and search results, while
-files only marked system, such as `C:\Windows\Fonts`, show as they do in Explorer) and "Show
-file extensions".
-Each folder remembers its own view and sort, and search results have one of their own.
+The View button in the toolbar picks the view (details, list, tiles, content, or icons from 32
+to 256 pixels), the sort order, Group by, and two options: "Show hidden items" (off by default;
+hidden files, protected system files among them, are then left out of folders and search
+results, while files only marked system, such as `C:\Windows\Fonts`, show as they do in
+Explorer) and "Show file extensions".
+Each folder remembers its own view, sort and grouping, and search results have one of their own.
+
+The Content view (Ctrl+Shift+8, as in Explorer; Tiles is Ctrl+Shift+7) gives each item a wide
+row: its thumbnail or icon, name and type, then its date modified and size, and an image's
+dimensions, read from its header once it comes into view (never for a file that is only in the
+cloud).
+
+**Group by** (in the View menu and the folder's menu) groups by name, date modified, type or
+size with Explorer's own group names: `0 - 9`, `A - H`, `I - P`, `Q - Z` and `Other`; Today,
+Yesterday, Earlier this week, Last week, Earlier this month, Last month, Earlier this year and A
+long time ago (and Tomorrow, Later this week and so on for dates ahead), in local time and the
+week your Windows settings start on; Empty (0 KB), Tiny (0 - 16 KB), Small (16 KB - 1 MB),
+Medium (1 - 128 MB), Large (128 MB - 1 GB), Huge (1 - 4 GB) and Gigantic (>4 GB), with folders
+as Unspecified, since Explorer gives them no size; and the Type column's names, folders first.
+Groups run ascending or descending, the sort applies within each, and each header shows its
+count and collapses the group (its menu collapses or expands them all). Clicking a header
+selects its group; the arrow keys move from one group into the next and pass over collapsed
+ones; Ctrl+A selects every group. The engine groups a listing by counting through it once,
+keeping its sorted order aside, so two and a half million search results group in about
+20 ms; the list asks it only for the names of the groups in view.
+
+In the details view, right-click a column header to show or hide columns: besides Name, Date
+modified, Type and Size, the index's Allocated size, Attributes (Explorer's letters, such as
+`RHSA`) and Extension, and Folder path, which search results show by default. Drag a header to
+move its column and its right edge to resize it; double-click the edge to fit the column to
+what is on screen, or choose "Size all columns to fit". Every column sorts. Folders and search
+results each keep their own columns, in the app's database, from one run to the next.
+
+The filter box (Ctrl+Shift+L, or the funnel in the toolbar) narrows the open folder, or the
+search results, to the names containing what you type, as you type; `*` and `?` match any text
+and one character over the whole name (`*.pdf`). The engine narrows the whole listing, the
+status bar says "n of m items", the selection follows the items that stay, and Esc clears and
+closes the box. Opening another folder closes it too.
 
 Icon and tile views show thumbnails rendered by the Windows shell, cached in
 `%LOCALAPPDATA%\Kestrel\thumbs` (up to about 1 GB; the oldest go first). Files whose contents
 are only in the cloud, such as OneDrive files not kept on this device, show their icon instead,
 so browsing never downloads them; once such a file is downloaded, its thumbnail appears the next
 time it comes into view.
+
+A rectangle drawn from empty space selects every item it touches, in every view; Ctrl adds them
+to the selection. The list scrolls while the pointer is near or past its edge, and items are
+found by where they sit, so ones that have scrolled out of view (or never came into it) are
+selected too. A drag that starts on an item still drags the item.
+
+## Two panes
+
+Ctrl+Shift+D, or the toolbar button beside the filter, shows a second pane beside the first.
+Each pane has its own tabs (above it, while two panes are shown) and each tab its own history;
+the pane with the keyboard marks its tab with the accent, the other shows its selection in
+grey, and a click or Tab moves the keyboard across. Drag the bar between them to share the room
+differently (double-click it to halve it). "Copy to other pane" (Alt+C) and "Move to other
+pane" (Alt+X), in an item's menu, put the selection in the folder the other pane shows, with
+the shell's progress and conflict windows, as one operation that Ctrl+Z undoes; files dragged
+from one pane drop into the other as they would from Explorer. Both panes refresh themselves
+when their folders change. Which panes are shown, where they split and each pane's tabs are
+kept in the app's database and come back when Kestrel starts; hiding the second pane keeps its
+tabs for the next time it opens.
 
 ## Preview pane and Quick Look
 
@@ -432,6 +488,7 @@ node e2e/projects.mjs       # the projects hub and git badges, with repositories
 node e2e/palette.mjs        # command palette, quick launcher, shortcut settings and tray option
 node e2e/connections.mjs    # where the palette, shortcuts, projects and preview meet
 node e2e/places.mjs         # This PC, the Recycle Bin page, the folder tree, address completion
+node e2e/layout.mjs         # two panes, grouping, columns, the filter box, the rectangle, Content (restarts the slot)
 node e2e/dev.mjs stop
 ```
 
@@ -441,7 +498,7 @@ instead: it runs `tauri build` (no installer) with the slot's identity and start
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
 `shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`,
 `integration.mjs`, `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs` and
-`places.mjs` need a dev build, whose test hooks they use. A release build has the Windows menu's test hook only
+`places.mjs` and `layout.mjs` need a dev build, whose test hooks they use. A release build has the Windows menu's test hook only
 when started with `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
 Run the suites one after another, not side by side: several use the clipboard or the window's
@@ -468,6 +525,12 @@ a dev build: projects are found by the location rules, which leave out the temp 
 turns on a development hook that allows its folder and records what Run and the launchers
 would start instead of starting it. Opening VS Code, Windows Terminal or a browser for real is
 a manual check.
+
+`layout.mjs` copies and moves files between its scratch folders, undoes the moves, and restarts
+the slot's app (as `undo-restart.mjs` does) to check that the panes come back; with
+`KESTREL_E2E_RECYCLE=1` it also undoes a copy, which sends the copy to the Recycle Bin. It saves
+the window's view settings and the layout and columns kept in the database first and puts them
+back at the end.
 
 `fileops.mjs` replaces the clipboard's contents, and with `KESTREL_E2E_RECYCLE=1` it also
 sends one small file to the Recycle Bin. `undo.mjs` and `batchrename.mjs` (undo, redo, batch

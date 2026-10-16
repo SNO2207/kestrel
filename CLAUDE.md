@@ -80,6 +80,14 @@ Done and verified:
   collapsible sections, and address completion; `e2e/places.mjs`. Expanding all of C: in the
   tree (820,756 folders) took 0.7 s and scrolled at a 7.6 ms average frame.
 
+- **Layout** (`layout.rs`, `kestrel_query::{group, filter}`, `kestrel_db::layout`, `panes.ts`,
+  `lib/listLayout.ts`, `lib/columns.ts`, `Panes.tsx`, `ColumnHeaders.tsx`, `GroupHeader.tsx`,
+  `FilterBar.tsx`, `layout.css`): a second pane (Ctrl+Shift+D) with tabs of its own, Copy and
+  Move to other pane (Alt+C, Alt+X) through the undo journal, the layout restored on start;
+  Explorer's Group by in every view and in search results (2.7 M results group in about 20 ms);
+  configurable details columns; the filter box (Ctrl+Shift+L); the selection rectangle; and the
+  Content view (Ctrl+Shift+8; Tiles moved to Explorer's Ctrl+Shift+7).
+
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette. Every unit test and all 16 e2e suites pass there
 in a dev build, and the ten that need no development hook (smoke, fileops, live-index, views,
@@ -87,8 +95,7 @@ undo, batchrename, locked, preview, shellmenu, undo-restart) in a release build 
 `integration.mjs` and `connections.mjs` cover where the features meet.
 
 Not done yet: an installer (bundling is off; the helper would then need a Tauri sidecar entry,
-see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and shortcuts on drop
-(Alt).
+see README) and shortcuts on drop (Alt).
 
 ## How the app fits together
 
@@ -130,6 +137,18 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and short
   `projects-changed` events tell the UI. The hub's styles live in `src/projects.css`.
 - Result sets: a listing or search produces a set id; the UI fetches rows by range. The UI
   releases a set only after switching to its replacement (`show` in `state.ts`).
+- Layout: every tab belongs to a pane (`Tab.pane`); each pane shows one of its tabs
+  (`shownTab`), the active tab is the one the pane with the keyboard shows, and while two panes
+  are shown both shown panels carry `.tab-panel.current` (only one `.active`). The active
+  tab's folder is watched by `list_dir`, the other pane's by `watch_other_pane`. A new listing
+  passes through
+  `arrange` in `state.ts`, which groups it (`group_set`: the engine keeps the plain sorted order
+  aside, `Arranged` in `engine.rs`, and the group starts) and narrows it by the tab's filter
+  (`filter_set`, a new set made from the listing, which stays in `Tab.unfiltered`). The list
+  places groups with `ListLayout` (`lib/listLayout.ts`), which the keyboard and the selection
+  rectangle use too, and asks for the names of the groups in view (`group_headers`). Panes,
+  split, tabs and columns are JSON documents in `kestrel_db::layout`, opened at start by
+  `openLayout` (`panes.ts`).
 - The command palette ranks items from *providers* in one place, `palette.rs` (nucleo-matcher,
   boosted by recency). A provider has a backend half (`palette::Provider`, registered in
   `main.rs`) when its items come from backend data, and always a front end half
@@ -337,6 +356,15 @@ Git:
 - The Recycle Bin page acts on the owner's real bin. Tests select only rows whose original
   location is their own scratch folder, compare the bin's other items before and after, and
   never click Restore all or Empty Recycle Bin; emptying has no test hook.
+- Explorer's view shortcuts, read from shell32.dll's accelerator table and View menu, are
+  Ctrl+Shift+7 for Tiles and Ctrl+Shift+8 for Content (`lib/views.ts`); suites that switch to
+  tiles press 7.
+- The layout (panes, split, tabs) is restored when the app starts, not when its page reloads:
+  a reload, as the suites do, opens one tab in the home folder as it always did (`starting` in
+  `panes.ts` tells the two apart by a session storage entry; the dev hook `__kestrelLayout`
+  can forget it). Columns are read from the database on every load.
+- With two panes, `.tab-panel.active` is still unique; selectors for "the list on screen" that
+  must cover both panes use `.tab-panel.current` (`dragdrop.ts`).
 - Undo checks before acting that each item is still what the operation left: `undo_entries`
   stores a mark (file id, and for deletions a content fingerprint) per step. A file replaced by
   another program in the meantime is left alone rather than recycled.

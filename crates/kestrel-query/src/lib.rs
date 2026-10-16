@@ -18,12 +18,16 @@
 //! | `!clause` | negates any clause |
 
 mod exec;
+mod filter;
 mod glob;
+pub mod group;
 mod parse;
 mod sort;
 mod time;
 
 pub use exec::{Compiled, compile, search};
+pub use filter::NameFilter;
+pub use group::{DateEdges, Group, GroupBy, Grouping};
 pub use parse::{Clause, ClauseKind, ParseError, Query, parse, resolve_tags};
 pub use sort::{Sort, SortKey, sort};
 pub use time::Clock;

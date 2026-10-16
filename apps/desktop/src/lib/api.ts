@@ -3,7 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 
 import { showHidden } from "./views";
 
-export type SortKey = "name" | "size" | "modified" | "type";
+/** The last four sort by the details view's extra columns (lib/columns.ts). */
+export type SortKey = "name" | "size" | "modified" | "type" | "alloc" | "attributes" | "extension" | "path";
 
 export interface SortSpec {
   key: SortKey;
@@ -40,6 +41,10 @@ export interface Row {
   mtime: number;
   ext: string;
   hidden: boolean;
+  /** Bytes allocated on disk. */
+  alloc: number;
+  /** Windows file attribute bits. */
+  attrs: number;
 }
 
 export interface IndexStatus {

@@ -230,7 +230,7 @@ try {
     await item("private").dblclick();
     await notice(LOCKED);
     // The padlock follows the name in every view, inside the item's own box.
-    for (const [digit, mode] of [[5, "list"], [8, "tiles"]]) {
+    for (const [digit, mode] of [[5, "list"], [7, "tiles"]]) {
       await list.focus();
       await page.keyboard.press(`Control+Shift+Digit${digit}`);
       await viewIs(mode);

@@ -30,7 +30,7 @@
 import { createSignal, type Component } from "solid-js";
 
 import type { IconName } from "../components/Icon";
-import { breadcrumbs, parentPath } from "./format";
+import { baseName, breadcrumbs, parentPath } from "./format";
 
 export interface LocationPageProps {
   tabId: number;
@@ -112,6 +112,9 @@ export function locationTitle(address: string): string | null {
   if (!location) return null;
   return typeof location.title === "string" ? location.title : location.title(address);
 }
+
+/** What a tab at a folder or a location is called: the location's title, or the folder's name. */
+export const titleOf = (path: string): string => locationTitle(path) ?? (baseName(path) || path);
 
 /** Where Up goes from a path or a location's address, or `null` when nowhere. */
 export function parentOf(path: string): string | null {

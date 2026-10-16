@@ -78,9 +78,11 @@ const VIEWS = [
   { mode: "small", label: "Small icons", digit: 4 },
   { mode: "list", label: "List", digit: 5 },
   { mode: "details", label: "Details", digit: 6 },
-  { mode: "tiles", label: "Tiles", digit: 8 },
+  // Explorer's own digits, from shell32.dll's accelerators: Tiles 7, Content 8.
+  { mode: "tiles", label: "Tiles", digit: 7 },
+  { mode: "content", label: "Content", digit: 8 },
 ];
-const THUMBNAIL_VIEWS = new Set(["xl", "large", "medium", "small", "tiles"]);
+const THUMBNAIL_VIEWS = new Set(["xl", "large", "medium", "small", "tiles", "content"]);
 
 const { browser, page } = await connectToKestrel();
 const session = await page.context().newCDPSession(page);

@@ -13,6 +13,7 @@ import {
 } from "../lib/views";
 import { activeTab, refresh, setSortSpec, startsDescending, tabs } from "../state";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
+import { groupByEntry } from "./GroupMenu";
 import { Icon, type IconName } from "./Icon";
 
 const SORT_KEYS: { key: SortKey; label: string }[] = [
@@ -23,7 +24,7 @@ const SORT_KEYS: { key: SortKey; label: string }[] = [
 ];
 
 const modeIcon = (mode: ViewMode): IconName =>
-  mode === "details" || mode === "list" ? "view-details" : mode === "tiles" ? "view-tiles" : "view-icons";
+  mode === "details" || mode === "list" ? "view-details" : mode === "tiles" || mode === "content" ? "view-tiles" : "view-icons";
 
 /** The toolbar's View button: view modes, sort order, and the hidden items and extensions options. */
 export function ViewMenu(props: { focusList: () => void }) {
@@ -72,6 +73,7 @@ export function ViewMenu(props: { focusList: () => void }) {
       })),
       { label: "Ascending", checked: !sort.desc, run: () => setSortSpec(current.id, { key: sort.key, desc: false }) },
       { label: "Descending", checked: sort.desc, run: () => setSortSpec(current.id, { key: sort.key, desc: true }) },
+      groupByEntry(current.id),
       "separator",
       {
         label: "Show hidden items",

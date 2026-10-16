@@ -37,15 +37,20 @@ const SPECS: Record<ViewMode, Spec> = {
   medium: { axis: "y", width: 112, height: 124, visual: 64 },
   large: { axis: "y", width: 168, height: 192, visual: 128 },
   xl: { axis: "y", width: 296, height: 324, visual: 256 },
+  // One wide row per item, with a thumbnail and two lines of details (ViewItem.tsx).
+  content: { axis: "y", width: 0, height: 66, visual: 48 },
 };
+
+/** Views with one item per line, spanning the view: details and content. */
+export const oneItemPerLine = (mode: ViewMode) => mode === "details" || mode === "content";
 
 /** Space between the edges of the view and its items. */
 export const GRID_PADDING = 8;
 
 export function geometry(mode: ViewMode, width: number, height: number): Geometry {
   const spec = SPECS[mode];
-  // Details rows span the view; their columns are laid out by CSS.
-  if (mode === "details") return { mode, axis: "y", perLine: 1, lineSize: spec.height, itemSize: 0, visual: spec.visual };
+  // Details and content rows span the view; their columns are laid out by CSS.
+  if (oneItemPerLine(mode)) return { mode, axis: "y", perLine: 1, lineSize: spec.height, itemSize: 0, visual: spec.visual };
   if (spec.axis === "x") {
     const perLine = Math.max(1, Math.floor((height - GRID_PADDING) / spec.height));
     return { mode, axis: "x", perLine, lineSize: spec.width, itemSize: spec.height, visual: spec.visual };
@@ -84,8 +89,8 @@ export function keyTarget(key: string, current: number, total: number, g: Geomet
   // Keys that step to the neighbouring item in a line, and to the next or previous line.
   const along = vertical ? ["ArrowLeft", "ArrowRight"] : ["ArrowUp", "ArrowDown"];
   const across = vertical ? ["ArrowUp", "ArrowDown"] : ["ArrowLeft", "ArrowRight"];
-  // Details has one item per line, so only Up and Down move in it.
-  const alongMoves = g.mode !== "details" && along.includes(key);
+  // Details and content have one item per line, so only Up and Down move in them.
+  const alongMoves = !oneItemPerLine(g.mode) && along.includes(key);
   if (!alongMoves && !across.includes(key)) return null;
   if (current < 0) return 0;
   const forward = key === (alongMoves ? along[1] : across[1]);

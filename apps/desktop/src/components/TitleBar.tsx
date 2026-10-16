@@ -1,15 +1,14 @@
-import { For, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { isDropTab } from "../dragdrop";
-import { baseName } from "../lib/format";
-import { locationTitle } from "../lib/locations";
-import { activateTab, activeId, closeTab, isSearch, openTab, tabs, type Tab } from "../state";
+import { locationTitle, titleOf } from "../lib/locations";
+import { activateTab, activeId, closeTab, dual, isSearch, openTab, tabs, type Tab } from "../state";
 import { Icon } from "./Icon";
 
 function tabTitle(tab: Tab): string {
   if (isSearch(tab)) return `Search: ${tab.query}`;
-  return locationTitle(tab.path) ?? (baseName(tab.path) || tab.path);
+  return titleOf(tab.path);
 }
 
 export function TitleBar() {
@@ -25,38 +24,41 @@ export function TitleBar() {
 
   return (
     <header class="titlebar" data-tauri-drag-region>
-      <div class="tabs" role="tablist">
-        <For each={tabs}>
-          {(tab) => (
-            <div
-              class="tab"
-              classList={{ active: tab.id === activeId(), "drop-target": isDropTab(tab.id) }}
-              role="tab"
-              data-tab-id={tab.id}
-              aria-selected={tab.id === activeId()}
-              title={isSearch(tab) ? tab.query : (locationTitle(tab.path) ?? tab.path)}
-              onMouseDown={(event) => {
-                if (event.button === 0) activateTab(tab.id);
-                // Middle-click closes, as in a browser.
-                if (event.button === 1) closeTab(tab.id);
-              }}
-            >
-              <span class="tab-title">{tabTitle(tab)}</span>
-              <button
-                class="tab-close"
-                aria-label="Close tab"
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={() => closeTab(tab.id)}
+      {/* With two panes, each pane has its tabs above it (Panes.tsx). */}
+      <Show when={!dual()} fallback={<span class="titlebar-name" data-tauri-drag-region>Kestrel</span>}>
+        <div class="tabs" role="tablist">
+          <For each={tabs}>
+            {(tab) => (
+              <div
+                class="tab"
+                classList={{ active: tab.id === activeId(), "drop-target": isDropTab(tab.id) }}
+                role="tab"
+                data-tab-id={tab.id}
+                aria-selected={tab.id === activeId()}
+                title={isSearch(tab) ? tab.query : (locationTitle(tab.path) ?? tab.path)}
+                onMouseDown={(event) => {
+                  if (event.button === 0) activateTab(tab.id);
+                  // Middle-click closes, as in a browser.
+                  if (event.button === 1) closeTab(tab.id);
+                }}
               >
-                <Icon name="close" size={12} />
-              </button>
-            </div>
-          )}
-        </For>
-        <button class="tab-new" aria-label="New tab" title="New tab (Ctrl+T)" onClick={() => openTab()}>
-          <Icon name="plus" size={14} />
-        </button>
-      </div>
+                <span class="tab-title">{tabTitle(tab)}</span>
+                <button
+                  class="tab-close"
+                  aria-label="Close tab"
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={() => closeTab(tab.id)}
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </div>
+            )}
+          </For>
+          <button class="tab-new" aria-label="New tab" title="New tab (Ctrl+T)" onClick={() => openTab()}>
+            <Icon name="plus" size={14} />
+          </button>
+        </div>
+      </Show>
       <div class="window-controls">
         <button aria-label="Minimize" onClick={() => appWindow.minimize()}>
           <Icon name="minimize" />

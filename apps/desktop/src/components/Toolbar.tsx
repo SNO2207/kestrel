@@ -18,6 +18,7 @@ import {
 } from "../state";
 import { AddressInput } from "./AddressInput";
 import { Icon } from "./Icon";
+import { LayoutButtons } from "./Panes";
 import { ViewMenu } from "./ViewMenu";
 import { PreviewToggle } from "./PreviewPane";
 import { SaveSearchButton } from "./SaveSearchButton";
@@ -141,6 +142,7 @@ export function Toolbar(props: { focusList: () => void }) {
         </button>
       </div>
 
+      <LayoutButtons />
       <ViewMenu focusList={props.focusList} />
       <PreviewToggle />
     </div>
