@@ -171,6 +171,7 @@ pub fn terminal_open(
     on_event: Channel<TermEvent>,
 ) -> Result<Opened, String> {
     let installed = shells::detect();
+    let shell_asked = shell.is_some();
     let chosen = shell.or_else(|| kestrel_db::devtools::settings(&db).ok().and_then(|settings| settings.default_shell));
     let mut picked = shells::pick(&installed, chosen.as_deref()).cloned().ok_or("No shell is installed")?;
     let (mut command, title) = match &script {
@@ -188,7 +189,7 @@ pub fn terminal_open(
         }
         None => {
             let asked = cwd.as_deref().map(crate::parity2::libraries::folder_for);
-            if shell.is_none()
+            if !shell_asked
                 && let Some(own) = asked.as_deref().and_then(|folder| shells::for_wsl_folder(&installed, folder))
             {
                 picked = own.clone();
