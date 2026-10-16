@@ -4,11 +4,14 @@
 //
 // The Tauri CLI says whether the build is a debug one in TAURI_ENV_DEBUG. The helper is built
 // for this computer, as the app is without `--target`, and in the same CARGO_TARGET_DIR.
+//
+// kestrel-mcp.exe, the MCP server for Claude Code (apps/mcp), is built beside them too: the
+// Developer tools page gives its path in the `claude mcp add` command it shows.
 
 import { spawnSync } from "node:child_process";
 
 const debug = process.env.TAURI_ENV_DEBUG === "true";
-const args = ["build", "-p", "kestrel-shellhost", ...(debug ? [] : ["--release"])];
+const args = ["build", "-p", "kestrel-shellhost", "-p", "kestrel-mcp", ...(debug ? [] : ["--release"])];
 console.log(`cargo ${args.join(" ")}`);
 const built = spawnSync("cargo", args, { stdio: "inherit", shell: false });
 process.exit(built.status ?? 1);

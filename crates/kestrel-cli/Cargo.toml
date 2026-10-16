@@ -11,5 +11,9 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 kestrel-analyze = { workspace = true }
 kestrel-index = { workspace = true }
+# `--live`: asking the running Kestrel over its query pipe.
+kestrel-ipc = { workspace = true }
 kestrel-query = { workspace = true }
 parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -20,6 +20,7 @@ import {
 import { focusedItem } from "../previewState";
 import { activeId, activeTab, setSortSpec, startsDescending } from "../state";
 import { redoLast, undoLast } from "../undo";
+import { hideTerminal, paneShown, toggleTerminal } from "../devtools";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import type { ListCommand } from "./FileList";
 import { ParityIcon, type ParityIconName } from "./ParityIcon";
@@ -131,6 +132,10 @@ export function CommandBar(props: { runCommand: (command: ListCommand) => void; 
       { label: "Show disk usage", hint: "Ctrl+Shift+U", disabled: !browsing && !inArchive(current.listing), run: () => props.runCommand("disk-usage") },
       "separator",
       { label: "Open in Terminal", disabled: !browsing, run: () => openInTerminal(current.path) },
+      // The terminal pane at the bottom of the window (devtools.ts).
+      paneShown()
+        ? { label: "Hide the terminal", hint: "Ctrl+`", run: () => hideTerminal(props.focusList) }
+        : { label: "Show the terminal", hint: "Ctrl+`", run: () => toggleTerminal() },
       { label: "New window", hint: "Ctrl+N", run: () => openNewWindow() },
       { label: "Full screen", hint: "F11", run: () => void toggleFullScreen() },
       "separator",

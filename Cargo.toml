@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/broker", "apps/desktop/src-tauri", "apps/shellhost"]
+members = ["crates/*", "apps/broker", "apps/desktop/src-tauri", "apps/mcp", "apps/shellhost"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,8 +13,10 @@ kestrel-analyze = { path = "crates/kestrel-analyze" }
 kestrel-cleanup = { path = "crates/kestrel-cleanup" }
 kestrel-db = { path = "crates/kestrel-db" }
 kestrel-index = { path = "crates/kestrel-index" }
+kestrel-ipc = { path = "crates/kestrel-ipc" }
 kestrel-ntfs = { path = "crates/kestrel-ntfs" }
 kestrel-query = { path = "crates/kestrel-query" }
+kestrel-term = { path = "crates/kestrel-term" }
 
 anyhow = "1"
 bytemuck = "1.25"

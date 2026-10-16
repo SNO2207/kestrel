@@ -17,6 +17,7 @@ pub use rusqlite;
 
 pub mod archives;
 pub mod cleanup;
+pub mod devtools;
 pub mod disk;
 pub mod layout;
 pub mod palette;
@@ -44,6 +45,7 @@ pub const MIGRATIONS: &[&[Migration]] = &[
     parity::MIGRATIONS,
     disk::MIGRATIONS,
     cleanup::MIGRATIONS,
+    devtools::MIGRATIONS,
 ];
 
 const SETTINGS: &[Migration] = &[Migration {

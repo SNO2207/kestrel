@@ -32,6 +32,8 @@ const PATHS = {
   "network-drive": "M2.5 2.5h11v5h-11ZM8 7.5v4M3 13.5h10M11 5h.01",
   "restore-item": "M5.5 3.5 2.5 6.5l3 3M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7",
   eject: "M3 9.5 8 4l5 5.5ZM3 12.5h10",
+  // The terminal pane and the Developer tools page (devtools.ts).
+  terminal: "M2.5 3.5h11v9h-11ZM5 6.5l2 1.75L5 10M8.5 10h2.5",
 } as const;
 
 export type IconName = keyof typeof PATHS;

@@ -4,13 +4,15 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "cargo build -p kestrel-shellhost && vite",
+    "dev": "cargo build -p kestrel-shellhost -p kestrel-mcp && vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.3",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
     "dompurify": "3.4.16",
     "highlight.js": "11.12.0",
     "marked": "18.0.14",

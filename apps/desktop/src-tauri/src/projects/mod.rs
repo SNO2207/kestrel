@@ -14,7 +14,8 @@ mod facts;
 mod git;
 pub(crate) mod launch;
 mod provider;
-mod scripts;
+// The terminal pane runs these too (`devtools::terminal`).
+pub(crate) mod scripts;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};

@@ -27,7 +27,11 @@ kestrel-analyze = { workspace = true }
 kestrel-cleanup = { workspace = true }
 kestrel-db = { workspace = true }
 kestrel-index = { workspace = true }
+# The local query service other programs ask (devtools/query.rs), and the terminal pane's
+# shells in pseudoconsoles (devtools/terminal.rs).
+kestrel-ipc = { workspace = true }
 kestrel-query = { workspace = true }
+kestrel-term = { workspace = true }
 memchr = { workspace = true }
 # The command palette's fuzzy ranking (palette.rs).
 nucleo-matcher = "0.3"

@@ -117,6 +117,15 @@ Done and verified:
   duplicates by size, then ends, then BLAKE3, hashes cached by file id. The two panels are the
   disk usage hub's Cleanup and Duplicates tabs, on the hub's drive or folder; the palette's
   "Cleanup recommendations" and "Find duplicate files" open the hub there.
+- **Developer tools** (branch `feature/devtools`: `crates/kestrel-term`, `crates/kestrel-ipc`,
+  `apps/mcp`, `src-tauri/src/devtools/`, `kestrel_db::devtools`, `devtools.ts`, `devtoolsSetup.ts`,
+  `TerminalPane.tsx`, `DevToolsPage.tsx`, `lib/devtoolsApi.ts`, `lib/terminalLinks.ts`,
+  `devtools.css`, `e2e/devtools.mjs`): the terminal pane (Ctrl+`, "Open terminal here",
+  "cd to this folder", tabs, shells, links to paths, the projects hub's Run in the pane as a
+  setting), the local query service over a named pipe, `kestrel-cli --live`, the MCP server
+  `kestrel-mcp.exe`, and the Developer tools page (a special location) with the
+  `claude mcp add` command. Verified on slot 4 with `devtools.mjs`, `smoke.mjs`, `views.mjs`,
+  `integration.mjs`, `parity.mjs`, `projects.mjs` and `palette.mjs`; not yet merged.
 
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette, then places, layout, parity, archives, disk and
@@ -145,6 +154,28 @@ see README); what else Explorer does that Kestrel does not is listed in
   (commands, the drive's own figures in `volume.rs`, the sampler in `history.rs`, and the
   `disk-changed` event while the hub is open); the samples live in `kestrel_db::disk`.
 - `crates/kestrel-ntfs`: NTFS journal, MFT record parsing and raw volume reads.
+- `crates/kestrel-term`: the terminal pane's shells. `pty.rs` starts a shell suspended in a
+  pseudoconsole (ConPTY through `windows-sys`, no portable-pty), puts it in a job object of its
+  own and resumes it, reads its output on a thread and reports the exit after the last output;
+  `Session::close` ends the job's console programs (`pe.rs` tells windowed ones by their PE
+  header and spares them) and closes the pseudoconsole on a thread of its own. `shells.rs` finds
+  PowerShell 7, Windows PowerShell, Command Prompt and WSL distributions (from `HKCU\...\Lxss`)
+  and writes the `cd` for each.
+- `crates/kestrel-ipc`: the local query service. `protocol.rs` (one JSON line each way, typed
+  requests and results, result limits in `bounds`), `server.rs` (overlapped named pipe; bounded
+  connections, sizes, read, write and answer times; a handler thread per request, given up on
+  with `Context::cancelled`), `client.rs` (checks the server's account before asking),
+  `security.rs` (the DACL `D:P(A;;GA;;;<SID>)`), `name.rs` (the pipe's name from the account and
+  the data folder, as `instance.rs` hashes it).
+- `apps/mcp`: `kestrel-mcp.exe`, the MCP server (rmcp 3.5, stdio): seven read-only tools, each
+  one question over the pipe. Built beside `kestrel.exe` by `pnpm dev` and `scripts/shellhost.mjs`.
+- `src-tauri/src/devtools/`: `terminal.rs` (sessions by id and window label, output streamed
+  through a Tauri `Channel`, ended on tab close, `terminal_reset` at page load, window close or
+  hide, and exit), `query.rs` (the service's answers from the engine, `projects`, `disk` and
+  `parity::recent`, through their commands' functions with `app.state()`), `mod.rs` (the
+  `QueryService` started and stopped by the settings, the log of questions, the page's commands).
+  Front end: `devtools.ts` (state, Ctrl+`, the palette's actions, Run), `TerminalPane.tsx`,
+  `DevToolsPage.tsx` (location `Developer tools`, registered in `devtoolsSetup.ts`).
 - `apps/desktop/src-tauri/src`: the backend. `main.rs` registers every Tauri command in one
   `generate_handler!` list, wrapped in `preview::guard(...)`, and every custom protocol
   (`icon`, `thumb`, `preview`). `engine.rs` owns the index and the result sets the UI pages
@@ -549,3 +580,42 @@ Git:
 - Windows' compression filter (WOF, `compact /exe`) hides its reparse point from user mode:
   attributes read 0x20 and `fsutil reparsepoint query` finds none. Only the file table (the
   broker's index) shows 0x620. Tests of such files set the attributes in the index.
+- Keys typed into a terminal must never reach the window's shortcuts (Backspace would go back,
+  Ctrl+W close the tab, Tab switch panes): each terminal's box stops `keydown` from bubbling,
+  apart from `passesThrough` in `devtools.ts`. That stop also kills Solid's delegated handlers
+  inside the box, so nothing with an `onKeyDown` goes inside `.terminal-host`; the pane's menus
+  are drawn beside it. A new window-wide shortcut that must work in a terminal is captured (as
+  Ctrl+K and Ctrl+` are) or added to `passesThrough`.
+- xterm.js is loaded when the first terminal opens (its own chunk), so a terminal exists a moment
+  after its tab: anything that acts on it goes through `handleOf(key)` and copes with nothing yet.
+  Tests wait for the terminal's textarea to have the keyboard before typing. xterm asks for a
+  line's links only when the pointer arrives on the line, and keeps the answer while it stays: a
+  pointer resting on a line that was empty finds no link there until it leaves and comes back,
+  so `devtools.mjs` brings it in from the strip above.
+- `#[tauri::command(async)]` commands run on a pool of threads, so two invokes sent in quick
+  succession can be handled out of order: typed keys once reached the shell as `eTmp` for `Temp`.
+  The terminal keeps one `terminal_write` (and one `terminal_resize`) in flight at a time and sends
+  what was typed meanwhile with the next. Anything else whose invokes must arrive in order does
+  the same.
+- The query service reads the index in place: it never stores a result set (the engine keeps 64
+  for the windows and would drop theirs) and never uses `Engine::search_resolving`, whose cancel
+  flag is shared with the window's own search box. Anything added to it follows `query.rs`.
+- A path another program names must never make Kestrel contact a server: the query service
+  refuses shares (`query::is_share`) and the terminal never probes a printed share path. Mapped
+  drives and the index are fine.
+- ConPTY: the shell's standard handles are set to invalid (`STARTF_USESTDHANDLES`), or a child of
+  the dev build (whose own handles are pipes) writes to those instead of the pseudoconsole; and
+  `ClosePseudoConsole` may wait for its last output to be read, so it runs off the window's thread
+  while the reader drains. A page reload leaves the backend's sessions running until
+  `terminal_reset` (called as `devtools.ts` loads) ends them; Tauri logs "Couldn't find callback
+  id" for their last output, which is harmless.
+- `pnpm dev` builds `kestrel-mcp` with `kestrel-shellhost` (`package.json`), so a slot has it
+  beside `kestrel.exe`; as with the helper, the dev watcher doesn't rebuild it, so after changing
+  `apps/mcp` run `cargo build -p kestrel-mcp` with the slot's `CARGO_TARGET_DIR`.
+- The pipe's name depends on the data folder: a test slot's Kestrel listens on another pipe than
+  the owner's, which `kestrel-mcp --pipe` and `kestrel-cli --pipe` (or `KESTREL_PIPE`, which the
+  terminal pane sets for its shells) name. The Developer tools page puts `--pipe` in its
+  `claude mcp add` command only when `KESTREL_DATA_DIR` is set.
+- The terminal pane is a grid row only while shown: `.app:has(> .terminal-pane:not([hidden]))`
+  in `devtools.css` redefines the grid that `parity.css` set. A change to the `.app` grid has to
+  change both.
