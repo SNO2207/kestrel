@@ -178,6 +178,15 @@ const swaps: { kind: string; waited: number; at: number }[] = [];
  */
 let stageGate: Promise<void> | null = null;
 let releaseStages = () => {};
+/**
+ * Development builds: new listings wait here before their rows are fetched, while a test holds
+ * them (`__kestrelStage.holdRows`), until it releases them or has them give up waiting
+ * (`__kestrelStage.late`), as a listing whose rows don't come in time does.
+ */
+let rowsGate: Promise<void> | null = null;
+let releaseRows = () => {};
+/** Development builds: what makes each listing waiting for its rows give up now. */
+const giveUpNow = new Set<() => void>();
 let stagesHeld = 0;
 if (import.meta.env.DEV) {
   Object.assign(window, {
@@ -190,7 +199,16 @@ if (import.meta.env.DEV) {
           releaseStages();
         }
       },
-      /** How many new listings wait at the gate now. */
+      holdRows: (hold: boolean) => {
+        if (hold && !rowsGate) rowsGate = new Promise((resolve) => (releaseRows = resolve));
+        if (!hold) {
+          rowsGate = null;
+          releaseRows();
+        }
+      },
+      /** Has every new listing still waiting for its rows drawn now, with rows still loading. */
+      late: () => [...giveUpNow].forEach((giveUp) => giveUp()),
+      /** How many new listings wait at either gate now. */
       held: () => stagesHeld,
     },
   });
@@ -382,9 +400,16 @@ export function FileList(props: Props) {
       }),
     );
     observer.observe(viewport);
+    // A press anywhere but on one of the list's items ends what a press on an item began.
+    const pressElsewhere = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target?.closest(".row, .view-item") || !viewport.contains(target)) pressed = null;
+    };
+    window.addEventListener("pointerdown", pressElsewhere, true);
     onCleanup(() => {
       observer.disconnect();
       clearTimeout(scrollPause);
+      window.removeEventListener("pointerdown", pressElsewhere, true);
     });
     props.focusRef(() => viewport.focus());
   });
@@ -599,17 +624,42 @@ export function FileList(props: Props) {
       return drawWhenFree(refresh, () => current() && commit(next, null, null, kind, began));
     }
     // The selection the new listing's marks were carried from; one made on the rows drawn while
-    // the new rows load is carried over again before the swap.
+    // the new rows load is carried over again before the swap, however the swap comes.
     const drawnSet = before.listing?.set;
     let seen = { selection: untrack(selection), focus: untrack(focused) };
-    const giveUp = window.setTimeout(() => {
-      // A listing whose rows don't come in time is drawn with rows still loading (not while a
-      // test holds it at the gate, which it means to stay).
-      if (current() && !(import.meta.env.DEV && stageGate)) {
-        const late = ++staging;
-        drawWhenFree(refresh, () => late === staging && commit(next, null, null, `${kind} (late)`, began));
-      }
-    }, STAGE_LIMIT_MS);
+    let restore = next.restore;
+    let carrying = Promise.resolve();
+    /**
+     * Carries a click or key on the rows drawn meanwhile into the new listing, after any carry
+     * already under way, and again if the selection changes while it waits. A selection that
+     * can't be carried leaves none rather than the marks from before it, which would put the
+     * menu a right-click opens, or an Open, on an item the user didn't pick: a failed carry, and
+     * a re-sort, which keeps its set, whose old order is gone.
+     */
+    const carryOver = () =>
+      (carrying = carrying.then(async () => {
+        while (untrack(selection) !== seen.selection || untrack(focused) !== seen.focus) {
+          seen = { selection: untrack(selection), focus: untrack(focused) };
+          if (drawnSet === undefined || drawnSet === listing.set) {
+            restore = null;
+            return;
+          }
+          const marks = { ranges: seen.selection.ranges as RowRange[], focus: seen.focus >= 0 ? seen.focus : null };
+          restore = await api.carryMarks(drawnSet, listing.set, marks).catch(() => null);
+          if (!restore) return;
+        }
+      }));
+    /**
+     * Draws the listing now, with rows still loading, as one whose rows don't come in time is,
+     * with what was selected meanwhile.
+     */
+    const drawLate = () => {
+      if (!current()) return;
+      const late = ++staging;
+      void carryOver().then(() => drawWhenFree(refresh, () => late === staging && commit({ ...next, restore }, null, null, `${kind} (late)`, began)));
+    };
+    // Not while a test holds the listing at a gate, which it means to stay.
+    const giveUp = window.setTimeout(() => !(import.meta.env.DEV && (stageGate || rowsGate)) && drawLate(), STAGE_LIMIT_MS);
     void (async () => {
       const labels = new Map<number, GroupInfo>();
       const nextGrouped = (next.groups?.length ?? 0) > 0;
@@ -620,6 +670,14 @@ export function FileList(props: Props) {
           found.forEach((header, index) => labels.set(index, header));
         }
         if (!current()) return;
+        if (import.meta.env.DEV && rowsGate) {
+          stagesHeld++;
+          giveUpNow.add(drawLate);
+          await rowsGate;
+          giveUpNow.delete(drawLate);
+          stagesHeld--;
+          if (!current()) return;
+        }
         const plan = untrack(() => planFor(next, listing, labels));
         // The rows drawn now too: the swap redraws them with the new listing's rows at those
         // places for the moment before the list scrolls to where it goes (a re-sort follows the
@@ -643,16 +701,9 @@ export function FileList(props: Props) {
           if (!current()) return;
         }
         // A click or key on the rows drawn meanwhile changed the selection: it follows its items
-        // into the new listing (a re-sort keeps its set, whose old order is gone, so not then).
-        let restore = next.restore;
-        while (drawnSet !== undefined && drawnSet !== listing.set && (untrack(selection) !== seen.selection || untrack(focused) !== seen.focus)) {
-          seen = { selection: untrack(selection), focus: untrack(focused) };
-          const marks = { ranges: seen.selection.ranges as RowRange[], focus: seen.focus >= 0 ? seen.focus : null };
-          const carried = await api.carryMarks(drawnSet, listing.set, marks).catch(() => null);
-          if (!current()) return;
-          if (!carried) break;
-          restore = carried;
-        }
+        // into the new listing.
+        await carryOver();
+        if (!current()) return;
         clearTimeout(giveUp);
         drawWhenFree(refresh, () => current() && commit({ ...next, restore }, new Map(fetched), nextGrouped ? labels : null, kind, began));
       } catch {
@@ -1209,14 +1260,36 @@ export function FileList(props: Props) {
     (target as HTMLElement).classList.contains("list-spacer") ||
     (target as HTMLElement).classList.contains("list-rows");
 
+  /**
+   * The press on an item under way: the place pressed, the button, and the listing drawn when it
+   * came (`contentKey`) and when the first press of a double-click came. Rows are drawn by place,
+   * so a listing drawn between a press and its release (a refresh that puts a new file above it,
+   * or the folder taking over from search results) has another item under the pointer. What the
+   * release does (the menu a right-click opens, a double-click's or a single click's Open) is for
+   * the item pressed, which the selection carries into the new listing (`stage`), never for the
+   * item the release lands on.
+   */
+  let pressed: { key: string; first: string; index: number; button: number } | null = null;
+
   // Mouse handling for an item in any view: a details row, or a cell of the other views.
   const onItemMouseDown = (index: number, event: MouseEvent) => {
+    const key = contentKey();
+    // The second press of a double-click goes on with what the first began.
+    const first = event.detail > 1 && pressed?.button === event.button ? pressed.first : key;
+    pressed = { key, first, index, button: event.button };
     // Middle-click opens a folder in a new tab, as in Explorer.
     if (event.button === 1 && rowAt(index)?.dir) {
       event.preventDefault();
       return open(index, true);
     }
-    if (event.button !== 0 || event.target instanceof HTMLInputElement) return;
+    if (event.target instanceof HTMLInputElement) return;
+    // A right press selects its item, as Explorer's does, so the menu the release opens is that
+    // item's even if another listing is drawn before the button comes up.
+    if (event.button === 2) {
+      if (!selection().has(index)) select(index);
+      return;
+    }
+    if (event.button !== 0) return;
     resetTypeAhead();
     // An item's check box (View > Show > Item check boxes) adds it to the selection or takes it
     // out, as Ctrl+click does, and never opens or drags it.
@@ -1242,19 +1315,38 @@ export function FileList(props: Props) {
         if (listing && selection().count > 0) void dragOut(listing.set, selection().ranges as RowRange[]);
       },
       click: () => {
+        // Another listing drawn since the press has another item at the place pressed: the one
+        // pressed is where the selection carried it, and narrowing to it waits for another click.
+        if (contentKey() !== key) {
+          if (opens && !deferred && soleRow() >= 0) open(soleRow());
+          return;
+        }
         if (deferred) select(index, mode);
         if (opens) open(index);
       },
     });
   };
   const onItemDblClick = (index: number, event: MouseEvent) => {
-    if (!(event.target instanceof HTMLInputElement) && !(event.target as Element).closest?.(".item-check")) open(index);
+    if (event.target instanceof HTMLInputElement || (event.target as Element).closest?.(".item-check")) return;
+    const now = contentKey();
+    // Both presses on the listing drawn now, as nearly always: the item here.
+    if (!pressed || (pressed.key === now && pressed.first === now)) return open(index);
+    // A listing drawn after the second press: the item pressed is where the selection carried
+    // it. One drawn between the two presses had them land on different items, and opens neither.
+    if (pressed.first === pressed.key && soleRow() >= 0) open(soleRow());
   };
   const onItemContextMenu = (index: number, event: MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
-    // Right-clicking outside the selection acts on that one item instead.
-    if (!selection().has(index)) select(index);
+    const press = pressed?.button === 2 ? pressed : null;
+    pressed = null;
+    if (!press) {
+      // Not the release of a press on an item (a menu asked for some other way): the item it is on.
+      if (!selection().has(index)) select(index);
+    } else if (press.key !== contentKey() && selection().count === 0) {
+      // The press selected its item, which the listing drawn since doesn't have.
+      return;
+    }
     // Shift+right-click goes straight to the Windows menu, as in Explorer.
     if (event.shiftKey) props.onShellMenu(event.clientX, event.clientY, true, true);
     else void openMenu(event.clientX, event.clientY, true);
@@ -1550,6 +1642,9 @@ export function FileList(props: Props) {
         onContextMenu={(event) => {
           event.preventDefault();
           if (!isBackground(event.target)) return;
+          // The release of a right press on an item, which a shorter listing drawn meanwhile (or
+          // the pointer moving off) left over empty space: the menu is still that item's.
+          if (pressed?.button === 2) return onItemContextMenu(pressed.index, event);
           setSelection(Selection.empty);
           // Shift+right-click goes straight to the Windows menu, as in Explorer. Search results
           // have no folder of their own, so they keep Kestrel's.
