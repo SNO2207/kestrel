@@ -240,7 +240,8 @@ export function FileList(props: Props) {
     const listing = shownListing();
     return described() !== null && listing !== null && listing.set !== resorted() && !props.filter?.trim();
   };
-  const headerSort = (): SortSpec => (ranked() ? { key: "relevance" as SortKey, desc: false } : shown().sort);
+  // The arrow follows the sort asked for at once, as the rows follow it once they arrive.
+  const headerSort = (): SortSpec => (ranked() ? { key: "relevance" as SortKey, desc: false } : props.sort);
   const sortBy = (key: SortKey) => {
     setResorted(shownListing()?.set ?? null);
     props.onSort(key);
