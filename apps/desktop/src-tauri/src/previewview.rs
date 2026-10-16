@@ -21,7 +21,8 @@ use serde::Deserialize;
 use tauri::webview::NewWindowResponse;
 use tauri::{LogicalPosition, LogicalSize, Manager, Runtime, Url, Webview, WebviewBuilder, WebviewUrl, Window};
 
-/// The preview webview's label. Capabilities and `preview::guard` grant nothing to it.
+/// The first window's preview webview's label. Capabilities and `preview::guard` grant nothing
+/// to it, nor to the other windows' (`preview-2` in `main-2`; see `parity::appwindows`).
 pub const LABEL: &str = "preview";
 /// The page the webview rests on while nothing is previewed.
 const BLANK: &str = "about:blank";
@@ -41,8 +42,31 @@ pub struct Placement {
     pub visible: bool,
 }
 
-/// The URL the webview was last sent to; navigating again to the same one would restart it.
-static SHOWN: Mutex<Option<String>> = Mutex::new(None);
+/// The URL each window's webview was last sent to, by the webview's label; navigating again
+/// to the same one would restart it.
+static SHOWN: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// What the preview webview called `label` shows, as last sent.
+fn shown(label: &str) -> Option<String> {
+    SHOWN.lock().iter().find(|(webview, _)| webview == label).map(|(_, url)| url.clone())
+}
+
+fn set_shown(label: &str, url: &str) {
+    let mut shown = SHOWN.lock();
+    shown.retain(|(webview, _)| webview != label);
+    shown.push((label.to_owned(), url.to_owned()));
+}
+
+/// Forgets what the preview webview of the window `window` showed, once the window is gone.
+pub fn forget(window: &str) {
+    let label = crate::parity::appwindows::preview_label(window);
+    SHOWN.lock().retain(|(webview, _)| *webview != label);
+}
+
+/// The label of the preview webview inside `window`.
+fn label_of<R: Runtime>(window: &Window<R>) -> String {
+    crate::parity::appwindows::preview_label(window.label())
+}
 /// Placements are applied one at a time, so two can never both create the webview.
 static APPLYING: Mutex<()> = Mutex::new(());
 
@@ -59,11 +83,12 @@ fn checked(url: &str) -> Result<Url, String> {
 
 /// The preview webview, made in `window` if it does not exist yet.
 fn ensure<R: Runtime>(window: &Window<R>, at: &Placement) -> Result<Webview<R>, String> {
-    if let Some(webview) = window.app_handle().get_webview(LABEL) {
+    let label = label_of(window);
+    if let Some(webview) = window.app_handle().get_webview(&label) {
         return Ok(webview);
     }
     let blank = Url::parse(BLANK).map_err(|e| e.to_string())?;
-    let builder = WebviewBuilder::new(LABEL, WebviewUrl::External(blank))
+    let builder = WebviewBuilder::new(&label, WebviewUrl::External(blank))
         // Clicking into a preview should not be the only way back to the list's keys; the
         // webview takes the focus only when the user clicks into it.
         .focused(false)
@@ -75,21 +100,21 @@ fn ensure<R: Runtime>(window: &Window<R>, at: &Placement) -> Result<Webview<R>, 
     let webview = window
         .add_child(builder, LogicalPosition::new(at.x, at.y), LogicalSize::new(at.width.max(1.0), at.height.max(1.0)))
         .map_err(|e| format!("Couldn't make the preview's view: {e}"))?;
-    *SHOWN.lock() = Some(BLANK.to_owned());
+    set_shown(&label, BLANK);
     Ok(webview)
 }
 
-/// Shows `placement` in the preview webview, or with `None` empties and hides it.
+/// Shows `placement` in the preview webview of `window`, or with `None` empties and hides it.
 pub fn apply<R: Runtime>(window: &Window<R>, placement: Option<Placement>) -> Result<(), String> {
     let _one_at_a_time = APPLYING.lock();
+    let label = label_of(window);
     let Some(at) = placement else {
-        if let Some(webview) = window.app_handle().get_webview(LABEL) {
+        if let Some(webview) = window.app_handle().get_webview(&label) {
             let _ = webview.hide();
-            let mut shown = SHOWN.lock();
-            if shown.as_deref() != Some(BLANK) {
+            if shown(&label).as_deref() != Some(BLANK) {
                 // Stops a video or sound that was playing, and lets go of the file.
                 webview.navigate(checked(BLANK)?).map_err(|e| e.to_string())?;
-                *shown = Some(BLANK.to_owned());
+                set_shown(&label, BLANK);
             }
         }
         return Ok(());
@@ -100,12 +125,9 @@ pub fn apply<R: Runtime>(window: &Window<R>, placement: Option<Placement>) -> Re
         .set_position(LogicalPosition::new(at.x, at.y))
         .and_then(|()| webview.set_size(LogicalSize::new(at.width.max(1.0), at.height.max(1.0))))
         .map_err(|e| e.to_string())?;
-    {
-        let mut shown = SHOWN.lock();
-        if shown.as_deref() != Some(at.url.as_str()) {
-            webview.navigate(url).map_err(|e| e.to_string())?;
-            *shown = Some(at.url.clone());
-        }
+    if shown(&label).as_deref() != Some(at.url.as_str()) {
+        webview.navigate(url).map_err(|e| e.to_string())?;
+        set_shown(&label, &at.url);
     }
     if at.visible { webview.show() } else { webview.hide() }.map_err(|e| e.to_string())
 }
@@ -130,7 +152,8 @@ pub fn preview_surface_return_focus(window: Window) -> Result<(), String> {
     if foreground != ours {
         return Ok(());
     }
-    let page = window.app_handle().get_webview(crate::preview::APP_WEBVIEW).ok_or("The app's page is gone")?;
+    // The window's own page: a window and its page's webview share a label.
+    let page = window.app_handle().get_webview(window.label()).ok_or("The app's page is gone")?;
     page.set_focus().map_err(|e| e.to_string())
 }
 

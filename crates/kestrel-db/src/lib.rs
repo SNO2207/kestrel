@@ -16,6 +16,7 @@ use serde::de::DeserializeOwned;
 pub use rusqlite;
 
 pub mod palette;
+pub mod parity;
 pub mod projects;
 pub mod shortcuts;
 pub mod undo;
@@ -28,7 +29,7 @@ pub struct Migration {
 
 /// Every migration, from every feature. Order here does not matter; names decide.
 pub const MIGRATIONS: &[&[Migration]] =
-    &[SETTINGS, undo::MIGRATIONS, shortcuts::MIGRATIONS, projects::MIGRATIONS, palette::MIGRATIONS];
+    &[SETTINGS, undo::MIGRATIONS, shortcuts::MIGRATIONS, projects::MIGRATIONS, palette::MIGRATIONS, parity::MIGRATIONS];
 
 const SETTINGS: &[Migration] = &[Migration {
     name: "2026_10_15_core_settings",
@@ -95,6 +96,8 @@ impl Db {
 
     fn prepare(mut connection: Connection) -> Result<Self> {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Functions the migrations may call, such as Unicode case folding.
+        parity::register_functions(&connection)?;
         migrate(&mut connection, MIGRATIONS)?;
         Ok(Self { connection: Mutex::new(connection) })
     }

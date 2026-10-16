@@ -74,6 +74,15 @@ Done and verified:
   and the pins, frequent folders, saved searches and workspaces (`shortcuts/provider.rs`,
   front-end halves in `lib/paletteFeatures.ts`).
 
+- **Explorer parity** (`src-tauri/src/parity/`, `kestrel_db::parity`, `parity.ts`,
+  `CommandBar.tsx`, `HomeView.tsx`, `DetailsPane.tsx`, `FolderOptions.tsx`, `ParityLayer.tsx`,
+  `parity.css`; checklist in `docs/explorer-parity.md`, tests in `e2e/parity.mjs`): the
+  command bar, New > every `ShellNew` type and New > Shortcut, Home (Quick access, Favorites,
+  Recent), the details pane (Alt+Shift+P), more windows (Ctrl+N), Alt+drop shortcuts, Folder
+  Options (protected files, single-click, full path, sync status glyphs), Open in Terminal,
+  Open file location, and Explorer's remaining shortcuts. Folder visits are recorded once
+  (`frecency_visit`) and the palette reads them (`kestrel_db::palette::recent`).
+
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette. Every unit test and all 16 e2e suites pass there
 in a dev build, and the ten that need no development hook (smoke, fileops, live-index, views,
@@ -81,8 +90,8 @@ undo, batchrename, locked, preview, shellmenu, undo-restart) in a release build 
 `integration.mjs` and `connections.mjs` cover where the features meet.
 
 Not done yet: an installer (bundling is off; the helper would then need a Tauri sidecar entry,
-see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and shortcuts on drop
-(Alt).
+see README), Explorer's Content view (Ctrl+Shift+7) and marquee selection; what else Explorer
+does that Kestrel does not is listed in `docs/explorer-parity.md`.
 
 ## How the app fits together
 
@@ -115,6 +124,14 @@ see README), Explorer's Content view (Ctrl+Shift+7), marquee selection and short
   `FileList.tsx` draws details rows itself and every other view's items through `ViewItem.tsx`;
   both share one set of item mouse handlers (`onItemMouseDown` and friends), so a change to
   how items respond to the mouse is made once and holds in every view.
+- More than one app window (Ctrl+N; `src-tauri/src/parity/appwindows.rs`): `main`, then
+  `main-2`, `main-3`... in the same process, each page with its label in its address
+  (`index.html?window=main-2`). Each window has its own preview webview (`preview`,
+  `preview-2`), folder watch (`Watcher::watch_for`) and drag hook; `preview::guard`,
+  capabilities (`main-*`) and `navigation.rs` admit them by `is_app_window`/`is_preview_label`.
+  The quick launcher, the tray and a second launch bring forward the window used last
+  (`appwindows::target`); Kestrel exits when the last app window closes. Home is a place a tab
+  can be (`lib/home.ts`, address "Home"; `HomeView` stands in for the file list).
 - `src-tauri/src/projects/`: `discover.rs` finds project roots in the index (marker files,
   excluded locations), `facts.rs` walks a project's part of the index (sizes, languages,
   activity, and a fingerprint of what git would see), `git.rs` runs git read-only with a
@@ -298,6 +315,16 @@ Git:
 - One process per data folder (`instance.rs`): a second launch of a slot's `kestrel.exe` asks
   the running one to show its window and exits. Stop a slot before starting it again with a
   new build, or the old binary keeps running.
+- Never take `main` to be the app window: there can be several (`parity::appwindows`). Look
+  one up with `appwindows::target` (the one used last) or `app_windows`; a command acts on the
+  `Window` it was called from. Tauri's JS `listen(event)` without a target receives events
+  emitted to *any* window, so an event meant for one window is sent with `emitTo(label, ...)`
+  and listened for with `{ target: getCurrentWindow().label }` (`paletteApi.onRun`). The e2e
+  harness's `connectToKestrel()` returns `main`; `waitForKestrelWindow` finds the others.
+- The live index releases its lock between reading folders and placing the new files it found
+  (`live.rs`), so a folder opened meanwhile may add the same files first: `Sync::finish`
+  updates an entry of the same name instead of adding a second (files made in quick succession
+  were once listed twice).
 - Undo checks before acting that each item is still what the operation left: `undo_entries`
   stores a mark (file id, and for deletions a content fingerprint) per step. A file replaced by
   another program in the meantime is left alone rather than recycled.

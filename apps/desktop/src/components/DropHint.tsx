@@ -11,7 +11,7 @@ export function DropHint() {
     <Show when={dropHint()}>
       {(hint) => (
         <div class="drop-hint" role="status">
-          {hint().verb} to <strong>{hint().name}</strong>
+          {hint().verb} {hint().to ?? "to"} <strong>{hint().name}</strong>
         </div>
       )}
     </Show>

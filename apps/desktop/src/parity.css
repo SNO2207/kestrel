@@ -1,0 +1,489 @@
+/*
+ * Explorer parity: the command bar, Home, the details pane, sync status glyphs, Folder
+ * Options and the New shortcut dialog. Loaded after styles.css, whose tokens it uses; the
+ * one colour borrowed is the tag swatches' green (shortcuts.css), for the sync checks.
+ */
+
+/* ---------- layout: the command bar is a row of its own under the address bar ---------- */
+
+.app {
+  grid-template-rows: 38px 44px 40px minmax(0, 1fr) 26px;
+  grid-template-areas:
+    "title title"
+    "tools tools"
+    "commands commands"
+    "side main"
+    "status status";
+}
+
+/* ---------- command bar ---------- */
+
+.commandbar {
+  grid-area: commands;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.command {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 32px;
+  height: 30px;
+  padding: 0 7px;
+  border-radius: var(--radius);
+  color: var(--text);
+}
+
+.command.with-text {
+  padding: 0 10px 0 8px;
+}
+
+.command:hover:not(:disabled),
+.command.open {
+  background: var(--raised);
+}
+
+.command:disabled {
+  color: var(--faint);
+}
+
+.command .icon + .icon {
+  margin-left: -2px;
+  color: var(--muted);
+}
+
+.command-gap {
+  flex: none;
+  width: 1px;
+  height: 20px;
+  margin: 0 6px;
+  background: var(--line);
+}
+
+.command-spacer {
+  flex: 1;
+}
+
+.details-toggle.on {
+  color: var(--accent);
+}
+
+/* Icons in menus, such as the New menu's file types. */
+.menu-icon {
+  flex: none;
+  /* Pulls the label in from the menu item's gap, which is sized for hints. */
+  margin-right: -20px;
+}
+
+/* ---------- sidebar: Home ---------- */
+
+/* Drawn like a place, but not one: it is no folder, and nothing can be dropped on it. */
+.home-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  text-align: left;
+  color: var(--muted);
+}
+
+.home-entry span {
+  color: var(--text);
+}
+
+.home-entry:hover {
+  background: var(--raised);
+}
+
+.home-entry.current {
+  background: var(--select);
+  color: var(--accent);
+}
+
+/* ---------- Home ---------- */
+
+.home {
+  height: 100%;
+  padding: 14px 18px 24px;
+  overflow-y: auto;
+  outline: 0;
+}
+
+.home-section + .home-section {
+  margin-top: 22px;
+}
+
+.home-section h2 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.home-section h2 .icon {
+  color: var(--muted);
+}
+
+.home-empty {
+  margin: 0;
+  padding: 10px 2px;
+  color: var(--faint);
+}
+
+.home-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: 6px;
+}
+
+.home-list {
+  display: grid;
+  --home-columns: minmax(200px, 2fr) 168px minmax(160px, 3fr);
+}
+
+.home-columns {
+  display: grid;
+  grid-template-columns: var(--home-columns);
+  gap: 12px;
+  padding: 0 10px 4px 38px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.home-item {
+  display: grid;
+  grid-template-columns: 16px var(--home-columns);
+  align-items: center;
+  gap: 12px;
+  height: var(--row);
+  padding: 0 10px;
+  border-radius: var(--radius);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+}
+
+.home-item.tile {
+  grid-template-columns: 48px minmax(0, 1fr);
+  height: 64px;
+  padding: 0 10px;
+}
+
+.home-item:hover {
+  background: var(--raised);
+}
+
+.home-item.selected {
+  background: var(--select);
+}
+
+.home:focus-visible .home-item.selected,
+.home:focus .home-item.selected {
+  outline-color: var(--select-line);
+}
+
+.home-item.missing .home-text,
+.home-item.missing .home-when,
+.home-item.missing .home-location {
+  opacity: 0.55;
+}
+
+.home-icon {
+  display: block;
+}
+
+.home-item.tile .home-icon {
+  width: 48px;
+  height: 48px;
+}
+
+.home-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.home-name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.home-name .label,
+.home-location,
+.home-when {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-name .label {
+  min-width: 0;
+}
+
+.home-when,
+.home-location {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.home-item.tile .home-name .label {
+  font-weight: 600;
+}
+
+/* ---------- details pane ---------- */
+
+.details-body {
+  height: 100%;
+  overflow-y: auto;
+}
+
+.details-empty {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+  color: var(--faint);
+}
+
+.details-empty p {
+  margin: 0;
+}
+
+.details-item {
+  display: grid;
+  justify-items: center;
+  padding: 22px 16px 16px;
+}
+
+.details-picture {
+  display: grid;
+  place-items: center;
+  width: 128px;
+  height: 128px;
+  margin-bottom: 12px;
+}
+
+.details-picture img {
+  max-width: 128px;
+  max-height: 128px;
+  object-fit: contain;
+}
+
+.details-picture img[src*="icon.localhost"] {
+  width: 64px;
+  height: 64px;
+}
+
+.details-picture.many {
+  color: var(--muted);
+}
+
+.details-name {
+  max-width: 100%;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.details-kind {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.details-failure {
+  margin: 10px 0 0;
+  color: var(--danger);
+  text-align: center;
+}
+
+.details-list {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 14px;
+  width: 100%;
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.details-line {
+  display: contents;
+}
+
+.details-list dt {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.details-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- sync status ---------- */
+
+.sync-glyph {
+  flex: none;
+}
+
+.sync-glyph.cloud {
+  color: var(--weight-folder);
+}
+
+.sync-glyph.local,
+.sync-glyph.pinned {
+  color: var(--tag-green, #5fb37a);
+}
+
+/* ---------- Folder Options ---------- */
+
+.options-dialog {
+  width: min(560px, 100%);
+}
+
+.options-body {
+  display: grid;
+  gap: 18px;
+  padding: 10px 20px 4px;
+  overflow-y: auto;
+}
+
+.options-body section {
+  display: grid;
+  gap: 9px;
+}
+
+.options-body h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.options-field {
+  grid-template-columns: auto minmax(0, 220px);
+  align-items: center;
+  justify-content: start;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.options-radios {
+  display: grid;
+  gap: 7px;
+}
+
+.options-check {
+  align-items: flex-start;
+}
+
+.options-check input {
+  margin-top: 2px;
+}
+
+.options-check > span {
+  display: grid;
+  gap: 2px;
+}
+
+.options-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.options-spacer {
+  flex: 1;
+}
+
+/* ---------- New shortcut ---------- */
+
+.shortcut-dialog {
+  width: min(560px, 100%);
+}
+
+.shortcut-where {
+  margin: 0;
+  padding: 0 20px;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.shortcut-fields {
+  display: grid;
+  gap: 12px;
+  padding: 14px 20px 4px;
+}
+
+.shortcut-problem {
+  margin: -4px 0 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+/* ---------- status bar ---------- */
+
+.selection-size {
+  color: var(--text);
+}
+
+.status-views {
+  display: flex;
+  gap: 2px;
+  margin-right: -6px;
+}
+
+.status-view {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 20px;
+  border-radius: 3px;
+  color: var(--muted);
+}
+
+.status-view:hover:not(:disabled) {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.status-view.on {
+  color: var(--accent);
+}
+
+/* ---------- single-click to open ---------- */
+
+/* Names underline under the pointer, as links do, when one click opens an item. */
+.filelist.single-click .row:hover .cell.name .label,
+.filelist.single-click .view-item:hover .label {
+  text-decoration: underline;
+  cursor: pointer;
+}

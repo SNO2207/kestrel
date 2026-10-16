@@ -450,8 +450,23 @@ try {
     assert.deepEqual(await labels(), ["system-folder", "plain.txt", "system-only.txt"]);
     assert(!(await item("system-only.txt").evaluate((el) => el.classList.contains("dimmed"))), "only hidden items are dimmed");
     await choose("Show hidden items");
+    await item("hidden.txt").waitFor();
+    // Hidden and system both stay out, as Explorer's "Hide protected operating system files"
+    // (on by default) keeps them, until that Folder Option is turned off.
+    assert.deepEqual(await labels(), ["system-folder", "hidden.txt", "plain.txt", "system-only.txt"]);
+    const hideProtected = async (on) => {
+      await page.locator('.commandbar .command[aria-label="More"]').click();
+      await page.locator(".menu .menu-item").filter({ has: page.locator(".menu-label", { hasText: /^Options$/ }) }).click();
+      const box = page.locator(".options-dialog .options-check", { hasText: "Hide protected operating system files" }).locator("input");
+      await (on ? box.check() : box.uncheck());
+      await page.locator(".options-dialog button", { hasText: "Done" }).click();
+      await page.locator(".options-dialog").waitFor({ state: "detached" });
+    };
+    await hideProtected(false);
     await item("protected.txt").waitFor();
     assert.deepEqual(await labels(), ["system-folder", "hidden.txt", "plain.txt", "protected.txt", "system-only.txt"]);
+    await hideProtected(true);
+    await item("protected.txt").waitFor({ state: "detached" });
     await choose("Show hidden items");
     await item("hidden.txt").waitFor({ state: "detached" });
     await shot("system-items");

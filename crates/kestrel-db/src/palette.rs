@@ -82,8 +82,56 @@ pub fn record(db: &Db, item: &Use, now: i64) -> Result<()> {
     })
 }
 
-/// Every remembered item, most recently used first.
+/// Every remembered item, most recently used first: what was chosen from the palette, and the
+/// folders visited, which `shortcuts::frecency` records once for both (see `crate::parity`).
+/// A folder both chosen and visited is one item whose uses add up.
 pub fn recent(db: &Db) -> Result<Vec<Recent>> {
+    let mut rows = chosen(db)?;
+    let visits = db.with(|c| {
+        c.prepare("SELECT path, visits, last_visit FROM folder_visits")?
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })?;
+    let mut by_key: std::collections::HashMap<String, usize> =
+        rows.iter().enumerate().map(|(at, row)| (row.key.clone(), at)).collect();
+    for (path, visits, last_visit) in visits {
+        let key = key("files", &path);
+        let uses = u32::try_from(visits).unwrap_or(u32::MAX);
+        let last_used = last_visit.saturating_mul(1000);
+        match by_key.get(&key) {
+            Some(&at) => {
+                let row = &mut rows[at];
+                row.uses = row.uses.saturating_add(uses);
+                row.last_used = row.last_used.max(last_used);
+            }
+            None => {
+                by_key.insert(key.clone(), rows.len());
+                let (title, subtitle) = folder_title(&path);
+                let item = Use { provider: "files".into(), id: path.clone(), title, subtitle, path: Some(path), dir: true };
+                rows.push(Recent { key, item, uses, last_used });
+            }
+        }
+    }
+    rows.sort_by(|a, b| b.last_used.cmp(&a.last_used).then_with(|| a.key.cmp(&b.key)));
+    Ok(rows)
+}
+
+/// A folder's name and the folder holding it, as the palette's files provider titles them; a
+/// drive root is its own name.
+fn folder_title(path: &str) -> (String, Option<String>) {
+    let trimmed = path.trim_end_matches('\\');
+    match trimmed.rfind('\\') {
+        Some(at) => {
+            let parent = &trimmed[..at];
+            let parent = if parent.ends_with(':') { format!("{parent}\\") } else { parent.to_owned() };
+            (trimmed[at + 1..].to_owned(), Some(parent))
+        }
+        None => (path.to_owned(), None),
+    }
+}
+
+/// The items chosen from the palette, most recently used first.
+fn chosen(db: &Db) -> Result<Vec<Recent>> {
     db.with(|c| {
         let mut statement = c.prepare(
             "SELECT key, provider, item_id, title, subtitle, path, dir, uses, last_used

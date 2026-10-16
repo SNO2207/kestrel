@@ -1,7 +1,9 @@
 import { For, Show } from "solid-js";
 
 import { isDropPlace } from "../dragdrop";
-import { formatSize } from "../lib/format";
+import { baseName, formatSize } from "../lib/format";
+import { HomeEntry } from "./HomeEntry";
+import { ParityIcon } from "./ParityIcon";
 import { activeTab, navigate, openTab, places } from "../state";
 import { closeProjects, projectsOpen, toggleProjects } from "../projects";
 import { Icon, hasIcon } from "./Icon";
@@ -23,6 +25,7 @@ export function Sidebar() {
   return (
     <nav class="sidebar" aria-label="Places">
       <section>
+        <HomeEntry />
         <button
           class="projects-entry"
           classList={{ current: projectsOpen() }}
@@ -43,12 +46,14 @@ export function Sidebar() {
             class="place"
             classList={{ current: current() === places().home.toLowerCase(), "drop-target": isDropPlace(places().home) }}
             data-place={places().home}
-            data-place-name="Home"
+            data-place-name={baseName(places().home) || "Home"}
+            title={places().home}
             onClick={[open, places().home]}
             onAuxClick={[open, places().home]}
           >
-            <Icon name="home" />
-            <span>Home</span>
+            {/* Your user folder, named as Explorer names it; Home is Explorer's start page. */}
+            <ParityIcon name="person" />
+            <span>{baseName(places().home) || "Home"}</span>
           </button>
         </Show>
         <For each={places().folders}>

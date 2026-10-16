@@ -8,6 +8,7 @@ import { displayName, type ViewMode } from "../lib/views";
 import type { GitBadge } from "../lib/projectsApi";
 import { GitGlyph } from "./GitGlyph";
 import { LockGlyph } from "./LockGlyph";
+import { SyncGlyph } from "./SyncGlyph";
 import { TagDots } from "./TagDots";
 
 /** One file or folder in the icon, list or tile views. Details rows are drawn by the list. */
@@ -110,6 +111,7 @@ export function ViewItem(props: {
                       <LockGlyph />
                     </Show>
                     <Show when={props.git?.change}>{(change) => <GitGlyph change={change()} dir={row().dir} />}</Show>
+                    <SyncGlyph row={row()} />
                     <TagDots path={row().path} />
                   </span>
                 }

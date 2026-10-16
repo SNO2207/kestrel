@@ -1,14 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Window controls for the custom title bar. Granted to the app's own webview only: the preview's webview, in the same window, gets no capability at all",
-  "webviews": ["main"],
+  "description": "Window controls for the custom title bar. Granted to the app's own webviews only (`main`, and `main-2`... for the windows Ctrl+N opens): the preview's webviews, in the same windows, get no capability at all",
+  "webviews": ["main", "main-*"],
   "permissions": [
     "core:default",
     "core:window:allow-close",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen"
   ]
 }

@@ -4,7 +4,7 @@ import { paletteProvider, registerPaletteProvider, rememberChoice, type OpenMode
 import { actionsProvider } from "../lib/paletteActions";
 import { featureProviders } from "../lib/paletteFeatures";
 import { paletteApi } from "../lib/paletteApi";
-import { filesProvider, rememberVisits } from "../lib/paletteFiles";
+import { filesProvider } from "../lib/paletteFiles";
 import { notify } from "../state";
 import { CommandPalette } from "./CommandPalette";
 import type { ListCommand } from "./FileList";
@@ -46,7 +46,6 @@ export function PaletteOverlay(props: { runCommand: (command: ListCommand) => vo
   onMount(() => {
     const host = { runCommand: props.runCommand, focusList: props.focusList, openSettings: openLauncherSettings };
     const removers = [actionsProvider(host), filesProvider, ...featureProviders()].map(registerPaletteProvider);
-    rememberVisits();
     // Captured, so the shortcut works from any field, menu or dialog.
     const onKeyDown = (event: KeyboardEvent) => {
       // A field recording a shortcut (the launcher settings) takes Ctrl+K as keys to record.

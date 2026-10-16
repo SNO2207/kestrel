@@ -4,6 +4,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /** Something the palette can show and the user can choose. Mirrors `palette::Item`. */
 export interface PaletteItem {
@@ -97,14 +98,21 @@ export const paletteApi = {
   setKeepInTray: (keep: boolean) => invoke<void>("set_keep_in_tray", { keep }),
   /** Resolves to whether the sign-in entry exists afterwards. */
   setStartWithWindows: (start: boolean) => invoke<boolean>("set_start_with_windows", { start }),
-  showMainWindow: () => invoke<void>("show_main_window"),
+  /** Brings the app window used last forward; resolves to its label. */
+  showMainWindow: () => invoke<string | null>("show_main_window"),
   hideQuickWindow: () => invoke<void>("hide_quick_window"),
   quit: () => invoke<void>("quit_app"),
 
-  /** From the quick launcher: has the main window carry out a choice. */
-  runInMain: (run: PaletteRun) => emitTo("main", PALETTE_RUN, run),
+  /**
+   * From the quick launcher: has an app window carry out a choice; `window` is its label, the
+   * one `showMainWindow` brought forward (`main` unless Ctrl+N opened others).
+   */
+  runInMain: (run: PaletteRun, window = "main") => emitTo(window, PALETTE_RUN, run),
+  /** Choices handed to this window, and to no other. */
   onRun: (handler: (run: PaletteRun) => void): Promise<UnlistenFn> =>
-    listen<PaletteRun>(PALETTE_RUN, (event) => handler(event.payload)),
+    listen<PaletteRun>(PALETTE_RUN, (event) => handler(event.payload), { target: getCurrentWindow().label }),
   onShown: (handler: () => void): Promise<UnlistenFn> => listen(LAUNCHER_SHOWN, () => handler()),
-  onOpenSettings: (handler: () => void): Promise<UnlistenFn> => listen(LAUNCHER_SETTINGS, () => handler()),
+  /** The tray's settings item, sent to the window it brought forward. */
+  onOpenSettings: (handler: () => void): Promise<UnlistenFn> =>
+    listen(LAUNCHER_SETTINGS, () => handler(), { target: getCurrentWindow().label }),
 };

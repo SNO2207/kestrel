@@ -111,21 +111,44 @@ impl Sync {
                 missing_by_id.entry(index.file_id(id)).or_default().push(id);
             }
         }
+        // The names in each folder new files go into, read when first needed. A batch whose
+        // caller released the lock between listings (the live index does, while it reads the
+        // disk) may find that another reconciliation, such as a folder being opened, added the
+        // same file meanwhile; adding it again would list it twice.
+        let mut present: HashMap<EntryId, HashMap<Vec<u8>, EntryId>> = HashMap::new();
         for (dir, item) in std::mem::take(&mut self.pending) {
+            let key = fold(&item.name).into_bytes();
+            if !index.is_deleted(dir) {
+                let names = present
+                    .entry(dir)
+                    .or_insert_with(|| index.children(dir).map(|child| (index.lower_bytes(child).to_vec(), child)).collect());
+                if let Some(&existing) = names.get(&key)
+                    && !index.is_deleted(existing)
+                    && index.is_dir(existing) == is_dir(&item)
+                {
+                    index.update_meta(existing, item.meta);
+                    self.stats.updated += 1;
+                    continue;
+                }
+            }
             let moved_from = missing_by_id.get_mut(&item.meta.file_id).and_then(|ids| {
                 let at = ids.iter().position(|&id| !index.is_deleted(id) && index.is_dir(id) == is_dir(&item))?;
                 Some(ids.swap_remove(at))
             });
-            match moved_from {
+            let placed = match moved_from {
                 Some(old) => {
                     let moved = index.rename(old, dir, &item.name);
                     index.update_meta(moved, item.meta);
                     self.stats.moved += 1;
+                    moved
                 }
                 None => {
-                    index.insert(dir, &item.name, item.meta);
                     self.stats.inserted += 1;
+                    index.insert(dir, &item.name, item.meta)
                 }
+            };
+            if let Some(names) = present.get_mut(&dir) {
+                names.insert(key, placed);
             }
         }
         for id in self.missing {
@@ -234,6 +257,24 @@ mod tests {
         assert_eq!((stats.inserted, stats.moved), (1, 0));
         assert!(index.lookup(r"C:\a\deep\x.txt").is_some());
         assert_eq!(index.entries_with_file_id(21).len(), 2);
+    }
+
+    /// The live index releases the lock between reading folders and placing new files; a
+    /// folder opened meanwhile adds the same new files, which must then not be added twice.
+    #[test]
+    fn a_new_file_another_batch_added_meanwhile_is_not_added_twice() {
+        let mut index = sample();
+        let b = index.lookup(r"C:\b").unwrap();
+        let mut slow = Sync::default();
+        slow.dir(&mut index, b, vec![file("new.txt", 7, 30), file("Other.txt", 2, 31)]);
+        let mut quick = Sync::default();
+        quick.dir(&mut index, b, vec![file("NEW.txt", 7, 30)]);
+        assert_eq!(quick.finish(&mut index).inserted, 1);
+        let stats = slow.finish(&mut index);
+        assert_eq!((stats.inserted, stats.updated), (1, 1));
+        assert_eq!(children(&index, r"C:\b"), ["NEW.txt", "Other.txt"]);
+        assert_eq!(index.entries_with_file_id(30).len(), 1);
+        assert_eq!(index.size(index.lookup(r"C:\b").unwrap()), 9);
     }
 
     #[test]

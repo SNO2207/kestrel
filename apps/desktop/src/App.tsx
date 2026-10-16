@@ -4,6 +4,12 @@ import { api, type Row } from "./lib/api";
 import { locationKey, setViewMode, shortcutView } from "./lib/views";
 import { LOCKED_MESSAGE, isLocked, recheckAccess } from "./lib/access";
 import { BatchRenameDialog, openBatchRename } from "./components/BatchRename";
+import { CommandBar } from "./components/CommandBar";
+import { DetailsPane } from "./components/DetailsPane";
+import { HomeView } from "./components/HomeView";
+import { ParityLayer } from "./components/ParityLayer";
+import { showsHome } from "./lib/home";
+import { registerSelector } from "./lib/selectionOps";
 import { isDropFolder, listenForDrops } from "./dragdrop";
 import { DropHint } from "./components/DropHint";
 import { FileList, type ListCommand } from "./components/FileList";
@@ -112,7 +118,8 @@ export function App() {
     if (event.altKey && key === "arrowright") return handled(), goForward(tab.id);
     if (event.altKey && key === "arrowup") return handled(), goUp(tab.id);
     if ((event.altKey && key === "d") || (event.ctrlKey && key === "l")) return handled(), focusTargets.address?.();
-    if ((event.ctrlKey && (key === "f" || key === "e")) || key === "f3") return handled(), focusTargets.search?.();
+    // Ctrl+Shift+E is the folder tree's (see ParityLayer), not the search box's.
+    if ((event.ctrlKey && !event.shiftKey && (key === "f" || key === "e")) || key === "f3") return handled(), focusTargets.search?.();
     if (event.ctrlKey && key === "t") return handled(), openTab();
     if (event.ctrlKey && key === "w") return handled(), closeTab(tab.id);
     if (event.ctrlKey && key === "tab") return handled(), cycleTab(event.shiftKey ? -1 : 1);
@@ -146,11 +153,25 @@ export function App() {
     <div class="app">
       <TitleBar />
       <Toolbar focusList={focusList} />
+      <CommandBar runCommand={(command) => runCommand(activeId(), command)} focusList={focusList} />
       <Sidebar />
       <main class="content">
         <For each={tabs}>
           {(tab) => (
             <div class="tab-panel" classList={{ active: tab.id === activeId(), "drop-target": isDropFolder(tab.id) }}>
+              <Show
+                when={!showsHome(tab)}
+                fallback={
+                  <HomeView
+                    tabId={tab.id}
+                    focusRef={(focus) => {
+                      listFocus.set(tab.id, focus);
+                      onCleanup(() => listFocus.get(tab.id) === focus && listFocus.delete(tab.id));
+                    }}
+                  />
+                }
+              >
+              {/* Not indented under the Show, so other branches' changes to these props merge cleanly. */}
               <FileList
                 listing={tab.listing}
                 revision={tab.revision}
@@ -174,11 +195,14 @@ export function App() {
                 }}
                 onFocusRow={(row) => setFocusedRow(tab.id, row)}
                 stepRef={(step) => onCleanup(registerStepper(tab.id, step))}
+                selectRef={(control) => onCleanup(registerSelector(tab.id, control))}
               />
+              </Show>
             </div>
           )}
         </For>
         <PreviewPane />
+        <DetailsPane />
         <ProjectsHub />
         <DropHint />
         <Show when={notice()}>
@@ -194,6 +218,7 @@ export function App() {
       <BatchRenameDialog onClose={focusList} />
       <QuickLook focusList={focusList} />
       <ShortcutsLayer focusList={focusList} />
+      <ParityLayer focusList={focusList} />
       <PaletteOverlay runCommand={(command) => runCommand(activeId(), command)} focusList={focusList} />
       <LauncherSettingsDialog onClose={focusList} />
     </div>

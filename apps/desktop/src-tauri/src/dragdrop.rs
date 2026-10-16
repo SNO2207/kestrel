@@ -32,7 +32,7 @@ use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFindLastID, ILFree, SHCreat
 use windows::core::{BOOL, HRESULT, HSTRING, implement};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
+    GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_LBUTTON, VK_MENU, VK_RBUTTON, VK_SHIFT,
 };
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -59,6 +59,9 @@ pub struct Keys {
     pub ctrl: bool,
     #[serde(default)]
     pub shift: bool,
+    /// Alt makes shortcuts, as in Explorer (`parity::links`).
+    #[serde(default)]
+    pub alt: bool,
 }
 
 impl Keys {
@@ -67,7 +70,13 @@ impl Keys {
     fn now() -> Self {
         // SAFETY: plain FFI calls; a negative result means the key is down.
         let down = |key: u16| unsafe { GetAsyncKeyState(i32::from(key)) } < 0;
-        Self { ctrl: down(VK_CONTROL), shift: down(VK_SHIFT) }
+        Self { ctrl: down(VK_CONTROL), shift: down(VK_SHIFT), alt: down(VK_MENU) }
+    }
+
+    /// Whether a drop with these keys makes shortcuts rather than copies or moves: Alt, or Ctrl
+    /// and Shift together, as in Explorer.
+    pub fn link(self) -> bool {
+        self.alt || (self.ctrl && self.shift)
     }
 }
 
@@ -92,8 +101,8 @@ pub fn volume(path: &str) -> Option<String> {
 
 /// Whether dropping `sources` on `destination` copies or moves them, by Explorer's rules: Ctrl
 /// copies and Shift moves; with neither, items move within a drive and are copied to another.
-/// Explorer makes shortcuts when both are held; Kestrel doesn't make shortcuts, and copying is
-/// the reading of that gesture that loses nothing.
+/// With both, or with Alt, the drop makes shortcuts instead ([`Keys::link`]), which is decided
+/// before this is asked; should it be asked, copying is the reading that loses nothing.
 pub fn transfer_kind(sources: &[String], destination: &str, keys: Keys) -> Transfer {
     if keys.ctrl {
         return Transfer::Copy;
@@ -186,6 +195,9 @@ impl Dropped {
 #[tauri::command(async)]
 pub fn drop_effect(paths: Vec<String>, destination: String, keys: Option<Keys>) -> &'static str {
     let keys = test_keys(keys).unwrap_or_else(Keys::now);
+    if keys.link() {
+        return if paths.is_empty() || !Path::new(&destination).is_dir() { "none" } else { "link" };
+    }
     plan(&paths, &destination, keys).map_or("none", |(kind, _)| effect_name(kind))
 }
 
@@ -201,6 +213,19 @@ pub fn drop_items(
     keys: Option<Keys>,
 ) -> Result<Dropped, String> {
     let keys = test_keys(keys).unwrap_or_else(keys_at_drop);
+    if keys.link() {
+        // Shortcuts to the items, wherever they are, even in the folder they are in.
+        let outcome = crate::parity::links::make_shortcuts(&paths, &destination)?;
+        journal.record(&outcome);
+        let names: Vec<String> = outcome
+            .results()
+            .filter_map(|done| match done {
+                Done::Created { path } => Some(fileops::file_name(path).to_owned()),
+                _ => None,
+            })
+            .collect();
+        return Ok(Dropped { effect: if names.is_empty() { "none" } else { "link" }, names });
+    }
     let Some((kind, sources)) = plan(&paths, &destination, keys) else { return Ok(Dropped::NOTHING) };
 
     let owner = window.hwnd().ok().map(|hwnd| hwnd.0 as isize);
@@ -488,10 +513,10 @@ mod tests {
     use windows::Win32::System::Ole::{CF_HDROP, ReleaseStgMedium};
     use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
-    const NONE: Keys = Keys { ctrl: false, shift: false };
-    const CTRL: Keys = Keys { ctrl: true, shift: false };
-    const SHIFT: Keys = Keys { ctrl: false, shift: true };
-    const BOTH: Keys = Keys { ctrl: true, shift: true };
+    const NONE: Keys = Keys { ctrl: false, shift: false, alt: false };
+    const CTRL: Keys = Keys { ctrl: true, shift: false, alt: false };
+    const SHIFT: Keys = Keys { ctrl: false, shift: true, alt: false };
+    const BOTH: Keys = Keys { ctrl: true, shift: true, alt: false };
 
     fn strings(paths: &[&str]) -> Vec<String> {
         paths.iter().map(|&path| path.to_owned()).collect()
@@ -656,5 +681,20 @@ mod tests {
         assert!(DROP_KEYS.lock().unwrap().is_none());
         *DROP_KEYS.lock().unwrap() = Some((Instant::now(), SHIFT));
         assert_eq!(keys_at_drop(), SHIFT);
+    }
+
+    #[test]
+    fn alt_or_ctrl_and_shift_make_shortcuts_as_in_explorer() {
+        let alt = Keys { alt: true, ..NONE };
+        assert!(alt.link() && BOTH.link() && Keys { alt: true, ..CTRL }.link());
+        assert!(!NONE.link() && !CTRL.link() && !SHIFT.link());
+        let dir = sandbox("links");
+        let file = dir.join("a.txt");
+        fs::write(&file, b"a").unwrap();
+        assert_eq!(drop_effect(vec![text(&file)], text(&dir), Some(alt)), "link");
+        assert_eq!(drop_effect(vec![text(&file)], text(&dir.join("missing")), Some(alt)), "none");
+        // Without Alt, a file already in the folder has nowhere to go.
+        assert_eq!(drop_effect(vec![text(&file)], text(&dir), Some(NONE)), "none");
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -43,7 +43,7 @@ impl Tray {
             .on_tray_icon_event(|tray, event| {
                 // A left click brings the window back, as the menu's first item does.
                 if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                    super::show_main(tray.app_handle());
+                    let _ = super::show_main(tray.app_handle());
                 }
             });
         if let Some(icon) = app.default_window_icon() {
@@ -70,7 +70,9 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
 /// Carries out a menu item, by id: what a click on it does.
 pub fn activate(app: &AppHandle, id: &str) {
     match id {
-        SHOW => super::show_main(app),
+        SHOW => {
+            let _ = super::show_main(app);
+        }
         QUICK => super::summon(app),
         KEEP => {
             let launcher = app.state::<Launcher>();
@@ -82,8 +84,9 @@ pub fn activate(app: &AppHandle, id: &str) {
             }
         }
         SETTINGS => {
-            super::show_main(app);
-            let _ = app.emit_to(MAIN, events::SETTINGS, ());
+            // To the window brought forward: the one used last, `main` until another opened.
+            let shown = super::show_main(app).unwrap_or_else(|| MAIN.to_owned());
+            let _ = app.emit_to(shown.as_str(), events::SETTINGS, ());
         }
         QUIT => super::quit(app),
         _ => {}

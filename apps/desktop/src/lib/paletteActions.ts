@@ -20,14 +20,28 @@ import {
   goForward,
   goUp,
   isSearch,
+  navigate,
   openTab,
   refresh,
+  selectedRows,
   setEverywhere,
   setSortSpec,
   startsDescending,
   tabs,
 } from "../state";
 import { redoLast, undoLast } from "../undo";
+import {
+  detailsOpen,
+  invertSelection,
+  openInTerminal,
+  openNewWindow,
+  revealInFolder,
+  selectNone,
+  setOptionsOpen,
+  toggleDetails,
+  toggleFullScreen,
+} from "../parity";
+import { HOME_PATH } from "./home";
 import { recheckAccess } from "./access";
 import type { SortKey } from "./api";
 import type { PaletteContext, PaletteHit, PaletteItem, PaletteProvider } from "./palette";
@@ -226,6 +240,44 @@ function actions(): Action[] {
       mainOnly: true,
       run: (host) => pressInList(host, "F10", { shiftKey: true }),
     },
+    // Explorer parity (parity.ts).
+    { id: "home", title: "Go to Home", icon: "home", keywords: "start page quick access favorites recent", run: withTab((id) => navigate(id, HOME_PATH)) },
+    { id: "new-window", title: "New window", hint: "Ctrl+N", keywords: "open another window", run: () => openNewWindow() },
+    {
+      id: "toggle-details",
+      title: detailsOpen() ? "Hide the details pane" : "Show the details pane",
+      hint: "Alt+Shift+P",
+      keywords: "toggle details pane properties info",
+      run: toggleDetails,
+    },
+    { id: "full-screen", title: "Full screen", hint: "F11", keywords: "maximize window", mainOnly: true, run: () => void toggleFullScreen() },
+    { id: "select-none", title: "Select none", selection: true, mainOnly: true, keywords: "deselect clear selection", run: withTab(selectNone) },
+    { id: "invert-selection", title: "Invert selection", mainOnly: true, keywords: "reverse selection", run: withTab(invertSelection) },
+    {
+      id: "open-terminal",
+      title: "Open in Terminal",
+      folder: true,
+      keywords: "console shell command prompt powershell windows terminal",
+      run: withTab((id) => {
+        const current = tabs.find((each) => each.id === id);
+        if (current) openInTerminal(current.path);
+      }),
+    },
+    {
+      id: "open-file-location",
+      title: "Open file location",
+      selection: true,
+      keywords: "show in folder reveal",
+      when: () => {
+        const current = activeTab();
+        return !!current && isSearch(current);
+      },
+      run: withTab(async (id) => {
+        const [row] = await selectedRows(id, 1);
+        if (row) revealInFolder(row.path);
+      }),
+    },
+    { id: "folder-options", title: "Folder options", keywords: "settings preferences hidden protected files single click full path sync", run: () => setOptionsOpen(true) },
     { id: "launcher-settings", title: "Quick launcher settings", keywords: "shortcut hotkey tray startup preferences options", run: (host) => host.openSettings() },
     { id: "show-kestrel", title: "Show Kestrel", keywords: "window open main", run: () => {} },
     { id: "quit", title: "Quit Kestrel", keywords: "exit close", run: () => void paletteApi.quit() },

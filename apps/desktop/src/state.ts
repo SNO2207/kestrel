@@ -14,6 +14,7 @@ import {
   type SortSpec,
 } from "./lib/api";
 import { parentPath } from "./lib/format";
+import { HOME_PATH, firstLocation, isHome } from "./lib/home";
 import { Selection } from "./lib/selection";
 import { SEARCH_LOCATION, folderKey, locationKey, recall, remember } from "./lib/views";
 
@@ -166,6 +167,7 @@ export function navigate(tabId: number, path: string, mode: NavigateMode = "push
   enqueue(tabId, async () => {
     const tab = find(tabId);
     if (!tab) return;
+    if (isHome(path)) return showHome(tabId, mode);
     try {
       // Re-listing the folder already on screen is a refresh, which keeps the selection.
       const refreshing = !isSearch(tab) && tab.listing !== null && samePath(path, tab.path);
@@ -194,12 +196,36 @@ export function navigate(tabId: number, path: string, mode: NavigateMode = "push
   });
 }
 
+/** Shows Home, Explorer's start page (`lib/home.ts`), which lists no folder. */
+function showHome(tabId: number, mode: NavigateMode) {
+  const previous = find(tabId)?.listing?.set;
+  patch(tabId, (tab) => {
+    if (mode === "push" && tab.history[tab.cursor] !== HOME_PATH) {
+      tab.history.splice(tab.cursor + 1);
+      tab.history.push(HOME_PATH);
+      tab.cursor = tab.history.length - 1;
+    }
+    tab.listing = null;
+    tab.path = HOME_PATH;
+    tab.query = "";
+    tab.error = null;
+    tab.failed = null;
+    tab.restore = null;
+    tab.pending = null;
+    tab.selected = 0;
+    tab.revision += 1;
+  });
+  selections.delete(tabId);
+  if (previous !== undefined) void api.releaseSet(previous);
+}
+
 function runSearch(tabId: number, keepSelection = false) {
   enqueue(tabId, async () => {
     const tab = find(tabId);
     if (!tab || tab.query.trim() === "") return;
     try {
-      const scope = everywhere() ? null : tab.path;
+      // Home is no folder to search beneath.
+      const scope = everywhere() || isHome(tab.path) ? null : tab.path;
       // Search results keep a sort of their own, separate from any folder's.
       const sort = { ...(recall(SEARCH_LOCATION).sort ?? DEFAULT_SORT) };
       const listing = await api.search(tab.query, scope, sort);
@@ -339,6 +365,10 @@ export const clearPending = (tabId: number) => patch(tabId, (tab) => void (tab.p
 export const selectWhenListed = (tabId: number, names: string[]) =>
   patch(tabId, (tab) => void (tab.pending = names.length > 0 ? { names, rename: false } : null));
 
+/** Selects the item called `name` once the tab's listing shows it, and starts renaming it. */
+export const renameWhenListed = (tabId: number, name: string) =>
+  patch(tabId, (tab) => void (tab.pending = { names: [name], rename: true }));
+
 // ---------- file operations ----------
 
 /** The selection of a tab that is showing rows, or `null` if nothing is selected. */
@@ -347,6 +377,12 @@ function selected(tabId: number) {
   const held = selections.get(tabId);
   if (!tab?.listing || !held || held.selection.count === 0) return null;
   return { tab, set: tab.listing.set, selection: held.selection, ranges: held.selection.ranges as RowRange[] };
+}
+
+/** The result set and ranges of the tab's selection, or `null` when nothing is selected. */
+export function selectionOf(tabId: number): { set: number; ranges: RowRange[] } | null {
+  const current = selected(tabId);
+  return current ? { set: current.set, ranges: current.ranges } : null;
 }
 
 /** Fetches the selected rows, lowest first, up to `limit`. */
@@ -386,7 +422,7 @@ export async function copySelection(tabId: number, cut: boolean) {
 
 export function paste(tabId: number) {
   const tab = find(tabId);
-  if (!tab || isSearch(tab)) return;
+  if (!tab || isSearch(tab) || isHome(tab.path)) return;
   void operate(tabId, async () => {
     const names = await api.pasteItems(tab.path);
     if (names.length > 0) patch(tabId, (tab) => void (tab.pending = { names, rename: false }));
@@ -408,7 +444,7 @@ export function selectInFolder(folder: string, names: string[]) {
 /** Creates a folder here and starts renaming it, as Explorer does. */
 export function createFolder(tabId: number) {
   const tab = find(tabId);
-  if (!tab || isSearch(tab)) return;
+  if (!tab || isSearch(tab) || isHome(tab.path)) return;
   void operate(tabId, async () => {
     const name = await api.newFolder(tab.path);
     patch(tabId, (tab) => void (tab.pending = { names: [name], rename: true }));
@@ -535,5 +571,5 @@ export async function start() {
       if (!isSearch(tab) && !tab.renaming && samePath(tab.path, path)) refresh(tab.id);
     }
   });
-  openTab(initialPlaces.home);
+  openTab(await firstLocation(initialPlaces.home));
 }

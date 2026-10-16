@@ -19,7 +19,7 @@ use tauri::{Config, Manager, Runtime, Url};
 pub fn guard<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("navigation-guard")
         .on_navigation(|webview, url| {
-            let allowed = if webview.label() == crate::previewview::LABEL {
+            let allowed = if crate::parity::appwindows::is_preview_label(webview.label()) {
                 crate::previewview::allowed(url)
             } else {
                 homes(webview.config()).iter().any(|home| same_origin(url, home))

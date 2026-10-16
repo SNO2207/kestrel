@@ -1,7 +1,9 @@
 import { Show } from "solid-js";
 
 import { formatCount, formatDuration } from "../lib/format";
+import { showsHome } from "../lib/home";
 import { activeTab, isSearch, status } from "../state";
+import { SelectionSize, ViewSwitches } from "./StatusExtras";
 
 export function StatusBar() {
   const tab = activeTab;
@@ -14,11 +16,15 @@ export function StatusBar() {
 
   return (
     <footer class="statusbar">
-      <span>
-        {formatCount(count())} {noun()}
-      </span>
+      {/* Home lists no folder, so it has no count of items. */}
+      <Show when={!(tab() && showsHome(tab()!))}>
+        <span>
+          {formatCount(count())} {noun()}
+        </span>
+      </Show>
       <Show when={(tab()?.selected ?? 0) > 0}>
         <span>{formatCount(tab()!.selected)} selected</span>
+        <SelectionSize />
       </Show>
       <Show when={tab()?.listing}>
         {(listing) => (
@@ -34,6 +40,7 @@ export function StatusBar() {
           <Show when={status().refreshing}>, refreshing</Show>
         </Show>
       </span>
+      <ViewSwitches />
     </footer>
   );
 }

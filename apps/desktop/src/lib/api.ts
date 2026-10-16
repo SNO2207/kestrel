@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { showProtected } from "./folderOptions";
 import { showHidden } from "./views";
 
 export type SortKey = "name" | "size" | "modified" | "type";
@@ -40,6 +41,8 @@ export interface Row {
   mtime: number;
   ext: string;
   hidden: boolean;
+  /** The file attributes, such as a cloud file's sync state (`lib/syncStatus.ts`). */
+  attrs: number;
 }
 
 export interface IndexStatus {
@@ -146,6 +149,8 @@ export interface PreviewDetails {
 export interface DropKeys {
   ctrl: boolean;
   shift: boolean;
+  /** Makes shortcuts, as in Explorer. */
+  alt?: boolean;
 }
 
 export type DropEffect = "copy" | "move" | "link" | "none";
@@ -181,9 +186,9 @@ export const api = {
    * included only when `hidden` is true, which defaults to the "Show hidden items" option.
    */
   listDir: (path: string, sort: SortSpec, watch: boolean, hidden: boolean = showHidden()) =>
-    invoke<Listing>("list_dir", { path, sort, watch, showHidden: hidden }),
+    invoke<Listing>("list_dir", { path, sort, watch, showHidden: hidden, showProtected: showProtected() }),
   search: (query: string, scope: string | null, sort: SortSpec, hidden: boolean = showHidden()) =>
-    invoke<Listing>("search", { query, scope, sort, showHidden: hidden }),
+    invoke<Listing>("search", { query, scope, sort, showHidden: hidden, showProtected: showProtected() }),
   /** Maps a selection from one result set to another that shows the same files. */
   carryMarks: (from: number, to: number, marks: Marks) => invoke<Marks>("carry_marks", { from, to, marks }),
   /** Frees a result set. Call only once the UI shows something else. */

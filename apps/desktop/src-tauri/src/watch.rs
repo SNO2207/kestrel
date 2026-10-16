@@ -1,6 +1,7 @@
 //! Watches the folder on screen and reports when its contents change, so the view refreshes
 //! by itself after a download finishes or another program creates a file.
 
+use std::collections::HashMap;
 use std::mem::zeroed;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,28 +42,48 @@ impl Drop for Watch {
     }
 }
 
-/// Watches one folder at a time.
+/// Watches one folder at a time for each owner: each of the app's windows watches the folder
+/// its tab on screen shows (`parity::appwindows`).
 #[derive(Default)]
 pub struct Watcher {
-    current: Mutex<Option<(String, Arc<Watch>)>>,
+    current: Mutex<HashMap<String, (String, Arc<Watch>)>>,
+}
+
+/// Stops a watch: its thread ends once its pending read is cancelled.
+fn stop(old: &Watch) {
+    old.stopped.store(true, Ordering::Relaxed);
+    // SAFETY: the caller's reference keeps the handle open; this completes its thread's
+    // pending read.
+    unsafe { CancelIoEx(old.handle, null_mut()) };
 }
 
 impl Watcher {
-    /// Starts watching `path`, replacing any previous watch. `changed` is called with the path
-    /// after each burst of changes.
+    /// [`Watcher::watch_for`] for the first window, `main`.
+    #[allow(dead_code)]
+    pub fn watch(&self, path: &str, changed: impl Fn(&str) + Send + 'static) {
+        self.watch_for("main", path, changed);
+    }
+
+    /// Stops the watch `owner` holds, as when its window closes.
+    pub fn forget(&self, owner: &str) {
+        if let Some((_, old)) = self.current.lock().remove(owner) {
+            stop(&old);
+        }
+    }
+
+    /// Starts watching `path` for `owner`, replacing the owner's previous watch. `changed` is
+    /// called with the path after each burst of changes.
     ///
     /// The watch is armed before this returns: a change made at any point afterwards is
     /// reported. Callers therefore start watching first and read the folder second, so that
     /// nothing can change unnoticed in between.
-    pub fn watch(&self, path: &str, changed: impl Fn(&str) + Send + 'static) {
-        let mut current = self.current.lock();
-        if current.as_ref().is_some_and(|(watched, _)| watched.eq_ignore_ascii_case(path)) {
+    pub fn watch_for(&self, owner: &str, path: &str, changed: impl Fn(&str) + Send + 'static) {
+        let mut all = self.current.lock();
+        if all.get(owner).is_some_and(|(watched, _)| watched.eq_ignore_ascii_case(path)) {
             return;
         }
-        if let Some((_, old)) = current.take() {
-            old.stopped.store(true, Ordering::Relaxed);
-            // SAFETY: `old` keeps the handle open; this completes its thread's pending read.
-            unsafe { CancelIoEx(old.handle, null_mut()) };
+        if let Some((_, old)) = all.remove(owner) {
+            stop(&old);
         }
 
         let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
@@ -82,7 +103,7 @@ impl Watcher {
             return;
         }
         let watch = Arc::new(Watch { handle, stopped: AtomicBool::new(false) });
-        *current = Some((path.to_owned(), watch.clone()));
+        all.insert(owner.to_owned(), (path.to_owned(), watch.clone()));
 
         let path = path.to_owned();
         let (armed, wait_for_armed) = mpsc::channel();
@@ -185,6 +206,28 @@ mod tests {
         fs::write(second.join("seen.txt"), b"x").unwrap();
         assert_eq!(receiver.recv_timeout(Duration::from_secs(5)).unwrap(), second_path);
         assert!(receiver.recv_timeout(Duration::from_millis(500)).is_err(), "the first folder is no longer watched");
+        fs::remove_dir_all(&first).unwrap();
+        fs::remove_dir_all(&second).unwrap();
+    }
+
+    #[test]
+    fn each_window_keeps_its_own_watch() {
+        let (first, first_path) = scratch("window-one");
+        let (second, second_path) = scratch("window-two");
+        let watcher = Watcher::default();
+        let (sender, receiver) = mpsc::channel();
+        let report = move |changed: &str| drop(sender.send(changed.to_owned()));
+        watcher.watch_for("main", &first_path, report.clone());
+        watcher.watch_for("main-2", &second_path, report);
+
+        fs::write(first.join("one.txt"), b"x").unwrap();
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(5)).unwrap(), first_path);
+        fs::write(second.join("two.txt"), b"x").unwrap();
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(5)).unwrap(), second_path);
+        // A closed window's watch ends with it.
+        watcher.forget("main-2");
+        fs::write(second.join("after.txt"), b"x").unwrap();
+        assert!(receiver.recv_timeout(Duration::from_millis(500)).is_err(), "the closed window's folder is no longer watched");
         fs::remove_dir_all(&first).unwrap();
         fs::remove_dir_all(&second).unwrap();
     }

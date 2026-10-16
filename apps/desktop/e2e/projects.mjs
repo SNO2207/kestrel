@@ -495,7 +495,8 @@ try {
 
   await step("the hub closes when another place is opened", async () => {
     await openHub();
-    await page.locator(".place", { hasText: "Home" }).click();
+    // The first place: your user folder.
+    await page.locator(".sidebar .place").first().click();
     await hub.waitFor({ state: "detached" });
   });
 

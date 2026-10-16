@@ -2,12 +2,15 @@ import { For, createSignal, onCleanup, onMount } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { isDropTab } from "../dragdrop";
+import { folderOptions } from "../lib/folderOptions";
 import { baseName } from "../lib/format";
 import { activateTab, activeId, closeTab, isSearch, openTab, tabs, type Tab } from "../state";
 import { Icon } from "./Icon";
 
 function tabTitle(tab: Tab): string {
   if (isSearch(tab)) return `Search: ${tab.query}`;
+  // Folder Options' "Display the full path in the title bar".
+  if (folderOptions().fullPath) return tab.path;
   return baseName(tab.path) || tab.path;
 }
 

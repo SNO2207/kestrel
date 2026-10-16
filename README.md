@@ -104,11 +104,14 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 
 | Keys | Action |
 |---|---|
-| Ctrl+L, Alt+D | Edit the address |
+| Ctrl+L, Alt+D, F4 | Edit the address |
 | Ctrl+F, Ctrl+E, F3 | Search |
 | Alt+Left / Alt+Right / Alt+Up, Backspace | Back / forward / up |
 | Ctrl+T / Ctrl+W / Ctrl+Tab | New tab / close tab / next tab |
-| F5 | Refresh (folders also refresh themselves when their contents change) |
+| Ctrl+N | New window, in the same folder |
+| F11 | Full screen |
+| F6, Shift+F6 | Move between the address bar, the search box, the sidebar and the files |
+| F5, Ctrl+R | Refresh (folders also refresh themselves when their contents change) |
 | Type letters | Jump to a name |
 | F2 | Rename; with several items selected, batch rename |
 | Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) | Undo / redo the last file operation |
@@ -116,13 +119,14 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste, shared with Explorer's clipboard |
 | Ctrl+Shift+N | New folder |
 | Ctrl+Shift+C | Copy as path |
-| Alt+Enter | Properties |
+| Alt+Enter | Properties; with nothing selected, the folder's |
 | Right-click, Menu key | Context menu |
 | Shift+right-click, Shift+F10 | The Windows context menu, with every shell extension's commands |
 | Ctrl+Shift+1 / 2 / 3 / 4 | Extra large / large / medium / small icons |
 | Ctrl+Shift+5 / 6 / 8 | List / details / tiles |
 | Ctrl+wheel | Larger or smaller icons |
 | Alt+P | Show or hide the preview pane (drag its left edge to resize it) |
+| Alt+Shift+P | Show or hide the details pane, in the preview pane's place |
 | Ctrl+Shift+P | Show or hide the projects hub |
 | Space | Quick Look; Space or Esc closes it, the arrow keys move to the previous or next item |
 | Ctrl+D | Pin the selection to the sidebar, or the folder when nothing is selected |
@@ -130,6 +134,9 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+G | Go to folder: the folders you visit most, then every folder in the index |
 | Ctrl+K | Command palette: every action, folders and files, pins, saved searches, workspaces, `@` projects, `#` tags |
 | Ctrl+Alt+Space | The quick launcher, from anywhere in Windows (changeable) |
+| Mouse back / forward buttons | Back / forward |
+| Middle-click a folder | Open it in a new tab |
+| Ctrl+Shift+E | Show the folder in the folder tree (passed to the tree as `kestrel:reveal-in-tree`) |
 
 Every view (details, list, tiles and icons) has the same mouse and keyboard handling: click,
 Ctrl+click and Shift+click to select, Ctrl+A, arrow keys, typing to jump to a name, rename in
@@ -171,7 +178,9 @@ The View button in the toolbar picks the view (details, list, tiles, or icons fr
 pixels), the sort order, and two options: "Show hidden items" (off by default; hidden files,
 protected system files among them, are then left out of folders and search results, while
 files only marked system, such as `C:\Windows\Fonts`, show as they do in Explorer) and "Show
-file extensions".
+file extensions". As in Explorer, protected operating system files (hidden and system both)
+stay out even while hidden items are shown, unless Folder Options say otherwise (see Explorer
+parity below).
 Each folder remembers its own view and sort, and search results have one of their own.
 
 Icon and tile views show thumbnails rendered by the Windows shell, cached in
@@ -215,7 +224,8 @@ is a native Windows drag with the shell's drag image, and the target decides bet
 move and shortcut as it would for Explorer. Files dragged onto Kestrel, from anywhere or from
 Kestrel itself, go into the folder row, sidebar place or tab under the cursor, or into the open
 folder. As in Explorer, they move within a drive and are copied to another; hold Ctrl to copy
-or Shift to move. A hint at the bottom of the list says which will happen. Hovering a folder,
+or Shift to move, and Alt (or Ctrl and Shift together) to make shortcuts to them there
+("report.docx - Shortcut"). A hint at the bottom of the list says which will happen. Hovering a folder,
 place or tab for a second opens it, and the list scrolls when the cursor nears its top or
 bottom edge (its left or right edge in the list view, whose columns scroll sideways). Dropped
 items are selected where they land, and Ctrl+Z puts them back.
@@ -228,7 +238,9 @@ place). Pins can go in named, coloured groups that collapse, be dragged into a n
 too), and be given a name of their own and a number key. A pin whose target was renamed or
 moved shows as missing; clicking it finds it again by its file id through the index.
 
-Every folder you open counts as a visit except in scratch folders such as `%TEMP%`. Folders are
+Every folder you open counts as a visit except in scratch folders such as `%TEMP%`. A visit is
+recorded once, and read by the Frequent list, Go to folder, Home's Quick access and the command
+palette alike. Folders are
 ranked by frecency, as zoxide ranks them, for the Frequent list and Go to folder (Ctrl+G), which
 also searches every folder in the index: type part of a name (`kstrl` finds `Kestrel`), with
 earlier words narrowing by path (`proj kes`).
@@ -319,7 +331,7 @@ type, of every action the app has (with its shortcut), the folders and files in 
 pinned places (with their number keys), the frequent folders, saved searches and workspaces,
 and the projects already found. A folder that comes from several of these is listed once.
 Matched letters are highlighted, and what you open often and lately ranks higher (folders you
-stay in count too). Start with a prefix to narrow it:
+visit count too). Start with a prefix to narrow it:
 
 | Prefix | Lists |
 |---|---|
@@ -350,6 +362,36 @@ the index current and the shortcut working after the window closes. "Start Kestr
 sign in to Windows" (off by default) adds an entry to your account's startup programs; with the
 tray option on, Kestrel then starts in the tray. Only one Kestrel runs at a time: starting it
 again (from the Start menu, say) shows the one already running.
+
+## Explorer parity
+
+What Windows' File Explorer does that Kestrel also does now (the full checklist, with what is
+left out and why, is `docs/explorer-parity.md`):
+
+- **Command bar** under the address bar: New, Cut, Copy, Paste, Rename, Delete, Sort, and a "…"
+  menu with Undo, Redo, Pin, Select all, Select none, Invert selection, Open in Terminal, New
+  window, Full screen, Properties and Options; Details at its right.
+- **New** offers every file type Windows registers for it (`ShellNew`: Office documents,
+  compressed folders, and so on), made from the registered template or bytes and then named in
+  place, plus Shortcut, which asks what it points at. A Text Document is always offered.
+- **Home**: Quick access (the folders you open most), Favorites (your pins) and Recent (files
+  opened lately, in any program as Windows records them, or through Kestrel). Type "Home" in the
+  address bar, or click Home at the top of the sidebar; Folder Options can make Kestrel open to it.
+- **Details pane** (Alt+Shift+P), in the preview pane's place: the selection's size, dates,
+  attributes, availability and what Windows knows of it (dimensions, length, authors...), or the
+  totals of several items, or the folder's own details.
+- **More windows** (Ctrl+N, or "Open in new window"), in the same process, sharing the index,
+  pins and undo history. Closing one leaves the others open.
+- **Open in Terminal** opens Windows Terminal in a folder; **Open file location** shows a search
+  result in its folder; **Alt+drop** makes shortcuts; **Shift+Delete** asks, as Explorer does,
+  before deleting for good; Alt+Enter with nothing selected shows the folder's properties.
+- **Folder Options** ("…" > Options): open to Home or your user folder, single- or double-click
+  to open, the full path in the tabs, hidden files, protected operating system files (hidden by
+  default, as in Explorer), extensions, and sync status.
+- **Sync status**: in OneDrive and other synced folders, every view shows whether an item is
+  online-only (a cloud), on this device (a ringed check) or always kept on it (a filled check),
+  read from its attributes, so nothing is downloaded.
+- The status bar adds up the selection's size and has Explorer's Details and Large icons buttons.
 
 ## Testing
 
@@ -386,6 +428,7 @@ node e2e/integration.mjs    # the features together, in the icon, list and tile 
 node e2e/projects.mjs       # the projects hub and git badges, with repositories it makes
 node e2e/palette.mjs        # command palette, quick launcher, shortcut settings and tray option
 node e2e/connections.mjs    # where the palette, shortcuts, projects and preview meet
+node e2e/parity.mjs         # Explorer parity: New, Home, the details pane, a second window, shortcuts
 node e2e/dev.mjs stop
 ```
 
@@ -394,9 +437,18 @@ instead: it runs `tauri build` (no installer) with the slot's identity and start
 `kestrel.exe` that produced, whose front end is built in. `smoke.mjs`, `fileops.mjs`,
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
 `shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`,
-`integration.mjs`, `shortcuts.mjs`, `projects.mjs`, `palette.mjs` and `connections.mjs` need a
-dev build, whose test hooks they use. A release build has the Windows menu's test hook only
-when started with `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
+`integration.mjs`, `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs` and
+`parity.mjs` need a dev build, whose test hooks they use. A release build has the Windows
+menu's test hook only when started with `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
+
+`parity.mjs` opens a second window and closes it, turns the window to full screen and back,
+and opens two native dialogs (Shift+Delete's confirmation and a folder's Properties), which it
+finds by their windows and closes, answering No. Outside its scratch folder it visits
+`C:\Windows\Help` (forgotten again if the visit was its own), pins and unpins a folder of its
+own, and records and forgets a file of its own as opened; Windows Terminal is not started (the
+projects feature's hook records the launch). `connectToKestrel()` in `e2e/connect.mjs` returns
+the first window, `main`, when there are several; `waitForKestrelWindow(browser, label)` finds
+another.
 
 Run the suites one after another, not side by side: several use the clipboard or the window's
 settings. Every suite works in its own scratch folder under `%TEMP%` and removes it afterwards;
