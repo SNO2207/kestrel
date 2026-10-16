@@ -332,6 +332,18 @@ pub fn record(db: &Db, id: i64, stage: &str, version: u32, size: u64, mtime: i64
     Ok(())
 }
 
+/// Forgets what a stage did on these items when it did its work (a failure's record stays), so
+/// the stage runs on them again: what it made is gone.
+pub fn forget_done(db: &Db, stage: &str, ids: &[i64]) -> Result<()> {
+    db.transaction(|t| {
+        let mut forget = t.prepare_cached("DELETE FROM media_stages WHERE item = ?1 AND stage = ?2 AND failed IS NULL")?;
+        for id in ids {
+            forget.execute(params![id, stage])?;
+        }
+        Ok(())
+    })
+}
+
 /// Stores the text recognised in an item, replacing any; empty text removes it.
 pub fn set_text(db: &Db, id: i64, text: &str) -> Result<()> {
     db.transaction(|t| {
@@ -475,6 +487,12 @@ mod tests {
         assert_eq!(all[0].stages[1].failed.as_deref(), Some("No text recognition"));
         assert_eq!(all[1].file_id, u64::MAX, "file ids use all 64 bits");
         assert!(all[1].stages.is_empty());
+        // What a stage made is gone: its record goes, a failure's stays.
+        record(&db, ids[0], "embedding", 3, 100, 5, None).unwrap();
+        forget_done(&db, "embedding", &[ids[0], ids[1]]).unwrap();
+        forget_done(&db, "ocr", &[ids[0]]).unwrap();
+        let stages: Vec<String> = known(&db).unwrap()[0].stages.iter().map(|s| s.stage.clone()).collect();
+        assert_eq!(stages, ["metadata", "ocr"]);
 
         // Gone, then back: not forgotten in between.
         mark_gone(&db, &[ids[1]], 1000).unwrap();

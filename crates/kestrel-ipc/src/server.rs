@@ -9,7 +9,7 @@
 //! - a request line may be [`Limits::max_request`] bytes, a response [`Limits::max_response`];
 //! - a client has [`Limits::read_timeout`] to send each request once connected (and
 //!   [`Limits::idle_timeout`] between requests), and [`Limits::write_timeout`] to take the
-//!   answer;
+//!   answer (the last one included, before the connection goes);
 //! - an answer that takes longer than [`Limits::handler_timeout`] is answered with a `timeout`
 //!   failure, and the handler is told (through [`Context::cancelled`]) to stop;
 //! - at most [`Limits::max_handlers`] handlers run at once, those given up on included;
@@ -27,9 +27,7 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
-use windows_sys::Win32::Storage::FileSystem::{
-    FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FlushFileBuffers, PIPE_ACCESS_DUPLEX,
-};
+use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE,
@@ -347,7 +345,11 @@ fn serve_client(shared: &Shared, instance: Instance) {
     let client_name = pid.map(process_name).unwrap_or_default();
     let limits = &shared.limits;
     let mut pending = Vec::new();
+    // Whether the connection ends straight after an answer, which the client may not have
+    // read yet: it then gets the write time limit to read it before the connection goes.
+    let mut answered_last = false;
     for served in 0..limits.max_requests_per_connection {
+        answered_last = false;
         let wait = if served == 0 { limits.read_timeout } else { limits.idle_timeout };
         let line = match read_line(&pipe, &mut pending, limits.max_request, wait) {
             Ok(Some(line)) => line,
@@ -355,7 +357,7 @@ fn serve_client(shared: &Shared, instance: Instance) {
             Ok(None) => break,
             Err(error) if is_too_long(&error) => {
                 let failure = Failure::new(FailureKind::TooLarge, format!("Requests may be at most {} bytes", limits.max_request));
-                let _ = pipe.write_all(&line_of(&Response::failure(failure)), limits.write_timeout);
+                answered_last = pipe.write_all(&line_of(&Response::failure(failure)), limits.write_timeout).is_ok();
                 break;
             }
             Err(_) => break,
@@ -375,13 +377,16 @@ fn serve_client(shared: &Shared, instance: Instance) {
         if pipe.write_all(&bytes, limits.write_timeout).is_err() {
             break;
         }
+        answered_last = true;
     }
-    // Let the client read the last answer before the connection goes.
+    // Disconnecting throws away whatever the client has not read: the last answer gets the
+    // write time limit to be read. A client that went quiet or stopped reading gets nothing
+    // more (it had its time), so it never holds the connection longer than the limits say.
+    if answered_last {
+        pipe.drained(limits.write_timeout);
+    }
     // SAFETY: the handle is still open; `pipe` closes it when dropped.
-    unsafe {
-        FlushFileBuffers(pipe.handle);
-        DisconnectNamedPipe(pipe.handle);
-    }
+    unsafe { DisconnectNamedPipe(pipe.handle) };
 }
 
 /// Decrements the count of running handlers when the handler's thread is done.

@@ -351,6 +351,16 @@ export function FolderTree() {
 
   let revealing = 0;
   /**
+   * A reveal asked to scroll the open folder into view and has not yet: whichever reveal
+   * finishes does it. A later reveal replaces one still waiting for the backend (the index's
+   * news of new folders asks for one that doesn't scroll), and once took Ctrl+Shift+E's and a
+   * navigation's scroll with it, leaving the open folder expanded out of view.
+   */
+  let scrollWanted = false;
+  /** Development builds: reveals wait here, once the backend has answered, while a test holds them. */
+  let revealGate: Promise<void> | null = null;
+  let releaseReveals = () => {};
+  /**
    * Expands the tree down to the open folder and marks it, scrolling it into view if asked.
    * `always` does so even with "Expand to open folder" off, as Ctrl+Shift+E does.
    */
@@ -358,8 +368,10 @@ export function FolderTree() {
     const path = currentPath();
     if (!path || (!expandToOpen() && !always)) return;
     const request = ++revealing;
+    if (scroll) scrollWanted = true;
     if (path !== THIS_PC && /^[a-z]:\\/i.test(path)) {
       const listings = await placesApi.treeReveal(path, showHidden()).catch(() => [] as TreeListing[]);
+      if (import.meta.env.DEV && revealGate) await revealGate;
       if (request !== revealing) return;
       const drive = root.children?.find((node) => samePlace(node.fixedPath!, path.slice(0, 3)));
       if (drive && listings.length > 0) {
@@ -374,9 +386,11 @@ export function FolderTree() {
       }
     }
     const target = nodeAt(path);
+    const scrolling = scrollWanted;
+    scrollWanted = false;
     if (!target) return;
     if (!hasFocus() || always) setFocusNode(target);
-    if (scroll) reveal(indexOf(target), true);
+    if (scrolling) reveal(indexOf(target), true);
   };
 
   /**
@@ -473,13 +487,14 @@ export function FolderTree() {
     scroller.addEventListener("scroll", measure, { passive: true });
     window.addEventListener("kestrel:reveal-in-tree", onRevealRequest);
     measure();
-    const stopChanges = placesApi.onFoldersChanged((next) => {
+    const foldersChanged = (next: number) => {
       revision = next;
       void refreshVisible();
       // A folder opened before the index had it is revealed once it does.
       const path = currentPath();
       if (path && expandToOpen() && !nodeAt(path)) void revealCurrent(false);
-    });
+    };
+    const stopChanges = placesApi.onFoldersChanged(foldersChanged);
     onCleanup(() => {
       observer.disconnect();
       scroller.removeEventListener("scroll", measure);
@@ -497,6 +512,19 @@ export function FolderTree() {
             return node ? expandAll(node) : Promise.resolve();
           },
           scrollTo: (index: number) => void (scroller.scrollTop = index * ROW),
+          /** Holds reveals once the backend has answered them, or lets them go on. */
+          holdReveals: (hold: boolean) => {
+            if (hold && !revealGate) revealGate = new Promise((resolve) => (releaseReveals = resolve));
+            if (!hold) {
+              revealGate = null;
+              releaseReveals();
+            }
+          },
+          /** As when the index says its folders changed. */
+          foldersChanged: () => foldersChanged(revision),
+          /** Whether the row of a folder is drawn (in view). */
+          drawn: (path: string) =>
+            [...scroller.querySelectorAll(".tree-row")].some((row) => row.getAttribute("data-tree-path")?.toLowerCase() === path.toLowerCase()),
         },
       });
     }

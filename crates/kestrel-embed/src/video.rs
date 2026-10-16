@@ -3,6 +3,8 @@
 //!
 //! A video is sampled one frame every few seconds, at most so many per video (a longer video's
 //! samples spread out), each at the moment it shows, so a search hit can open at that moment.
+//! Frames come out the way the video is shown: a phone's upright video, stored sideways with a
+//! rotation (`MF_MT_VIDEO_ROTATION`), is turned back as Windows' own thumbnails turn it.
 //! A seek lands on the key frame before the moment; when that is far from it, frames are
 //! decoded forward to it. Where two samples in a row look very different (a cut), one more frame
 //! is taken between them, which finds where the new scene starts to within half the interval
@@ -42,9 +44,22 @@ impl Default for Plan {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VideoInfo {
     pub duration_ms: u64,
+    /// As shown, turned by its rotation.
     pub width: u32,
     pub height: u32,
     pub frames: usize,
+}
+
+/// The EXIF orientation that shows a video's stored frames upright, from how far it asks to be
+/// turned clockwise (`MF_MT_VIDEO_ROTATION`): 90 degrees is EXIF's 6, as Windows' thumbnails
+/// show it. (`kestrel_media::decode` reads the media library's frames the same way.)
+pub fn orientation_of_rotation(degrees: u32) -> u16 {
+    match degrees {
+        90 => 6,
+        180 => 3,
+        270 => 8,
+        _ => 1,
+    }
 }
 
 /// Frames decoded forward from a key frame at most, looking for a moment.
@@ -101,9 +116,12 @@ fn difference(a: &[f32; 48], b: &[f32; 48]) -> f32 {
 /// An open video, decoding to 32-bit RGB.
 struct Reader {
     reader: IMFSourceReader,
+    /// As stored.
     width: u32,
     height: u32,
     stride: i32,
+    /// Turns stored frames upright (EXIF's numbering).
+    orientation: u16,
 }
 
 const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
@@ -127,7 +145,9 @@ impl Reader {
             wanted.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             wanted.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32)?;
             reader.SetCurrentMediaType(VIDEO, None, &wanted)?;
-            let mut opened = Reader { reader, width: 0, height: 0, stride: 0 };
+            // The file's own type says how to turn it; the converted one may not.
+            let rotation = reader.GetNativeMediaType(VIDEO, 0).and_then(|native| native.GetUINT32(&MF_MT_VIDEO_ROTATION)).unwrap_or(0);
+            let mut opened = Reader { reader, width: 0, height: 0, stride: 0, orientation: orientation_of_rotation(rotation) };
             opened.read_format()?;
             Ok(opened)
         }
@@ -185,7 +205,7 @@ impl Reader {
                 return Ok(None);
             }
             let Some(sample) = sample else { continue };
-            return Ok(Some(((stamp.max(0) / 10_000) as u64, self.pixels(&sample)?)));
+            return Ok(Some(((stamp.max(0) / 10_000) as u64, self.pixels(&sample)?.oriented(self.orientation))));
         }
     }
 
@@ -261,9 +281,10 @@ pub fn moments(duration_ms: u64, plan: &Plan) -> Vec<u64> {
 }
 
 /// Samples the video at `path` by `plan`, handing each frame (its moment in milliseconds and its
-/// pixels) to `on_frame` in time order, which says whether to go on.
+/// pixels, upright) to `on_frame` in time order, which says whether to go on.
 pub fn sample(path: &Path, plan: &Plan, on_frame: &mut dyn FnMut(u32, Rgb) -> bool) -> Result<VideoInfo> {
     let mut reader = Reader::open(path)?;
+    let shown = |reader: &Reader| if reader.orientation >= 5 { (reader.height, reader.width) } else { (reader.width, reader.height) };
     let duration_ms = reader.duration_ms();
     let wanted = moments(duration_ms, plan);
     let every = if wanted.len() > 1 { wanted[1] - wanted[0] } else { u64::from(plan.every_ms) };
@@ -295,7 +316,8 @@ pub fn sample(path: &Path, plan: &Plan, on_frame: &mut dyn FnMut(u32, Rgb) -> bo
             {
                 frames += 1;
                 if !on_frame(cut_stamp as u32, cut_image) {
-                    return Ok(VideoInfo { duration_ms, width: reader.width, height: reader.height, frames });
+                    let (width, height) = shown(&reader);
+                    return Ok(VideoInfo { duration_ms, width, height, frames });
                 }
             }
         }
@@ -305,11 +327,23 @@ pub fn sample(path: &Path, plan: &Plan, on_frame: &mut dyn FnMut(u32, Rgb) -> bo
             break;
         }
     }
-    Ok(VideoInfo { duration_ms, width: reader.width, height: reader.height, frames })
+    let (width, height) = shown(&reader);
+    Ok(VideoInfo { duration_ms, width, height, frames })
 }
 
 /// Writes an H.264 MP4 of `width` x `height` at `fps`, showing each colour for its milliseconds.
 pub fn write_test_video(path: &Path, width: u32, height: u32, fps: u32, segments: &[([u8; 3], u32)]) -> Result<()> {
+    let pictures: Vec<(Rgb, u32)> = segments.iter().map(|&(colour, ms)| (Rgb::filled(width, height, colour), ms)).collect();
+    write_test_pictures(path, fps, &pictures, 0)
+}
+
+/// Writes an H.264 MP4 at `fps` showing each picture (all of one size) for its milliseconds,
+/// stored with a rotation (degrees clockwise to show it), as phones store upright video.
+pub fn write_test_pictures(path: &Path, fps: u32, pictures: &[(Rgb, u32)], rotation: u32) -> Result<()> {
+    let (width, height) = pictures.first().map_or((0, 0), |(picture, _)| (picture.width, picture.height));
+    if width == 0 || height == 0 || pictures.iter().any(|(picture, _)| (picture.width, picture.height) != (width, height)) {
+        return Err(Error("the pictures must be of one size".into()));
+    }
     startup();
     let frame_ticks = 10_000_000 / i64::from(fps);
     // SAFETY: Media Foundation calls on owned interfaces; the sample buffer is locked while it is
@@ -327,6 +361,9 @@ pub fn write_test_video(path: &Path, width: u32, height: u32, fps: u32, segments
         let output = MFCreateMediaType()?;
         common(&output, &MFVideoFormat_H264)?;
         output.SetUINT32(&MF_MT_AVG_BITRATE, 2_000_000)?;
+        if rotation != 0 {
+            output.SetUINT32(&MF_MT_VIDEO_ROTATION, rotation)?;
+        }
         let stream = writer.AddStream(&output)?;
         let input = MFCreateMediaType()?;
         common(&input, &MFVideoFormat_RGB32)?;
@@ -335,15 +372,15 @@ pub fn write_test_video(path: &Path, width: u32, height: u32, fps: u32, segments
         writer.BeginWriting()?;
         let length = width * height * 4;
         let mut index = 0i64;
-        for &(colour, ms) in segments {
-            let count = (i64::from(ms) * i64::from(fps) / 1000).max(1);
+        for (picture, ms) in pictures {
+            let count = (i64::from(*ms) * i64::from(fps) / 1000).max(1);
             for _ in 0..count {
                 let buffer = MFCreateMemoryBuffer(length)?;
                 let mut start = std::ptr::null_mut();
                 buffer.Lock(&mut start, None, None)?;
                 let bytes = std::slice::from_raw_parts_mut(start, length as usize);
-                for pixel in bytes.chunks_exact_mut(4) {
-                    pixel.copy_from_slice(&[colour[2], colour[1], colour[0], 255]);
+                for (pixel, rgb) in bytes.chunks_exact_mut(4).zip(picture.pixels.chunks_exact(3)) {
+                    pixel.copy_from_slice(&[rgb[2], rgb[1], rgb[0], 255]);
                 }
                 buffer.Unlock()?;
                 buffer.SetCurrentLength(length)?;
@@ -438,6 +475,35 @@ mod tests {
         let path = dir.join("bad.mp4");
         std::fs::write(&path, b"not a video at all").unwrap();
         assert!(sample(&path, &Plan::default(), &mut |_, _| true).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A phone's upright video is stored sideways, with a quarter turn to show it: its frames
+    /// come out upright, as Windows' own thumbnail shows it.
+    #[test]
+    fn a_turned_video_is_sampled_upright() {
+        let dir = scratch("turned");
+        let path = dir.join("portrait.mp4");
+        // Stored 128 x 64: red on the left, blue on the right.
+        let mut stored = Rgb::filled(128, 64, [20, 20, 220]);
+        for y in 0..64 {
+            for x in 0..64 {
+                stored.set(x, y, [220, 20, 20]);
+            }
+        }
+        write_test_pictures(&path, 10, &[(stored, 2000)], 90).unwrap();
+        let mut frames = Vec::new();
+        let info = sample(&path, &Plan { every_ms: 1000, max_frames: 4, scene_changes: false }, &mut |_, image| {
+            frames.push(image);
+            true
+        })
+        .unwrap();
+        assert_eq!((info.width, info.height), (64, 128));
+        let frame = &frames[0];
+        assert_eq!((frame.width, frame.height), (64, 128));
+        // Turned a quarter clockwise: the stored left (red) is now the top.
+        assert!(near(frame.at(32, 16), [220, 20, 20]) && near(frame.at(32, 112), [20, 20, 220]), "{:?} {:?}", frame.at(32, 16), frame.at(32, 112));
+        assert_eq!(orientation_of_rotation(270), 8);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

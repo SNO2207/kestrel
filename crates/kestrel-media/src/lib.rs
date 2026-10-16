@@ -4,8 +4,8 @@
 //!
 //! - [`pipeline`]: the background pass. Items go through [`pipeline::Stage`]s (metadata,
 //!   thumbnail, text recognition, and any added later, such as embeddings), fed by one decode
-//!   of each file, at background priority, pausing on request, while a full-screen app runs or
-//!   while battery saver is on. Work is keyed by volume, file id, size and last write time, so
+//!   of each file, the heavy work at background priority ([`priority`]), pausing on request,
+//!   while a full-screen app runs or while battery saver is on. Work is keyed by volume, file id, size and last write time, so
 //!   a rename or a move is never read again and a changed file always is.
 //! - [`scan`]: finding photos and videos in the index under the scopes.
 //! - [`scopes`]: the default scopes, wherever Windows keeps the owner's folders.
@@ -21,6 +21,7 @@ pub mod decode;
 pub mod fixtures;
 pub mod ocr;
 pub mod pipeline;
+pub mod priority;
 pub mod props;
 pub mod query;
 pub mod scan;

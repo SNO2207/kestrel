@@ -451,3 +451,35 @@ fn reading_a_repository_never_runs_the_filter_programs_it_names() {
     assert!(!marker("inner.txt").exists(), "the embedded repository's filter never ran");
     fs::remove_dir_all(&base).unwrap();
 }
+
+/// A project in OneDrive with its files online only: its README and manifests are never opened
+/// (that would download them), whoever asks for its details; the query service lets other
+/// programs ask.
+#[test]
+fn online_only_readmes_and_manifests_are_never_opened() {
+    let dir = std::env::temp_dir().join(format!("kestrel-projects-cloud-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("README.md"), "# In the cloud\n").unwrap();
+    fs::write(dir.join("package.json"), r#"{"scripts": {"dev": "vite"}}"#).unwrap();
+    fs::write(dir.join("Cargo.toml"), "[package]\nname = \"cloud\"\n").unwrap();
+    fs::write(dir.join("src").join("main.rs"), "fn main() {}\n").unwrap();
+    let set = |name: &str, attributes: u32| {
+        let wide: Vec<u16> = dir.join(name).to_str().unwrap().encode_utf16().chain([0]).collect();
+        // SAFETY: `wide` is NUL-terminated and outlives the call.
+        assert_ne!(unsafe { windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(wide.as_ptr(), attributes) }, 0);
+    };
+    // Offline: the contents are elsewhere, as OneDrive's online-only files say.
+    for name in ["README.md", "package.json", "Cargo.toml"] {
+        set(name, 0x1000);
+    }
+    assert!(find_readme(&dir).is_none());
+    assert!(scripts::detect(&dir).is_empty());
+    for name in ["README.md", "package.json", "Cargo.toml"] {
+        set(name, 0x80);
+    }
+    assert!(find_readme(&dir).unwrap().text.starts_with("# In the cloud"));
+    let commands: Vec<String> = scripts::detect(&dir).into_iter().map(|s| s.command).collect();
+    assert_eq!(commands, ["npm run dev", "cargo build", "cargo test", "cargo run"]);
+    fs::remove_dir_all(&dir).unwrap();
+}

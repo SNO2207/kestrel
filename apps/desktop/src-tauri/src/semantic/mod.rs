@@ -197,7 +197,7 @@ impl Semantic {
                 }
             }
             if let Some(loaded) = self.current() {
-                let _ = loaded.store.write().flush();
+                flush(&loaded);
             }
             if self.epoch() == epoch {
                 self.wait(Duration::from_secs(30));
@@ -209,23 +209,28 @@ impl Semantic {
     /// again when that changed anything.
     fn use_model(&self, loaded: Option<&Loaded>) {
         if self.stage.set_model(loaded) {
+            // The model's store may lack vectors the pass recorded as made: it was deleted with
+            // the model and downloaded again, or reset after a crash.
+            if let Some(loaded) = loaded {
+                stage::reconcile(&loaded.store, self.media.pipeline());
+            }
             self.media.pipeline().requeue();
             self.status_changed(true);
         }
     }
 
-    /// After the library's plan: vectors of files it no longer holds go, and the store is
-    /// compacted once enough of it is tombstones.
+    /// After the library's plan: vectors of files it no longer holds go (and those of files
+    /// that came back are made again), the store is compacted once enough of it is tombstones,
+    /// and written to disk. The store is held only for moments: searches and the describing
+    /// wait on it.
     fn tidy(&self, pipeline: &kestrel_media::pipeline::Pipeline) {
         let Some(loaded) = self.current() else { return };
         let held: std::collections::HashSet<(u32, u64)> =
             pipeline.items().iter().filter_map(|item| Some((stage::volume_code(&item.path)?, item.file_id))).collect();
         stage::sweep(&loaded.store, &held);
-        let mut store = loaded.store.write();
-        if store.dead_share() > COMPACT_SHARE && store.len() > 64 {
-            let _ = store.compact();
-        }
-        let _ = store.flush();
+        stage::reconcile(&loaded.store, pipeline);
+        compact(&loaded.store);
+        flush(&loaded);
     }
 
     /// Forgets installs whose files went or changed size (a full SHA-256 check happened when
@@ -519,6 +524,31 @@ impl Semantic {
             indexing.current = progress.working.first().cloned();
         }
         indexing
+    }
+}
+
+/// Compacts the store once enough of it is tombstones, holding it only to begin (read) and to
+/// finish (write): the kept vectors are copied to a new file with no lock held, so searches and
+/// the describing go on. That copy runs at normal priority: it reads the vectors file, which
+/// the describing appends to with the store held, and a read of it at background priority could
+/// keep that append (and so every search) waiting on a busy disk.
+fn compact(store: &RwLock<Store>) {
+    let begun = {
+        let store = store.read();
+        if store.dead_share() > COMPACT_SHARE && store.len() > 64 { store.begin_compact() } else { Ok(None) }
+    };
+    if let Ok(Some(mut compaction)) = begun
+        && compaction.write().is_ok()
+    {
+        let _ = store.write().finish_compact(compaction);
+    }
+}
+
+/// Writes the store to disk without holding it.
+fn flush(loaded: &Loaded) {
+    let flusher = loaded.store.read().flusher();
+    if let Ok(flusher) = flusher {
+        let _ = flusher.run();
     }
 }
 

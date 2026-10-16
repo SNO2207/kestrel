@@ -10,8 +10,11 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_MORE_DATA, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED,
     GetLastError, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
+use windows_sys::Wdk::Storage::FileSystem::{
+    FILE_PIPE_CONNECTED_STATE, FILE_PIPE_LOCAL_INFORMATION, FilePipeLocalInformation, NtQueryInformationFile,
+};
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
-use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, IO_STATUS_BLOCK, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, ResetEvent, WaitForSingleObject};
 
 /// A pipe handle and the event its operations signal.
@@ -110,6 +113,46 @@ impl Pipe {
             Err(error) if error.raw_os_error().is_some_and(|code| is_disconnect(code as u32)) => Ok(0),
             other => other,
         }
+    }
+
+    /// Waits until the other end has read everything written to it, or has gone, for at most
+    /// `timeout`; true if it did. (`FlushFileBuffers` waits for the same with no limit at all,
+    /// so a client that stopped reading held the server's thread for as long as it lived.)
+    pub(crate) fn drained(&self, timeout: Duration) -> bool {
+        let started = Instant::now();
+        let mut pause = Duration::from_millis(1);
+        loop {
+            match self.local_information() {
+                // A pipe that can't say is broken: nobody is left to read.
+                None => return true,
+                // A reader waiting with a read of its own counts its buffer in, so the quota
+                // available can exceed the buffer's size.
+                Some(info) if info.NamedPipeState != FILE_PIPE_CONNECTED_STATE || info.WriteQuotaAvailable >= info.OutboundQuota => return true,
+                Some(_) => {}
+            }
+            let Some(left) = timeout.checked_sub(started.elapsed()).filter(|left| !left.is_zero()) else { return false };
+            std::thread::sleep(pause.min(left));
+            pause = (pause * 2).min(Duration::from_millis(25));
+        }
+    }
+
+    fn local_information(&self) -> Option<FILE_PIPE_LOCAL_INFORMATION> {
+        // SAFETY: plain data, valid when zeroed.
+        let mut info: FILE_PIPE_LOCAL_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        let mut status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+        // SAFETY: the handle is this pipe's; `info` is the structure this class fills, of the
+        // size given.
+        let result = unsafe {
+            NtQueryInformationFile(
+                self.handle,
+                &mut status,
+                (&mut info as *mut FILE_PIPE_LOCAL_INFORMATION).cast(),
+                size_of::<FILE_PIPE_LOCAL_INFORMATION>() as u32,
+                FilePipeLocalInformation,
+            )
+        };
+        (result >= 0).then_some(info)
     }
 
     /// Writes all of `data`, giving up once `timeout` has passed.

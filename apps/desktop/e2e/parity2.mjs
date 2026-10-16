@@ -535,6 +535,29 @@ try {
     await open(sandbox, `kestrel-e2e-parity2-${process.pid}`);
   });
 
+  await step("Ctrl+Shift+E scrolls the tree to the open folder, even when the index tells of new folders meanwhile", async () => {
+    // A fresh tree, which has not loaded the scratch folder. Its reveals are held once the
+    // backend has answered, so a reveal asked for by the index's news of new folders (which
+    // doesn't scroll) comes after the navigation's and Ctrl+Shift+E's, every time; it once
+    // took their scroll with it, by chance, and left the folder out of view.
+    await page.reload();
+    await page.waitForFunction(() => typeof window.__kestrelTree === "object" && typeof window.__kestrelParity2 === "object");
+    await page.locator(".tab-panel.active .list-viewport").waitFor();
+    const name = `kestrel-e2e-parity2-${process.pid}`;
+    assert(!(await page.evaluate((path) => window.__kestrelTree.drawn(path), sandbox)), "not drawn before");
+    await page.evaluate(() => window.__kestrelTree.holdReveals(true));
+    try {
+      await open(sandbox, name);
+      await page.keyboard.press("Control+Shift+E");
+      await page.evaluate(() => window.__kestrelTree.foldersChanged());
+    } finally {
+      await page.evaluate(() => window.__kestrelTree.holdReveals(false));
+    }
+    await page.waitForFunction((path) => window.__kestrelTree.drawn(path), sandbox, { timeout: 10_000 });
+    await page.waitForFunction(() => document.activeElement?.classList.contains("tree"));
+    await list.focus();
+  });
+
   await step("Num Lock+plus and Num Lock+minus expand and collapse in the folder tree", async () => {
     await page.keyboard.press("Control+Shift+E");
     const node = () => page.evaluate((path) => window.__kestrelTree.rows().find((row) => row.path.toLowerCase() === path.toLowerCase()), sandbox);

@@ -172,7 +172,29 @@ const STAGE_LIMIT_MS = 400;
 
 /** Development builds keep how long each new listing waited for its rows, for the tests. */
 const swaps: { kind: string; waited: number; at: number }[] = [];
-if (import.meta.env.DEV) Object.assign(window, { __kestrelSwaps: swaps });
+/**
+ * Development builds: new listings wait here, their rows fetched, while a test holds them
+ * (`__kestrelStage.hold`), so the test can act while one is on its way to the list.
+ */
+let stageGate: Promise<void> | null = null;
+let releaseStages = () => {};
+let stagesHeld = 0;
+if (import.meta.env.DEV) {
+  Object.assign(window, {
+    __kestrelSwaps: swaps,
+    __kestrelStage: {
+      hold: (hold: boolean) => {
+        if (hold && !stageGate) stageGate = new Promise((resolve) => (releaseStages = resolve));
+        if (!hold) {
+          stageGate = null;
+          releaseStages();
+        }
+      },
+      /** How many new listings wait at the gate now. */
+      held: () => stagesHeld,
+    },
+  });
+}
 
 export function FileList(props: Props) {
   let viewport!: HTMLDivElement;
@@ -189,6 +211,32 @@ export function FileList(props: Props) {
   const [focused, setFocused] = createSignal(-1);
   /** Row whose name is being edited, or -1. */
   const [renaming, setRenaming] = createSignal(-1);
+  /** A name is being edited. */
+  const editing = () => renaming() >= 0;
+  /** What the listing drawn last was to the one before it: `new`, `refresh`, `re-sort`... */
+  let drawnKind = "new";
+  /**
+   * A refreshed listing that reaches the list while a name is edited is drawn once the edit is
+   * over: drawing a listing starts the list afresh, which ends the edit. The tab holds back
+   * refreshes that come back during an edit (`heldForRename` in state.ts), but one already on its
+   * way to the list when F2 was pressed (the folder changed a moment before) was drawn over the
+   * edit and ended it.
+   */
+  let afterEdit: (() => void) | null = null;
+  createEffect(
+    on(editing, (busy) => {
+      if (busy || !afterEdit) return;
+      const draw = afterEdit;
+      afterEdit = null;
+      draw();
+    }),
+  );
+  /** Draws a staged listing now, or a refresh once the edit in progress is over. */
+  const drawWhenFree = (refresh: boolean, draw: () => void) => {
+    if (refresh && untrack(editing)) afterEdit = draw;
+    else draw();
+  };
+
   const [menu, setMenu] = createSignal<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   /** The view is being scrolled, so thumbnails wait until it pauses. */
   const [scrolling, setScrolling] = createSignal(false);
@@ -504,6 +552,7 @@ export function FileList(props: Props) {
   /** Draws `next`, with the rows and group names fetched for it, all at once. */
   const commit = (next: Shown, fetched: Map<number, Row[]> | null, labels: Map<number, GroupInfo> | null, kind: string, began: number) => {
     const key = `${next.listing?.set}:${next.revision}`;
+    drawnKind = kind;
     batch(() => {
       if (fetched) {
         cachedFor = key;
@@ -543,18 +592,22 @@ export function FileList(props: Props) {
     const began = performance.now();
     const before = untrack(shown);
     const kind = next.listing?.set === before.listing?.set ? "re-sort" : before.listing?.path === next.listing?.path ? "refresh" : "new";
+    const refresh = kind === "refresh";
     const listing = next.listing;
-    if (!listing || listing.total === 0 || height() === 0 || width() === 0) return commit(next, null, null, kind, began);
     const current = () => generation === staging;
+    if (!listing || listing.total === 0 || height() === 0 || width() === 0) {
+      return drawWhenFree(refresh, () => current() && commit(next, null, null, kind, began));
+    }
     // The selection the new listing's marks were carried from; one made on the rows drawn while
     // the new rows load is carried over again before the swap.
     const drawnSet = before.listing?.set;
     let seen = { selection: untrack(selection), focus: untrack(focused) };
     const giveUp = window.setTimeout(() => {
-      // A listing whose rows don't come in time is drawn with rows still loading.
-      if (current()) {
-        staging++;
-        commit(next, null, null, `${kind} (late)`, began);
+      // A listing whose rows don't come in time is drawn with rows still loading (not while a
+      // test holds it at the gate, which it means to stay).
+      if (current() && !(import.meta.env.DEV && stageGate)) {
+        const late = ++staging;
+        drawWhenFree(refresh, () => late === staging && commit(next, null, null, `${kind} (late)`, began));
       }
     }, STAGE_LIMIT_MS);
     void (async () => {
@@ -583,6 +636,12 @@ export function FileList(props: Props) {
             : Promise.resolve(),
         ]);
         if (!current()) return;
+        if (import.meta.env.DEV && stageGate) {
+          stagesHeld++;
+          await stageGate;
+          stagesHeld--;
+          if (!current()) return;
+        }
         // A click or key on the rows drawn meanwhile changed the selection: it follows its items
         // into the new listing (a re-sort keeps its set, whose old order is gone, so not then).
         let restore = next.restore;
@@ -595,12 +654,12 @@ export function FileList(props: Props) {
           restore = carried;
         }
         clearTimeout(giveUp);
-        commit({ ...next, restore }, new Map(fetched), nextGrouped ? labels : null, kind, began);
+        drawWhenFree(refresh, () => current() && commit({ ...next, restore }, new Map(fetched), nextGrouped ? labels : null, kind, began));
       } catch {
         // The set is gone already (the index was replaced): drawn as it is, the rows report it.
         if (!current()) return;
         clearTimeout(giveUp);
-        commit(next, null, null, kind, began);
+        drawWhenFree(refresh, () => current() && commit(next, null, null, kind, began));
       }
     })();
   };
@@ -860,8 +919,13 @@ export function FileList(props: Props) {
 
   createEffect(() => {
     loadedTick();
-    const wanted = renameWhenLoaded;
+    let wanted = renameWhenLoaded;
     if (!wanted) return;
+    // A refresh drawn meanwhile carried the selection over to the same item, whose row the
+    // refresh brought with it: the rename goes on there.
+    if (wanted.key !== contentKey() && drawnKind.startsWith("refresh") && soleRow() >= 0) {
+      wanted = renameWhenLoaded = { row: soleRow(), key: contentKey() };
+    }
     if (wanted.key !== contentKey() || soleRow() !== wanted.row) {
       renameWhenLoaded = null;
     } else if (rowAt(wanted.row)) {
@@ -869,6 +933,7 @@ export function FileList(props: Props) {
       setRenaming(wanted.row);
     }
   });
+
 
   const finishRename = (row: number, name: string | null) => {
     if (renaming() !== row) return;

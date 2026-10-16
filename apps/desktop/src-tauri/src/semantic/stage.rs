@@ -4,17 +4,27 @@
 //! The pass decides which files to look at and when (its scopes, newest first, what the Gallery
 //! shows first), pauses, waits for full-screen apps and battery saver, never opens a cloud-only
 //! file, and records what each stage did by file key (volume, file id, size, time), so a renamed
-//! or moved file is never read again and a changed one always is. It decodes each photo once, at
-//! the largest size any stage asks for, turned upright; this stage asks for its model's side
-//! and resizes that picture to the model's square with the model's own filter. A video is
-//! sampled here, a frame every five seconds plus one where the picture cuts, since one frame
-//! cannot describe it.
+//! or moved file is never read again and a changed one always is.
+//!
+//! This stage takes no picture from the pass: the model must see a photo as the reference
+//! prepares it, Pillow's bilinear resize of the whole upright picture to its square, and the
+//! pass's picture is already shrunk (a photo fitted to 256 on its longer side and then
+//! stretched to 256 x 256 had its short side blurred, and its vector differed from the one
+//! "Find similar" made of the same photo). So a photo is decoded here straight to the square,
+//! a strip at a time (`kestrel_embed::image::decode_resized`), which is also what
+//! `search.rs` does for a picture not described yet. A video is sampled here, a frame every five
+//! seconds plus one where the picture cuts, since one frame cannot describe it. Decoding runs in
+//! background mode; the model and the store, which searches wait on too, outside it.
 //!
 //! The stage is ready only while a model is loaded ([`DescribeStage::set_model`]); its version
 //! comes from the model's store, so another model (or another download of different files)
 //! describes everything again, and a stored file that is still current is not read twice
-//! ([`kestrel_vector::Store::has_current`]). The text in photos is the library's own text stage's
-//! (`media_text`), which AI search weighs a description's words with (`search.rs`).
+//! ([`kestrel_vector::Store::has_current`]). The pass's records of what the stage did can outlive
+//! the vectors (a model deleted and downloaded again, a store reset after a crash, a folder that
+//! left the scopes and came back): [`missing`] finds those, and the pass describes them again
+//! ([`reconcile`], after each of its plans and when a model loads). The text in photos is the
+//! library's own text stage's (`media_text`), which AI search weighs a description's words with
+//! (`search.rs`).
 
 use std::path::Path;
 use std::sync::Weak;
@@ -110,37 +120,39 @@ fn key_of(item: &Item) -> Result<(u32, u64), String> {
     Ok((volume, item.file_id))
 }
 
-/// A picture of the pass's (BGRA, upright) as the model's RGB.
-fn rgb_of(picture: &kestrel_media::Bitmap) -> Rgb {
-    let pixels = picture.pixels.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0]]).collect();
-    Rgb { width: picture.width, height: picture.height, pixels }
+/// A photo as the model sees it: decoded straight to its `side` x `side` square, upright, as the
+/// reference prepares it. What the stage describes, and what "Find similar" compares with, so
+/// the same photo always makes the same vector.
+pub fn square_of(path: &str, side: u32) -> Result<Rgb, String> {
+    kestrel_media::priority::background(|| kestrel_embed::image::decode_resized(Path::new(path), side, side)).map_err(|e| e.0)
 }
 
-/// Describes a photo already decoded, or samples and describes a video, into `store`.
-fn describe(embedder: &dyn Embedder, side: u32, store: &RwLock<Store>, plan: &video::Plan, item: &Item, input: &Input) -> Result<usize, String> {
+/// Describes a photo or samples and describes a video, into `store`.
+fn describe(embedder: &dyn Embedder, side: u32, store: &RwLock<Store>, plan: &video::Plan, item: &Item) -> Result<usize, String> {
     let (volume, file_id) = key_of(item)?;
     let row = |at_ms: Option<u32>| Key { volume, file_id, size: item.size, mtime: item.mtime, at_ms };
     if store.read().has_current(volume, file_id, item.size, item.mtime) {
         return Ok(0);
     }
+    // The pass checked the file before running its stages; it is opened again here, so look
+    // once more that it is no placeholder (that would download it).
+    let (attrs, _, _) = on_disk(&item.path).ok_or("The file went")?;
+    if is_placeholder(attrs) {
+        return Err(kestrel_media::pipeline::ONLINE_ONLY.into());
+    }
     let rows: Vec<(Key, Vec<f32>)> = match item.kind {
         Kind::Photo => {
-            let picture = input.picture.ok_or("The picture couldn't be decoded")?;
-            let square = kestrel_embed::resize::resize(&rgb_of(picture), side, side);
+            let square = square_of(&item.path, side)?;
             let vectors = embedder.embed_images(&[square]).map_err(|e| e.0)?;
             vectors.into_iter().map(|vector| (row(None), vector)).collect()
         }
         Kind::Video => {
-            // The pass checked the file before running its stages; the sampler opens it again,
-            // so look once more that it is no placeholder (that would download it).
-            let (attrs, _, _) = on_disk(&item.path).ok_or("The file went")?;
-            if is_placeholder(attrs) {
-                return Err(kestrel_media::pipeline::ONLINE_ONLY.into());
-            }
             let mut frames: Vec<(u32, Rgb)> = Vec::new();
-            video::sample(Path::new(&item.path), plan, &mut |at, frame| {
-                frames.push((at, kestrel_embed::resize::resize(&frame, side, side)));
-                true
+            kestrel_media::priority::background(|| {
+                video::sample(Path::new(&item.path), plan, &mut |at, frame| {
+                    frames.push((at, kestrel_embed::resize::resize(&frame, side, side)));
+                    true
+                })
             })
             .map_err(|e| e.0)?;
             if frames.is_empty() {
@@ -207,11 +219,13 @@ impl Stage for DescribeStage {
         self.version() != 0
     }
 
+    /// Nothing from the pass: the stage decodes each photo to the model's square itself, as the
+    /// reference does, and samples videos (see the module documentation).
     fn needs(&self) -> Needs {
-        Needs { pixels: self.side.load(Ordering::SeqCst) }
+        Needs { pixels: 0 }
     }
 
-    fn run(&self, item: &Item, input: &Input) -> Result<(), String> {
+    fn run(&self, item: &Item, _: &Input) -> Result<(), String> {
         let semantic = self.semantic.upgrade().ok_or("Kestrel is closing")?;
         // The model that set this version, still loaded. Otherwise the stage stops being ready,
         // so the pass records nothing and the item waits, until the loading thread readies it
@@ -221,10 +235,29 @@ impl Stage for DescribeStage {
             semantic.wake_loader();
             return Err("The model changed while the file was read".into());
         };
-        let described = describe(&loaded.embedder, loaded.side, &loaded.store, &self.plan, item, input);
+        let described = describe(&loaded.embedder, loaded.side, &loaded.store, &self.plan, item);
         semantic.status_changed(false);
         described.map(|_| ())
     }
+}
+
+/// The library's items that have no vector in `store`: those the stage did whose vectors went
+/// (see the module documentation), and those it has not done yet, which the pass leaves alone.
+pub fn missing(store: &RwLock<Store>, items: &[Item]) -> Vec<i64> {
+    let store = store.read();
+    items
+        .iter()
+        .filter(|item| volume_code(&item.path).is_none_or(|volume| !store.has_file(volume, item.file_id)))
+        .map(|item| item.id)
+        .collect()
+}
+
+/// Has the pass describe again the items it recorded as described that have no vector in
+/// `store`: its records outlive the vectors (see the module documentation), which would
+/// otherwise never be made again. Returns how many.
+pub fn reconcile(store: &RwLock<Store>, pipeline: &kestrel_media::Pipeline) -> usize {
+    let missing = missing(store, &pipeline.items());
+    pipeline.redo(STAGE, &missing).unwrap_or(0)
 }
 
 /// Tombstones the vectors of files the library no longer holds (deleted, or gone from its
@@ -290,11 +323,6 @@ mod tests {
         Item { id: 1, volume: "c:".into(), file_id: kestrel_index::walk::file_id_of(&path).unwrap(), path, kind, size, mtime }
     }
 
-    /// The pass's picture: BGRA, as WIC gives it.
-    fn bgra(width: u32, height: u32, rgb: [u8; 3]) -> kestrel_media::Bitmap {
-        kestrel_media::Bitmap::filled(width, height, [rgb[2], rgb[1], rgb[0], 255])
-    }
-
     #[test]
     fn photos_and_videos_are_described_once_and_replaced_when_they_change() {
         let _com = kestrel_media::Apartment::enter();
@@ -305,22 +333,17 @@ mod tests {
         video::write_test_video(&clip, 64, 64, 10, &[([200, 20, 20], 2000), ([20, 200, 20], 2000)]).unwrap();
         let store = RwLock::new(Store::open(&dir.join("vectors"), 3, "test").unwrap());
         let plan = video::Plan { every_ms: 1000, max_frames: 8, scene_changes: false };
-        let facts = kestrel_media::Facts::default();
-        let picture = bgra(40, 30, [250, 10, 10]);
         let photo = item(&red, Kind::Photo);
-        let with_picture = Input { facts: &facts, picture: Some(&picture) };
-        assert_eq!(describe(&Colours, 8, &store, &plan, &photo, &with_picture), Ok(1));
+        assert_eq!(describe(&Colours, 8, &store, &plan, &photo), Ok(1));
         // Stored as it is now: not described again.
-        assert_eq!(describe(&Colours, 8, &store, &plan, &photo, &with_picture), Ok(0));
+        assert_eq!(describe(&Colours, 8, &store, &plan, &photo), Ok(0));
         let rows = store.read().rows_of(volume_code(&photo.path).unwrap(), photo.file_id);
         let v = store.read().vector(rows[0]).unwrap();
         assert!(v[0] > v[1] && v[0] > v[2], "red, in RGB order: {v:?}");
-        // Without its picture (it couldn't be decoded), a photo can't be described.
-        assert!(describe(&Colours, 8, &store, &plan, &Item { mtime: 5, ..photo.clone() }, &Input { facts: &facts, picture: None }).is_err());
 
         // A video: a frame a second, each with its moment.
         let video = item(&clip, Kind::Video);
-        assert_eq!(describe(&Colours, 8, &store, &plan, &video, &Input { facts: &facts, picture: None }), Ok(4));
+        assert_eq!(describe(&Colours, 8, &store, &plan, &video), Ok(4));
         let store_now = store.read();
         let moments: Vec<Option<u32>> = store_now
             .rows_of(volume_code(&video.path).unwrap(), video.file_id)
@@ -332,17 +355,150 @@ mod tests {
         drop(store_now);
 
         // Changed (another size or time): its old vector is replaced, not added to.
-        let green = bgra(50, 30, [10, 250, 10]);
-        let changed = Item { size: photo.size + 1, ..photo.clone() };
-        assert_eq!(describe(&Colours, 8, &store, &plan, &changed, &Input { facts: &facts, picture: Some(&green) }), Ok(1));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        kestrel_embed::image::encode(&Rgb::filled(50, 30, [10, 250, 10]), &red, false).unwrap();
+        let changed = item(&red, Kind::Photo);
+        assert_ne!((changed.size, changed.mtime), (photo.size, photo.mtime));
+        assert_eq!(describe(&Colours, 8, &store, &plan, &changed), Ok(1));
         let rows = store.read().rows_of(volume_code(&photo.path).unwrap(), photo.file_id);
         assert_eq!(rows.len(), 1, "one live vector per photo");
         assert!(store.read().vector(rows[0]).unwrap()[1] > 0.9);
+        // A file that is no picture can't be described.
+        let broken = dir.join("broken.jpg");
+        std::fs::write(&broken, b"not a picture").unwrap();
+        assert!(describe(&Colours, 8, &store, &plan, &item(&broken, Kind::Photo)).is_err());
 
         // Files the library no longer holds lose their vectors.
         let keep = std::collections::HashSet::from([(volume_code(&photo.path).unwrap(), photo.file_id)]);
         assert_eq!(sweep(&store, &keep), 4);
         assert_eq!(store.read().live_files(), 1);
+        // And the library's items without one are known.
+        assert_eq!(missing(&store, &[Item { id: 7, ..changed.clone() }, Item { id: 8, ..video.clone() }]), [8]);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Keeps the pictures it is asked to describe.
+    #[derive(Default)]
+    struct Seen(parking_lot::Mutex<Vec<Rgb>>);
+
+    impl Embedder for Seen {
+        fn dim(&self) -> usize {
+            3
+        }
+        fn embed_images(&self, images: &[Rgb]) -> EmbedResult<Vec<Vec<f32>>> {
+            self.0.lock().extend(images.iter().cloned());
+            Ok(images.iter().map(|_| vec![1.0, 0.0, 0.0]).collect())
+        }
+        fn embed_texts(&self, _: &[&str]) -> EmbedResult<Vec<Vec<f32>>> {
+            unreachable!()
+        }
+        fn device(&self) -> DeviceInfo {
+            DeviceInfo { gpu: false, name: "test".into(), note: None }
+        }
+    }
+
+    /// The model sees a photo as the reference prepares it, the whole picture resized to its
+    /// square, whatever else the library's pass decoded: a 4:3 photo was once given to it
+    /// shrunk to 16 x 12 by the pass and stretched to 16 x 16. "Find similar" prepares the
+    /// same picture of it.
+    #[test]
+    fn photos_reach_the_model_as_the_reference_prepares_them() {
+        let _com = kestrel_media::Apartment::enter();
+        let dir = scratch("reference");
+        let mut picture = Rgb::filled(400, 300, [0, 0, 0]);
+        for (i, value) in picture.pixels.iter_mut().enumerate() {
+            *value = (i.wrapping_mul(2_654_435_761) >> 11) as u8;
+        }
+        let path = dir.join("photo.png");
+        kestrel_embed::image::encode(&picture, &path, false).unwrap();
+        let store = RwLock::new(Store::open(&dir.join("vectors"), 3, "test").unwrap());
+        let seen = Seen::default();
+        let plan = video::Plan::default();
+        assert_eq!(describe(&seen, 16, &store, &plan, &item(&path, Kind::Photo)), Ok(1));
+        let reference = kestrel_embed::resize::resize(&kestrel_embed::image::decode(&path).unwrap(), 16, 16);
+        assert_eq!(seen.0.lock().as_slice(), std::slice::from_ref(&reference));
+        assert_eq!(square_of(path.to_str().unwrap(), 16).unwrap(), reference);
+        assert_eq!(DescribeStage::new(std::sync::Weak::new()).needs(), Needs { pixels: 0 }, "nothing from the pass");
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The real describing, as a stage of the pass, into a store that can be swapped.
+    struct Describing {
+        store: std::sync::Arc<RwLock<Store>>,
+    }
+
+    impl Stage for Describing {
+        fn name(&self) -> &'static str {
+            STAGE
+        }
+        fn version(&self) -> u32 {
+            version_for("test")
+        }
+        fn needs(&self) -> Needs {
+            Needs { pixels: 0 }
+        }
+        fn run(&self, item: &Item, _: &Input) -> Result<(), String> {
+            describe(&Colours, 8, &self.store, &video::Plan::default(), item).map(|_| ())
+        }
+    }
+
+    /// The pass's records say a photo is described; its vectors can go all the same: the model
+    /// deleted and downloaded again (the same files, so the same version), the store reset after
+    /// a crash, or the photo's folder out of the scopes for a while (swept) and back. They are
+    /// made again, where once nothing ever made them.
+    #[test]
+    fn vectors_lost_while_the_records_stayed_are_made_again() {
+        let _com = kestrel_media::Apartment::enter();
+        let dir = scratch("lost");
+        let photos = dir.join("photos");
+        std::fs::create_dir_all(&photos).unwrap();
+        for (name, colour) in [("red.png", [250, 10, 10]), ("blue.png", [10, 10, 250])] {
+            kestrel_embed::image::encode(&Rgb::filled(30, 20, colour), &photos.join(name), false).unwrap();
+        }
+        let root = photos.to_str().unwrap().to_owned();
+        let candidates = || {
+            let mut builder = kestrel_index::IndexBuilder::new();
+            kestrel_index::walk::walk(&root, &mut builder).unwrap();
+            kestrel_media::scan::scan(&builder.finish(), std::slice::from_ref(&root))
+        };
+        let store = std::sync::Arc::new(RwLock::new(Store::open(&dir.join("first"), 3, "test").unwrap()));
+        let db = std::sync::Arc::new(kestrel_db::Db::open_in_memory().unwrap());
+        let config = kestrel_media::pipeline::Config { workers: 1, conditions: Box::new(|| None), recheck: std::time::Duration::from_millis(50) };
+        let pipeline = kestrel_media::Pipeline::new(db, config);
+        pipeline.register(std::sync::Arc::new(Describing { store: store.clone() }));
+        pipeline.start();
+        let settle = || assert!(pipeline.wait_idle(std::time::Duration::from_secs(30)));
+        pipeline.plan(candidates()).unwrap();
+        settle();
+        assert_eq!(store.read().live_files(), 2);
+
+        // The model deleted, its folder with it, and downloaded again: an empty store, the
+        // records as they were. Asking again finds nothing to do.
+        *store.write() = Store::open(&dir.join("second"), 3, "test").unwrap();
+        pipeline.requeue();
+        settle();
+        assert_eq!(store.read().live_files(), 0, "the records still say described");
+        assert_eq!(reconcile(&store, &pipeline), 2);
+        settle();
+        assert_eq!(store.read().live_files(), 2);
+        assert_eq!(reconcile(&store, &pipeline), 0, "nothing more to do");
+
+        // A photo leaves the scopes: its vectors are swept. When it comes back, they are made
+        // again.
+        let without_blue: Vec<_> = candidates().into_iter().filter(|c| !c.path.ends_with("blue.png")).collect();
+        pipeline.plan(without_blue).unwrap();
+        let held: std::collections::HashSet<(u32, u64)> =
+            pipeline.items().iter().filter_map(|item| Some((volume_code(&item.path)?, item.file_id))).collect();
+        assert_eq!(sweep(&store, &held), 1);
+        pipeline.plan(candidates()).unwrap();
+        settle();
+        assert_eq!(store.read().live_files(), 1, "back, and its record says described");
+        assert_eq!(reconcile(&store, &pipeline), 1);
+        settle();
+        assert_eq!(store.read().live_files(), 2);
+        pipeline.stop();
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

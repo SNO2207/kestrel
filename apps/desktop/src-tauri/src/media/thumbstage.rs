@@ -43,7 +43,9 @@ impl Stage for ThumbnailStage {
             return Ok(());
         }
         let picture = input.picture.ok_or("No picture to make a thumbnail of")?;
-        let jpeg = picture.fit(GALLERY_THUMB)?.to_jpeg()?;
+        // Made in background mode; filed outside it, as the cache's locks are the thumbnail
+        // protocol's too.
+        let jpeg = kestrel_media::priority::background(|| picture.fit(GALLERY_THUMB)?.to_jpeg())?;
         self.store.put(&item.path, GALLERY_THUMB, mtime, jpeg);
         Ok(())
     }

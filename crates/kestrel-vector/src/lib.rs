@@ -10,10 +10,19 @@
 //!   the frame was taken from, and flags (a tombstone, or a frame).
 //!
 //! Rows are only ever appended. A row whose file changed or went is tombstoned in place (one
-//! flag written), and [`Store::compact`] rewrites both files without them. Both headers carry a
-//! generation that compaction bumps, so a crash between its two renames is noticed when the
-//! store is next opened (the store then starts empty rather than pairing the wrong rows), and a
-//! row half-written by a crash during an append is cut off.
+//! flag written), and compaction rewrites both files without them. Both headers carry a
+//! generation that compaction bumps: the vectors go to a new file that replaces the old one,
+//! then the key table is rewritten in place (from the store's own handle, which no other program
+//! can lock it against), its header last. A crash in between leaves two generations, which the
+//! next open notices (the store then starts empty rather than pairing the wrong rows); a failure
+//! in between leaves the store in memory as the vectors file is, so nothing is ever paired with
+//! another row's key. A row half-written by a crash during an append is cut off.
+//!
+//! Compaction comes in three steps, so a store shared behind a read-write lock is held only
+//! briefly: [`Store::begin_compact`] (read: which rows stay), [`Compaction::write`] (no lock: the
+//! kept vectors copied to a new file from a mapping of its own) and [`Store::finish_compact`]
+//! (write: rows added meanwhile, the switch, the keys). [`Store::flusher`] likewise lets the
+//! files be written to disk without holding the store.
 //!
 //! Vectors are L2-normalised as they are stored and queries as they are searched, so a dot
 //! product is the cosine similarity. A search over 200,000 rows of 1,152 dimensions reads 460 MB
@@ -376,6 +385,11 @@ impl Store {
         self.by_file.get(&(volume, file_id)).map_or_else(Vec::new, |rows| rows.iter().copied().filter(|&row| self.is_live(row)).collect())
     }
 
+    /// Whether the file has a live row, whatever its version.
+    pub fn has_file(&self, volume: u32, file_id: u64) -> bool {
+        self.by_file.get(&(volume, file_id)).is_some_and(|rows| rows.iter().any(|&row| !self.dead[row as usize]))
+    }
+
     /// Whether the file is stored as it is now: a live row with this size and time.
     pub fn has_current(&self, volume: u32, file_id: u64, size: u64, mtime: i64) -> bool {
         self.rows_of(volume, file_id).iter().any(|&row| {
@@ -453,9 +467,20 @@ impl Store {
     }
 
     /// Writes everything to disk.
-    pub fn flush(&mut self) -> io::Result<()> {
+    pub fn flush(&self) -> io::Result<()> {
         self.vectors.sync_data()?;
         self.keys_file.sync_data()
+    }
+
+    /// What writes the store's files to disk without the store: a flush can take a while on a
+    /// busy disk, and nothing need wait for it.
+    pub fn flusher(&self) -> io::Result<Flush> {
+        Ok(Flush { vectors: self.vectors.try_clone()?, keys: self.keys_file.try_clone()? })
+    }
+
+    /// Bumped by every compaction, which renumbers the rows.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The share of rows that are tombstones, which says when compacting is worth it.
@@ -464,47 +489,97 @@ impl Store {
     }
 
     /// Rewrites both files without the tombstoned rows. Row numbers change; returns how many
-    /// rows went.
+    /// rows went. A store shared behind a lock does this in its three steps instead
+    /// ([`Store::begin_compact`]).
     pub fn compact(&mut self) -> io::Result<usize> {
-        let removed = self.keys.len() - self.live;
-        if removed == 0 {
+        let Some(mut compaction) = self.begin_compact()? else { return Ok(0) };
+        compaction.write()?;
+        self.finish_compact(compaction)
+    }
+
+    /// The first step of a compaction: which rows stay, as the store is now. `None` when no row
+    /// is tombstoned. Takes the store only to read it, briefly.
+    pub fn begin_compact(&self) -> io::Result<Option<Compaction>> {
+        if self.live == self.keys.len() {
+            return Ok(None);
+        }
+        Ok(Some(Compaction {
+            dir: self.dir.clone(),
+            dim: self.dim,
+            generation: self.generation,
+            header: Header { dim: self.dim as u32, generation: self.generation + 1, tag: self.tag.clone() },
+            rows: self.keys.len(),
+            keep: (0..self.keys.len() as u32).filter(|&row| !self.dead[row as usize]).collect(),
+            vectors: self.vectors.try_clone()?,
+            written: false,
+        }))
+    }
+
+    /// The last step of a compaction, once [`Compaction::write`] has written the kept vectors:
+    /// adds the rows appended since, puts the new vectors file in place and rewrites the key
+    /// table. Returns how many rows went; 0, with nothing changed, when another compaction
+    /// finished first. On a failure the store is left as consistent in memory as its vectors
+    /// file is (see the module documentation).
+    pub fn finish_compact(&mut self, compaction: Compaction) -> io::Result<usize> {
+        let new_path = compaction.new_path();
+        if compaction.generation != self.generation || compaction.rows > self.keys.len() {
+            let _ = std::fs::remove_file(&new_path);
             return Ok(0);
         }
-        let generation = self.generation + 1;
-        let header = Header { dim: self.dim as u32, generation, tag: self.tag.clone() };
-        let (vec_tmp, key_tmp) = (self.dir.join("vectors.kvec.new"), self.dir.join("keys.kkey.new"));
-        {
-            let mut vectors = io::BufWriter::new(File::create(&vec_tmp)?);
-            let mut keys = io::BufWriter::new(File::create(&key_tmp)?);
-            vectors.write_all(&header.encode(VEC_MAGIC))?;
-            keys.write_all(&header.encode(KEY_MAGIC))?;
-            for row in 0..self.keys.len() {
-                if self.dead[row] {
-                    continue;
-                }
-                let bits = self.row_bits(row).ok_or_else(|| io::Error::other("a row is past the mapped vectors"))?;
-                vectors.write_all(bytemuck::cast_slice(bits))?;
-                keys.write_all(&self.keys[row].encode(false))?;
-            }
-            vectors.into_inner().map_err(|e| e.into_error())?.sync_all()?;
-            keys.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        if !compaction.written {
+            return Err(io::Error::other("the compaction's vectors were not written"));
         }
-        // Windows refuses to replace a file that is mapped, so the map goes first; assigning the
-        // handles drops the old files' (Rust opens files with delete sharing, so holding the
-        // new ones does not stop them being renamed).
+        // The new layout: the rows kept, then every row appended since, each with its key and
+        // whether it is tombstoned now.
+        let order: Vec<u32> = compaction.keep.iter().copied().chain(compaction.rows as u32..self.keys.len() as u32).collect();
+        let mut vectors = OpenOptions::new().read(true).write(true).open(&new_path)?;
+        if compaction.rows < self.keys.len() {
+            vectors.seek(SeekFrom::Start(HEADER as u64 + compaction.keep.len() as u64 * (self.dim * 2) as u64))?;
+            let mut appended = io::BufWriter::new(&vectors);
+            for row in compaction.rows..self.keys.len() {
+                let bits = self.row_bits(row).ok_or_else(|| io::Error::other("a row is past the mapped vectors"))?;
+                appended.write_all(bytemuck::cast_slice(bits))?;
+            }
+            appended.flush()?;
+            drop(appended);
+            vectors.sync_all()?;
+        }
+        // Windows refuses to replace a file that is mapped, so the map goes first. The new
+        // file's handle follows it through the rename (Rust opens files with delete sharing).
         self.map = None;
         self.mapped_rows = 0;
-        self.vectors = File::open(&vec_tmp)?;
-        self.keys_file = File::open(&key_tmp)?;
-        // A failure between the two renames leaves files of two generations, which the next
-        // open reports as a mismatch (and `open_or_reset` starts again).
-        let renamed = std::fs::rename(&vec_tmp, vectors_path(&self.dir))
-            .and_then(|()| std::fs::rename(&key_tmp, keys_path(&self.dir)));
-        self.vectors = open_rw(&vectors_path(&self.dir))?;
-        self.keys_file = open_rw(&keys_path(&self.dir))?;
-        renamed?;
-        self.generation = generation;
-        self.load()?;
+        if let Err(error) = std::fs::rename(&new_path, vectors_path(&self.dir)) {
+            drop(vectors);
+            let _ = std::fs::remove_file(&new_path);
+            self.remap()?;
+            return Err(error);
+        }
+        // The rows tombstoned when it began; any tombstoned since stay, flagged, until the next.
+        let removed = compaction.rows - compaction.keep.len();
+        // From here the vectors file is the new one, so the store in memory is too, whatever
+        // happens to the key table.
+        self.vectors = vectors;
+        self.generation = compaction.header.generation;
+        let (keys, dead) = (std::mem::take(&mut self.keys), std::mem::take(&mut self.dead));
+        self.by_file.clear();
+        self.live = 0;
+        for (row, &old) in order.iter().enumerate() {
+            self.push_key(row as u32, keys[old as usize], dead[old as usize]);
+        }
+        self.remap()?;
+        // The key table, rewritten in place: its body first and its header (the new generation)
+        // last, so it never says it belongs with the new vectors before it does.
+        let mut table = Vec::with_capacity(self.keys.len() * KEY_BYTES);
+        for (key, &dead) in self.keys.iter().zip(&self.dead) {
+            table.extend_from_slice(&key.encode(dead));
+        }
+        self.keys_file.seek(SeekFrom::Start(HEADER as u64))?;
+        self.keys_file.write_all(&table)?;
+        self.keys_file.set_len((HEADER + table.len()) as u64)?;
+        self.keys_file.sync_all()?;
+        self.keys_file.seek(SeekFrom::Start(0))?;
+        self.keys_file.write_all(&compaction.header.encode(KEY_MAGIC))?;
+        self.keys_file.sync_all()?;
         Ok(removed)
     }
 
@@ -516,34 +591,53 @@ impl Store {
 
     /// [`Store::search`] over the live rows `allow` accepts.
     pub fn search_where(&self, query: &[f32], limit: usize, min_score: f32, allow: impl Fn(&Key) -> bool + Sync) -> Vec<Hit> {
-        if query.len() != self.dim || limit == 0 || self.mapped_rows == 0 {
-            return Vec::new();
+        self.search_many(std::slice::from_ref(&query.to_vec()), limit, min_score, allow).pop().unwrap_or_default()
+    }
+
+    /// [`Store::search_where`] for several queries in one pass over the rows: each row is read
+    /// from memory once for all of them, which is most of a search's cost. One list of hits per
+    /// query, in order (empty for a query of the wrong size).
+    pub fn search_many(&self, queries: &[Vec<f32>], limit: usize, min_score: f32, allow: impl Fn(&Key) -> bool + Sync) -> Vec<Vec<Hit>> {
+        let mut out = vec![Vec::new(); queries.len()];
+        let units: Vec<(usize, Vec<f32>)> = queries
+            .iter()
+            .enumerate()
+            .filter(|(_, query)| query.len() == self.dim)
+            .map(|(at, query)| {
+                let mut unit = query.clone();
+                normalize(&mut unit);
+                (at, unit)
+            })
+            .collect();
+        if units.is_empty() || limit == 0 || self.mapped_rows == 0 {
+            return out;
         }
-        let mut unit = query.to_vec();
-        normalize(&mut unit);
         let rows = self.mapped_rows.min(self.keys.len());
         let chunks = rows.div_ceil(CHUNK);
+        let fresh = || units.iter().map(|_| TopK::new(limit)).collect::<Vec<TopK>>();
         let best = (0..chunks)
             .into_par_iter()
-            .fold(
-                || TopK::new(limit),
-                |mut top, chunk| {
-                    let end = ((chunk + 1) * CHUNK).min(rows);
-                    for row in chunk * CHUNK..end {
-                        if self.dead[row] || !allow(&self.keys[row]) {
-                            continue;
-                        }
-                        let Some(bits) = self.row_bits(row) else { continue };
-                        let score = kernel::dot(&unit, bits);
+            .fold(fresh, |mut tops, chunk| {
+                let end = ((chunk + 1) * CHUNK).min(rows);
+                for row in chunk * CHUNK..end {
+                    if self.dead[row] || !allow(&self.keys[row]) {
+                        continue;
+                    }
+                    let Some(bits) = self.row_bits(row) else { continue };
+                    for ((_, unit), top) in units.iter().zip(&mut tops) {
+                        let score = kernel::dot(unit, bits);
                         if score >= min_score {
                             top.offer(Hit { row: row as u32, score });
                         }
                     }
-                    top
-                },
-            )
-            .reduce(|| TopK::new(limit), TopK::merge);
-        best.into_sorted()
+                }
+                tops
+            })
+            .reduce(fresh, |a, b| a.into_iter().zip(b).map(|(a, b)| a.merge(b)).collect());
+        for ((at, _), top) in units.iter().zip(best) {
+            out[*at] = top.into_sorted();
+        }
+        out
     }
 
     /// The best row of each file among the `limit` best rows, best first: a video with many
@@ -564,6 +658,62 @@ impl Store {
         }
         out.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.row.cmp(&b.row)));
         out
+    }
+}
+
+/// A compaction under way: what [`Store::begin_compact`] decided to keep, written to a new file
+/// by [`Compaction::write`] with no lock held, then put in place by [`Store::finish_compact`].
+pub struct Compaction {
+    dir: PathBuf,
+    dim: usize,
+    /// The store's generation when it began: another compaction since makes this one moot.
+    generation: u64,
+    /// The new files' header.
+    header: Header,
+    /// The store's rows when it began.
+    rows: usize,
+    /// The rows live then, in order.
+    keep: Vec<u32>,
+    /// The store's vectors file, mapped here on its own.
+    vectors: File,
+    written: bool,
+}
+
+impl Compaction {
+    fn new_path(&self) -> PathBuf {
+        self.dir.join("vectors.kvec.new")
+    }
+
+    /// Copies the kept rows' vectors to a new file and writes it to disk. Needs nothing of the
+    /// store: searches, appends and tombstones go on meanwhile (rows are only ever appended, so
+    /// those it copies never change).
+    pub fn write(&mut self) -> io::Result<()> {
+        // SAFETY: the store's own file, only ever appended to, as `Store::remap` says.
+        let map = unsafe { Mmap::map(&self.vectors)? };
+        let row_bytes = self.dim * 2;
+        let mut out = io::BufWriter::with_capacity(1 << 20, File::create(self.new_path())?);
+        out.write_all(&self.header.encode(VEC_MAGIC))?;
+        for &row in &self.keep {
+            let start = HEADER + row as usize * row_bytes;
+            let bits = map.get(start..start + row_bytes).ok_or_else(|| io::Error::other("a row is past the vectors file"))?;
+            out.write_all(bits)?;
+        }
+        out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        self.written = true;
+        Ok(())
+    }
+}
+
+/// Writes a store's files to disk, from handles of its own ([`Store::flusher`]).
+pub struct Flush {
+    vectors: File,
+    keys: File,
+}
+
+impl Flush {
+    pub fn run(self) -> io::Result<()> {
+        self.vectors.sync_data()?;
+        self.keys.sync_data()
     }
 }
 

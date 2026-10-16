@@ -8,7 +8,10 @@
 //! the scopes whenever the index has changed (at most every `MIN_RESCAN`) or something asks
 //! (`kick`: the scopes changed, a test), handing what it finds to `Pipeline::plan`. Progress
 //! goes to the windows as `media-progress`, and `media-changed` says the Gallery has something
-//! new to show.
+//! new to show. It runs at normal priority: it holds the index (a step at a time), the
+//! database and, through the features' tidying, their stores, which every search waits on; a
+//! thread in background mode holding one starves with it while the processors are busy
+//! (`kestrel_media::priority`). The heavy work of the pass is the workers', in background mode.
 //!
 //! Scopes: the owner's own list (setting `media.scopes`), or else the defaults
 //! (`kestrel_media::scopes::defaults`). `KESTREL_MEDIA_SCOPES=none` (set by `e2e/dev.mjs` for test
@@ -66,6 +69,8 @@ struct Inner {
     sandbox: Option<Vec<String>>,
     /// Plans asked for, and the last one done: a plan is due while they differ.
     kicks: u64,
+    /// The watching thread ends (tests).
+    stopping: bool,
     planned: u64,
     last_revision: Option<u64>,
     last_scan: Option<Instant>,
@@ -205,12 +210,14 @@ impl Media {
     }
 
     fn watch(self: Arc<Self>) {
-        kestrel_media::pipeline::background_priority();
         let _com = kestrel_media::Apartment::enter();
         let born = Instant::now();
         loop {
             {
                 let mut inner = self.inner.lock();
+                if inner.stopping {
+                    return;
+                }
                 if inner.kicks == inner.planned {
                     self.wake.wait_for(&mut inner, Duration::from_millis(250));
                 }
@@ -664,6 +671,43 @@ mod tests {
         media.pipeline.stop();
         drop(engine);
         std::fs::remove_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// The thread that follows the index holds it (a step at a time), the database and the
+    /// features' stores, which every search waits on: it plans and tidies at normal priority.
+    /// In background mode, while a build kept every core busy, it once held the index's read
+    /// lock for seconds, and every keystroke search with it.
+    #[test]
+    fn the_library_plans_and_tidies_at_normal_priority() {
+        let _com = kestrel_media::Apartment::enter();
+        let dir = std::env::temp_dir().join(format!("kestrel-test-media-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.png"), kestrel_media::Bitmap::filled(16, 16, [9, 9, 9, 255]).to_png().unwrap()).unwrap();
+        let root = dir.to_str().unwrap().to_owned();
+        let engine = Arc::new(Engine::default());
+        let mut builder = IndexBuilder::new();
+        walk::walk(&root, &mut builder).unwrap();
+        engine.install(builder.finish());
+        engine.set_status("ready", false);
+        let cache = std::env::temp_dir().join(format!("kestrel-test-media-watch-thumbs-{}", std::process::id()));
+        let thumbs = ThumbService::with(Arc::new(IconService::start()), cache.clone(), Duration::ZERO);
+        let media = Media::new(engine, Arc::new(Db::open_in_memory().unwrap()), thumbs.store());
+        media.inner.lock().sandbox = Some(vec![root]);
+        let (told, heard) = std::sync::mpsc::channel();
+        media.after_plan(move |_| {
+            let _ = told.send(kestrel_media::priority::in_background());
+        });
+        let watching = media.clone();
+        let thread = std::thread::spawn(move || watching.watch());
+        media.kick();
+        assert_eq!(heard.recv_timeout(Duration::from_secs(30)), Ok(false), "planned and tidied at normal priority");
+        media.inner.lock().stopping = true;
+        media.wake.notify_all();
+        thread.join().unwrap();
+        media.pipeline.stop();
+        let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&cache);
     }
 }

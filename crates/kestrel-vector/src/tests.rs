@@ -240,3 +240,116 @@ fn searching_200k_vectors_is_quick() {
     assert_eq!(hits.len(), 1000);
     assert!(times[2] < std::time::Duration::from_millis(1000), "median {:?}", times[2]);
 }
+
+/// Opens one of the store's files as another program might (a scanner, a backup), sharing
+/// reading and writing but not deleting: such a handle stops the file being replaced.
+fn held(path: &Path) -> File {
+    use std::os::windows::fs::OpenOptionsExt;
+    OpenOptions::new().read(true).share_mode(1 | 2).open(path).unwrap()
+}
+
+/// The file each live row's vector is closest to, by searching for it: a store that paired
+/// rows with the wrong keys answers with other files.
+fn found_as(store: &Store, rows: &[(Key, Vec<f32>)]) -> Vec<(u64, u64)> {
+    rows.iter().map(|(key, vector)| (key.file_id, store.key(store.search(vector, 1, -1.0)[0].row).unwrap().file_id)).collect()
+}
+
+#[test]
+fn compaction_goes_on_while_the_store_is_used_and_another_program_holds_its_keys() {
+    let scratch = Scratch::new("compact-steps");
+    let mut rng = Rng(21);
+    let dim = 16;
+    let mut store = Store::open(&scratch.0, dim, "t").unwrap();
+    let rows: Vec<(Key, Vec<f32>)> = (0..200).map(|i| (key(i), rng.vector(dim))).collect();
+    store.append(&rows).unwrap();
+    for i in 0..60 {
+        store.tombstone_file(b'C' as u32, i).unwrap();
+    }
+    // Begun under a read lock, written with none: meanwhile a row is added and another dies.
+    let mut compaction = store.begin_compact().unwrap().unwrap();
+    let late = (key(500), rng.vector(dim));
+    store.append(std::slice::from_ref(&late)).unwrap();
+    store.tombstone_file(b'C' as u32, 100).unwrap();
+    compaction.write().unwrap();
+    // A program holding the key table without delete sharing doesn't stop it: the table is
+    // rewritten in place, through the store's own handle.
+    let keys_held = held(&keys_path(&scratch.0));
+    assert_eq!(store.finish_compact(compaction).unwrap(), 60);
+    drop(keys_held);
+    let generation = store.generation();
+    assert_eq!((store.len(), store.live()), (141, 140), "the row that died meanwhile stays, flagged, until the next");
+    let mut alive: Vec<(Key, Vec<f32>)> = rows[60..].iter().filter(|(key, _)| key.file_id != 100).cloned().collect();
+    alive.push(late.clone());
+    assert!(found_as(&store, &alive).iter().all(|(asked, found)| asked == found));
+    assert!(store.rows_of(b'C' as u32, 100).is_empty());
+    // It goes on: an append lands after the compacted rows, and the files agree when opened.
+    let after = (key(600), rng.vector(dim));
+    store.append(std::slice::from_ref(&after)).unwrap();
+    alive.push(after);
+    drop(store);
+    let store = Store::open(&scratch.0, dim, "t").unwrap();
+    assert_eq!((store.len(), store.live(), store.generation()), (142, 141, generation));
+    assert!(found_as(&store, &alive).iter().all(|(asked, found)| asked == found));
+    assert!(!scratch.0.join("vectors.kvec.new").exists());
+}
+
+#[test]
+fn a_compaction_that_cannot_replace_the_vectors_leaves_the_store_as_it_was() {
+    let scratch = Scratch::new("compact-refused");
+    let mut rng = Rng(5);
+    let dim = 8;
+    let mut store = Store::open(&scratch.0, dim, "t").unwrap();
+    let rows: Vec<(Key, Vec<f32>)> = (0..50).map(|i| (key(i), rng.vector(dim))).collect();
+    store.append(&rows).unwrap();
+    store.tombstone_file(b'C' as u32, 3).unwrap();
+    let vectors_held = held(&vectors_path(&scratch.0));
+    assert!(store.compact().is_err());
+    drop(vectors_held);
+    // Searched and added to as before: every row with its own key.
+    let alive: Vec<(Key, Vec<f32>)> = rows.iter().filter(|(key, _)| key.file_id != 3).cloned().collect();
+    assert!(found_as(&store, &alive).iter().all(|(asked, found)| asked == found));
+    let more = (key(99), rng.vector(dim));
+    assert_eq!(store.append(std::slice::from_ref(&more)).unwrap(), 50);
+    assert_eq!(found_as(&store, std::slice::from_ref(&more)), [(99, 99)]);
+    drop(store);
+    let store = Store::open(&scratch.0, dim, "t").unwrap();
+    assert_eq!((store.len(), store.live()), (51, 50));
+    // And once nothing holds it, it compacts.
+    let mut store = store;
+    assert_eq!(store.compact().unwrap(), 1);
+    assert_eq!((store.len(), store.live()), (50, 50));
+}
+
+#[test]
+fn a_compaction_overtaken_by_another_changes_nothing() {
+    let scratch = Scratch::new("compact-moot");
+    let mut rng = Rng(8);
+    let mut store = Store::open(&scratch.0, 8, "t").unwrap();
+    store.append(&(0..20).map(|i| (key(i), rng.vector(8))).collect::<Vec<_>>()).unwrap();
+    store.tombstone(4).unwrap();
+    let mut first = store.begin_compact().unwrap().unwrap();
+    first.write().unwrap();
+    assert_eq!(store.compact().unwrap(), 1);
+    assert_eq!(store.finish_compact(first).unwrap(), 0, "the store was compacted meanwhile");
+    assert_eq!((store.len(), store.live()), (19, 19));
+    assert!(store.begin_compact().unwrap().is_none(), "nothing to do");
+    store.flusher().unwrap().run().unwrap();
+}
+
+#[test]
+fn several_queries_in_one_pass_find_what_each_finds_alone() {
+    let scratch = Scratch::new("many");
+    let dim = 40;
+    let mut store = Store::open(&scratch.0, dim, "t").unwrap();
+    let mut rng = Rng(13);
+    store.append(&(0..6000).map(|i| (key(i), rng.vector(dim))).collect::<Vec<_>>()).unwrap();
+    store.tombstone(17).unwrap();
+    let queries: Vec<Vec<f32>> = (0..5).map(|_| rng.vector(dim)).chain([vec![1.0; 3]]).collect();
+    let odd = |key: &Key| key.file_id % 2 == 1;
+    let many = store.search_many(&queries, 25, 0.1, odd);
+    assert_eq!(many.len(), 6);
+    for (query, hits) in queries.iter().zip(&many) {
+        assert_eq!(hits, &store.search_where(query, 25, 0.1, odd));
+    }
+    assert!(many[5].is_empty(), "a query of the wrong size finds nothing");
+}

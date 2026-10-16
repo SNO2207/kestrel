@@ -26,12 +26,37 @@ pub struct Script {
     pub command: String,
 }
 
+/// A file of the project's whose contents are on this PC: not a folder, and not an online-only
+/// file (a project in OneDrive), which opening would download. Another program can ask for a
+/// project's details through the query service, and its files are never fetched for it. Read
+/// from the directory entry; nothing is opened.
+pub(super) fn local_file(path: &Path) -> Option<kestrel_content::fsinfo::Info> {
+    use kestrel_content::fsinfo::{CLOUD_ONLY, DIRECTORY, attributes};
+    attributes(path.to_str()?).filter(|info| info.attrs & (CLOUD_ONLY | DIRECTORY) == 0)
+}
+
+/// Whether a file is there, its contents on this PC or not, without opening it (std's
+/// `is_file` opens it).
+fn is_file(path: &Path) -> bool {
+    path.to_str().and_then(kestrel_content::fsinfo::attributes).is_some_and(|info| info.attrs & kestrel_content::fsinfo::DIRECTORY == 0)
+}
+
+/// At most `limit` bytes of a file whose contents are on this PC (`local_file`), and whether
+/// there was more.
+pub(super) fn read_local(path: &Path, limit: u64) -> Option<(Vec<u8>, bool)> {
+    use std::io::Read;
+    let info = local_file(path)?;
+    let mut bytes = Vec::new();
+    // `open` looks at the attributes again just before it opens the file.
+    kestrel_content::fsinfo::open(path.to_str()?)?.take(limit).read_to_end(&mut bytes).ok()?;
+    Some((bytes, info.size > limit))
+}
+
 fn read_small(path: &Path) -> Option<String> {
-    let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_MANIFEST {
+    let (bytes, more) = read_local(path, MAX_MANIFEST)?;
+    if more {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
     Some(String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_owned())
 }
 
@@ -94,11 +119,11 @@ fn package_scripts(json: &str) -> Vec<(String, String)> {
 
 /// Which package manager a Node project uses, from its lock file.
 fn package_manager(root: &Path) -> &'static str {
-    if root.join("pnpm-lock.yaml").is_file() {
+    if is_file(&root.join("pnpm-lock.yaml")) {
         "pnpm"
-    } else if root.join("yarn.lock").is_file() {
+    } else if is_file(&root.join("yarn.lock")) {
         "yarn"
-    } else if root.join("bun.lockb").is_file() || root.join("bun.lock").is_file() {
+    } else if is_file(&root.join("bun.lockb")) || is_file(&root.join("bun.lock")) {
         "bun"
     } else {
         "npm"
@@ -183,18 +208,18 @@ pub fn detect(root: &Path) -> Vec<Script> {
         }
     }
     if let Some(toml) = read_small(&root.join("Cargo.toml")) {
-        let runnable = root.join("src").join("main.rs").is_file() || toml.contains("[[bin]]");
+        let runnable = is_file(&root.join("src").join("main.rs")) || toml.contains("[[bin]]");
         for verb in ["build", "test"].into_iter().chain(runnable.then_some("run")) {
             scripts.push(Script { source: "cargo", name: verb.to_owned(), command: format!("cargo {verb}") });
         }
     }
-    let justfile = ["justfile", "Justfile", ".justfile"].iter().map(|name| root.join(name)).find(|p| p.is_file());
+    let justfile = ["justfile", "Justfile", ".justfile"].iter().map(|name| root.join(name)).find(|p| is_file(p));
     if let Some(text) = justfile.and_then(|p| read_small(&p)) {
         for name in just_recipes(&text).into_iter().take(MAX_PER_SOURCE) {
             scripts.push(Script { source: "just", command: format!("just {name}"), name });
         }
     }
-    let makefile = ["GNUmakefile", "Makefile", "makefile"].iter().map(|name| root.join(name)).find(|p| p.is_file());
+    let makefile = ["GNUmakefile", "Makefile", "makefile"].iter().map(|name| root.join(name)).find(|p| is_file(p));
     if let Some(text) = makefile.and_then(|p| read_small(&p)) {
         for name in make_targets(&text).into_iter().take(MAX_PER_SOURCE) {
             scripts.push(Script { source: "make", command: format!("make {name}"), name });

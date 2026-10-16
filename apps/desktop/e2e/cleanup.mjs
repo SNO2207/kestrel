@@ -283,8 +283,11 @@ try {
   });
 
   await step("duplicates are found and one copy goes to the Recycle Bin, then comes back", async () => {
-    // The palette's way in opens the hub on the user folder, at its Duplicates tab.
+    // The palette's way in opens the hub on the user folder, at its Duplicates tab: once the
+    // backend has said where the finder looks, so the tab is waited for (the hub is already open,
+    // at Cleanup, until then).
     await choosePaletteAction("Find duplicate files");
+    await page.locator('.disk-tab[aria-selected="true"]', { hasText: /^Duplicates$/ }).waitFor();
     assert.equal(await shownTab.textContent(), "Duplicates");
     await page.locator(".dupes-root").first().waitFor();
     assert.deepEqual(await page.locator(".dupes-root-path").allTextContents(), [profile]);

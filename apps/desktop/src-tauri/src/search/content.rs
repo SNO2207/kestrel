@@ -1,12 +1,19 @@
 //! Searches inside files, one per tab of each window, running in the background while the
 //! results list shows what they found so far.
 //!
-//! A search starts when the tab asks with new text or options, which first cancels the tab's
-//! previous one (every keystroke does this). The thread reading files hands each match to the
-//! search's list; another sends `search-progress` to the window four times a second while it
-//! runs, and once more when it is done. The window then asks again with `update`, and gets a
-//! fresh result set holding everything found so far, sorted as the tab sorts, in place of the
-//! one it shows (`Engine::show_found`), its selection carried across by path.
+//! A search starts when the tab asks with new text or options, which first stops the tab's
+//! previous one (every keystroke does this), before anything else. The command answers at once
+//! with what little is found by then; the thread reading files hands each match to the search's
+//! list, and another sends `search-progress` to the window as soon as the first match is found
+//! (or the search is done), then four times a second while it runs, and once more when it is
+//! done. The window then asks again with `update`, and gets a fresh result set holding
+//! everything found so far, sorted as the tab sorts, in place of the one it shows
+//! (`Engine::show_found`), its selection carried across by path.
+//!
+//! The files a search reads, when the query's other clauses choose them, are kept for the tab
+//! (`Searches::chosen`): typing changes the text to find, not the files, and choosing them
+//! again on every keystroke (an index search and a row for every file, a tenth of a second
+//! over a quarter of a million files) held each keystroke up.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,22 +26,25 @@ use kestrel_query::{ClauseKind, NameFilter, Query};
 use parking_lot::Mutex;
 use regex::{Regex, RegexBuilder};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
 
 use crate::engine::{Engine, Listing, SortSpec};
 use crate::visibility::Visibility;
 
 /// How often a running search tells its window how far it got.
 const TICK: Duration = Duration::from_millis(250);
-/// How long a new search may run before its first results are shown.
-const FIRST_LOOK: Duration = Duration::from_millis(150);
+/// How often a new search looks for its first match (or its end), to tell the window at once.
+const FIRST_LOOK: Duration = Duration::from_millis(10);
+
+/// The files an index search chose, as `(folder, item)`; shared between the searches of one
+/// tab that choose the same.
+pub type Chosen = Arc<Vec<(String, DirItem)>>;
 
 /// Where a search's files come from.
 pub enum Files {
     /// Everything beneath a folder, listed from disk, narrowed by the query's other clauses.
     Folder { root: String, visibility: Visibility, filters: Filters },
     /// These files, found by an index search of the query's other clauses.
-    Chosen(Vec<(String, DirItem)>),
+    Chosen(Chosen),
 }
 
 /// Everything a search needs, decided by the command before it starts.
@@ -47,6 +57,9 @@ pub struct Plan {
     pub taken: Vec<(i64, i64, bool)>,
     /// Where it looks, in words, for the status line: "in Downloads".
     pub place: String,
+    /// How long each file waits before it is read: nothing, except for the end-to-end tests
+    /// (`search_dev_slow`) and the unit tests, which watch results arrive.
+    pub dawdle: Duration,
 }
 
 /// A search's state, as the window shows it.
@@ -103,12 +116,15 @@ impl Running {
 #[derive(Default)]
 pub struct Searches {
     running: Mutex<HashMap<String, Arc<Running>>>,
+    /// The files each tab's last search chose, and what chose them.
+    chosen: Mutex<HashMap<String, (String, Chosen)>>,
 }
 
+/// What `search-progress` carries to the window.
 #[derive(Clone, Serialize)]
-struct ProgressEvent {
-    tab: u32,
-    status: Status,
+pub struct ProgressEvent {
+    pub tab: u32,
+    pub status: Status,
 }
 
 fn slot(window: &str, tab: u32) -> String {
@@ -121,6 +137,32 @@ impl Searches {
         if let Some(old) = self.running.lock().remove(&slot(window, tab)) {
             old.cancel.store(true, Ordering::Relaxed);
         }
+        self.chosen.lock().remove(&slot(window, tab));
+    }
+
+    /// A new search is asked for in the tab (another `key`): the one it replaces stops reading
+    /// now, rather than once the new one has chosen its files and started.
+    pub fn supersede(&self, window: &str, tab: u32, key: &str) {
+        if let Some(running) = self.running.lock().get(&slot(window, tab))
+            && running.key != key
+        {
+            running.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// The files the tab's search reads: those its last search chose, when they were chosen the
+    /// same way (`key`: the clauses that choose them, the folder, what is shown, the index's
+    /// revision), or else what `choose` chooses now.
+    pub fn chosen(&self, window: &str, tab: u32, key: String, choose: impl FnOnce() -> Result<Vec<(String, DirItem)>, String>) -> Result<Chosen, String> {
+        let slot = slot(window, tab);
+        if let Some((kept, files)) = self.chosen.lock().get(&slot)
+            && *kept == key
+        {
+            return Ok(files.clone());
+        }
+        let files: Chosen = Arc::new(choose()?);
+        self.chosen.lock().insert(slot, (key, files.clone()));
+        Ok(files)
     }
 
     /// Stops the tab's search where it got to, keeping what it found: updates of it then show
@@ -152,9 +194,12 @@ impl Searches {
         run(&running, plan);
     }
 
-    /// Starts a search for the tab, cancelling its previous one, and waits a moment for the
-    /// first results.
-    pub fn start(&self, app: AppHandle, window: &str, tab: u32, key: String, plan: Plan) {
+    /// Starts a search for the tab, cancelling its previous one, and returns at once: `tell`
+    /// hears of its progress (the window's `search-progress`), first as soon as it finds a
+    /// match or is done, then four times a second. The keystroke that started it is never held
+    /// up waiting for results: a tab runs one search command at a time, so the next keystroke
+    /// would wait too.
+    pub fn start(&self, tell: impl Fn(ProgressEvent) + Send + 'static, window: &str, tab: u32, key: String, plan: Plan) {
         let running = Running::new(key, plan.place.clone());
         if let Some(old) = self.running.lock().insert(slot(window, tab), running.clone()) {
             old.cancel.store(true, Ordering::Relaxed);
@@ -166,30 +211,29 @@ impl Searches {
             return;
         }
         let ticking = running.clone();
-        let label = window.to_owned();
         let _ = std::thread::Builder::new().name("kestrel-content-progress".into()).spawn(move || {
             let mut last: Option<(Counts, bool)> = None;
+            let begun = Instant::now();
             loop {
-                std::thread::sleep(TICK);
+                std::thread::sleep(if last.is_none() { FIRST_LOOK } else { TICK });
                 if ticking.cancel.load(Ordering::Relaxed) {
                     return;
                 }
                 let status = ticking.status();
+                // Until the first word, nothing is said before there is something to show.
+                if last.is_none() && status.counts.matched == 0 && !status.done && begun.elapsed() < TICK {
+                    continue;
+                }
                 let now = (status.counts, status.done);
                 if last != Some(now) {
                     last = Some(now);
-                    let _ = app.emit_to(label.as_str(), "search-progress", ProgressEvent { tab, status: status.clone() });
+                    tell(ProgressEvent { tab, status: status.clone() });
                 }
                 if status.done {
                     return;
                 }
             }
         });
-        // The first results, or the whole answer for a small folder, come with the reply.
-        let until = Instant::now() + FIRST_LOOK;
-        while Instant::now() < until && !running.done.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(5));
-        }
     }
 }
 
@@ -210,18 +254,23 @@ pub fn slow_down(ms: u64) {
     SLOW_MS.store(ms, Ordering::Relaxed);
 }
 
-fn dawdle(cancel: &AtomicBool) {
+/// How long each file of a search planned now waits (development builds only).
+pub fn slowness() -> Duration {
     let ms = SLOW_MS.load(Ordering::Relaxed);
-    if cfg!(debug_assertions) && ms > 0 && !cancel.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(ms));
+    if cfg!(debug_assertions) { Duration::from_millis(ms) } else { Duration::ZERO }
+}
+
+fn dawdle(how_long: Duration, cancel: &AtomicBool) {
+    if !how_long.is_zero() && !cancel.load(Ordering::Relaxed) {
+        std::thread::sleep(how_long);
     }
 }
 
 /// Reads the files.
 fn run(running: &Running, plan: Plan) {
-    let Plan { search, files, gitignore, taken, .. } = plan;
+    let Plan { search, files, gitignore, taken, dawdle: how_long, .. } = plan;
     let taken_ok = |path: &str| {
-        dawdle(&running.cancel);
+        dawdle(how_long, &running.cancel);
         if taken.is_empty() {
             return true;
         }
@@ -239,8 +288,7 @@ fn run(running: &Running, plan: Plan) {
         }
         Files::Chosen(chosen) => {
             let filter = |path: &str, _: &DirItem| taken_ok(path);
-            let slow = cfg!(debug_assertions) && SLOW_MS.load(Ordering::Relaxed) > 0;
-            let filter: Option<&kestrel_content::Filter<'_>> = if taken.is_empty() && !slow { None } else { Some(&filter) };
+            let filter: Option<&kestrel_content::Filter<'_>> = if taken.is_empty() && how_long.is_zero() { None } else { Some(&filter) };
             let run = Run { search: &search, gitignore, filter, cancel: &cancel, progress: &running.progress };
             run.run(Source::Files(chosen), &found);
         }
@@ -366,5 +414,80 @@ mod tests {
             assert_eq!(filters(query).matches(path, &notes), expected, "{query}");
         }
         assert!(Filters::new(&parse("regex:(", CLOCK).unwrap()).is_err());
+    }
+
+    /// A search for "needle" in these files, each waiting `dawdle` before it is read.
+    fn plan_over(files: &Chosen, dawdle: Duration) -> Plan {
+        let pattern = kestrel_content::Pattern { text: "needle".into(), regex: false, case: kestrel_content::Case::Insensitive, whole_word: false, negate: false };
+        let search = Search::new(&[pattern], kestrel_content::Limits::default()).unwrap();
+        Plan { search, files: Files::Chosen(files.clone()), gitignore: false, taken: Vec::new(), place: "test".into(), dawdle }
+    }
+
+    fn needles(label: &str) -> (std::path::PathBuf, Chosen) {
+        let root = std::env::temp_dir().join(format!("kestrel-search-content-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut files = Vec::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(root.join(name), "hay\nneedle\n").unwrap();
+            files.push((root.to_str().unwrap().to_owned(), item(name, 11, 0)));
+        }
+        (root, Arc::new(files))
+    }
+
+    /// Every keystroke of a search inside files starts one. The command answers at once (it once
+    /// waited up to 150 ms for the first results, and the tab's next keystroke waited behind
+    /// it), the window hears of the first match as soon as it is found, and the search a new
+    /// keystroke replaces stops reading before anything else happens.
+    #[test]
+    fn a_search_inside_files_answers_at_once_and_tells_of_matches_as_they_come() {
+        let (root, files) = needles("start");
+        let searches = Searches::default();
+        let (told, heard) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        searches.start(move |event: ProgressEvent| drop(told.send(event.status)), "main", 1, "first".into(), plan_over(&files, Duration::from_millis(100)));
+        assert!(started.elapsed() < Duration::from_millis(100), "{:?}", started.elapsed());
+        let first = heard.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(first.counts.matched > 0 || first.done, "the first word says something was found: {first:?}");
+        let mut last = first;
+        while !last.done {
+            last = heard.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+        assert_eq!(last.counts.matched, 3);
+
+        // Superseded by another search: stopped at once. Asked again for the same: left alone.
+        searches.start(|_: ProgressEvent| {}, "main", 1, "second".into(), plan_over(&files, Duration::from_secs(30)));
+        let running = |searches: &Searches| searches.running.lock().get(&slot("main", 1)).unwrap().clone();
+        searches.supersede("main", 1, "second");
+        assert!(!running(&searches).cancel.load(Ordering::Relaxed));
+        searches.supersede("main", 1, "third");
+        assert!(running(&searches).cancel.load(Ordering::Relaxed));
+        assert!(running(&searches).status().done, "a stopped search is over");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Typing in a search inside files changes the text to find, not the files: those the other
+    /// clauses chose are kept while what chose them stands.
+    #[test]
+    fn the_files_chosen_are_kept_while_what_chose_them_stands() {
+        let (root, files) = needles("chosen");
+        let searches = Searches::default();
+        let asked = std::cell::Cell::new(0);
+        let choose = || {
+            asked.set(asked.get() + 1);
+            Ok(files.as_ref().clone())
+        };
+        let first = searches.chosen("main", 1, "ext:txt @ 7".into(), choose).unwrap();
+        let again = searches.chosen("main", 1, "ext:txt @ 7".into(), choose).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_eq!(asked.get(), 1);
+        searches.chosen("main", 1, "ext:txt @ 8".into(), choose).unwrap();
+        searches.chosen("main", 2, "ext:txt @ 8".into(), choose).unwrap();
+        assert_eq!(asked.get(), 3, "the index changed, or another tab");
+        searches.cancel("main", 1);
+        searches.chosen("main", 1, "ext:txt @ 8".into(), choose).unwrap();
+        assert_eq!(asked.get(), 4, "a tab that left its search forgets them");
+        assert!(searches.chosen("main", 3, "x".into(), || Err("no".into())).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

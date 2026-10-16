@@ -9,8 +9,8 @@ use std::path::Path;
 
 use windows::Win32::Foundation::GENERIC_READ;
 use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppRGBA, IWICBitmapFrameDecode, IWICImagingFactory, IWICPalette,
-    WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand,
+    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppRGBA, IWICBitmapFrameDecode, IWICFormatConverter, IWICImagingFactory,
+    IWICPalette, WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand, WICRect,
 };
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PropVariantClear};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
@@ -103,12 +103,12 @@ fn orientation(frame: &IWICBitmapFrameDecode) -> u16 {
     }
 }
 
-/// Decodes the first frame of the picture at `path`, upright, as RGB.
-pub fn decode(path: &Path) -> Result<Rgb> {
-    let factory = factory()?;
+/// The first frame of the picture at `path` as 8-bit RGBA (alpha left as it is, to be dropped),
+/// its stored size and its EXIF orientation.
+fn open(factory: &IWICImagingFactory, path: &Path) -> Result<(IWICFormatConverter, u32, u32, u16)> {
     let wide = HSTRING::from(path);
-    // SAFETY: every interface is owned and released on return; the pixel buffer is sized from
-    // the converter's own dimensions before CopyPixels writes into it.
+    // SAFETY: every interface is owned and released when dropped; the converter keeps the frame
+    // (and so the decoder) alive.
     unsafe {
         let decoder = factory
             .CreateDecoderFromFilename(&wide, None, GENERIC_READ, WICDecodeMetadataCacheOnDemand)
@@ -128,12 +128,50 @@ pub fn decode(path: &Path) -> Result<Rgb> {
             0.0,
             WICBitmapPaletteTypeCustom,
         )?;
-        let stride = width * 4;
-        let mut rgba = vec![0u8; (stride * height) as usize];
-        converter.CopyPixels(std::ptr::null(), stride, &mut rgba)?;
-        let pixels = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
-        Ok(Rgb { width, height, pixels }.oriented(orientation(&frame)))
+        Ok((converter, width, height, orientation(&frame)))
     }
+}
+
+/// Decodes the first frame of the picture at `path`, upright, as RGB.
+pub fn decode(path: &Path) -> Result<Rgb> {
+    let factory = factory()?;
+    let (converter, width, height, orientation) = open(&factory, path)?;
+    let stride = width * 4;
+    let mut rgba = vec![0u8; (stride * height) as usize];
+    // SAFETY: the buffer holds the whole frame at the stride given.
+    unsafe { converter.CopyPixels(std::ptr::null(), stride, &mut rgba)? };
+    let pixels = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    Ok(Rgb { width, height, pixels }.oriented(orientation))
+}
+
+/// Bytes of decoded rows held at once by [`decode_resized`].
+const STRIP_BYTES: usize = 4 << 20;
+
+/// Decodes the picture at `path` upright and resized to `width` x `height` with Pillow's
+/// bilinear filter: exactly `resize(&decode(path)?, width, height)`, the reference's
+/// preprocessing, but a strip of rows at a time ([`crate::resize::Streaming`]), so a
+/// 48-megapixel photo never sits in memory whole, let alone twice.
+pub fn decode_resized(path: &Path, width: u32, height: u32) -> Result<Rgb> {
+    let factory = factory()?;
+    let (converter, stored_w, stored_h, orientation) = open(&factory, path)?;
+    let mut streaming = crate::resize::Streaming::new(stored_w, stored_h, orientation, width, height)
+        .ok_or_else(|| Error(format!("can't make a picture of {width} x {height}")))?;
+    let row = stored_w as usize * 4;
+    let strip = (STRIP_BYTES / row).max(1);
+    let mut buffer = vec![0u8; strip.min(stored_h as usize) * row];
+    let rows = streaming.stored_rows();
+    let mut y = rows.start;
+    while y < rows.end {
+        let count = strip.min(rows.end - y);
+        let rect = WICRect { X: 0, Y: y as i32, Width: stored_w as i32, Height: count as i32 };
+        // SAFETY: the buffer holds `count` rows at the stride given.
+        unsafe { converter.CopyPixels(&rect, row as u32, &mut buffer[..count * row])? };
+        for (offset, pixels) in buffer[..count * row].chunks_exact(row).enumerate() {
+            streaming.feed(y + offset, pixels);
+        }
+        y += count;
+    }
+    Ok(streaming.finish())
 }
 
 /// Writes `image` as a PNG (exact) or a JPEG (lossy) with WIC, for tests and fixtures.
@@ -305,6 +343,37 @@ mod tests {
         let path = dir.join("bad.jpg");
         std::fs::write(&path, b"no picture here").unwrap();
         assert!(decode(&path).unwrap_err().0.contains("can't read"));
+        assert!(decode_resized(&path, 16, 16).unwrap_err().0.contains("can't read"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Decoded straight to the model's square a strip at a time, a photo comes out exactly as
+    /// the reference makes it from the whole picture, turned or not, larger than one strip or
+    /// not.
+    #[test]
+    fn a_photo_decoded_to_its_size_is_the_whole_picture_resized() {
+        let dir = scratch("resized");
+        // Noise survives a PNG exactly; a strip is 4 MB, so 1200 x 1000 RGBA is several strips.
+        let mut picture = quarters(1200, 1000);
+        for (i, value) in picture.pixels.iter_mut().enumerate() {
+            *value = value.wrapping_add((i.wrapping_mul(2_654_435_761) >> 13) as u8 & 0x3f);
+        }
+        let png = dir.join("noise.png");
+        encode(&picture, &png, false).unwrap();
+        let jpeg = dir.join("photo.jpg");
+        encode(&picture, &jpeg, true).unwrap();
+        let bytes = std::fs::read(&jpeg).unwrap();
+        let mut tagged = bytes[..2].to_vec();
+        tagged.extend(exif_orientation(6));
+        tagged.extend_from_slice(&bytes[2..]);
+        let turned = dir.join("turned.jpg");
+        std::fs::write(&turned, tagged).unwrap();
+        for path in [&png, &jpeg, &turned] {
+            for (w, h) in [(256, 256), (384, 384), (1000, 1200)] {
+                let reference = crate::resize::resize(&decode(path).unwrap(), w, h);
+                assert_eq!(decode_resized(path, w, h).unwrap(), reference, "{} to {w} x {h}", path.display());
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

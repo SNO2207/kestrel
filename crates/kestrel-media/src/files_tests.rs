@@ -127,6 +127,41 @@ fn video_facts_and_frames_come_from_windows() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A phone's upright video is stored sideways with a quarter turn to show it: the frame comes
+/// back turned, as Windows' own thumbnail shows it, and the pass keeps its upright dimensions.
+#[test]
+fn a_turned_video_is_shown_upright() {
+    let _com = Apartment::enter();
+    let dir = scratch("turned-video");
+    let video = dir.join("portrait.mp4");
+    fixtures::write_video_turned(&video, 320, 240, 15, 15, 90, |_| quarters(320, 240)).unwrap();
+    let facts = props::read(&text(&video), Kind::Video).unwrap();
+    assert_eq!((facts.width, facts.height), (Some(240), Some(320)), "the property system turns it");
+
+    let frame = decode::video_frame(&text(&video), 0.5, 160).unwrap();
+    let b = &frame.bitmap;
+    assert_eq!((b.width, b.height), (120, 160));
+    // Turned a quarter clockwise, as a JPEG of orientation 6: blue (bottom left) comes to the
+    // top left.
+    let corners = [b.at(20, 20), b.at(100, 20), b.at(20, 140), b.at(100, 140)].map(quarter_colour);
+    assert_eq!(corners, ['b', 'r', 'w', 'g']);
+    let mut checked = facts.clone();
+    assert!(!crate::pipeline::agree(&mut checked, b), "the picture and the facts agree");
+
+    // Through the pass: the facts stay upright, and stages get the upright frame.
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let stage = Arc::new(Recording::default());
+    let pipeline = pipeline(&db, &stage, || None);
+    pipeline.plan(candidates(&dir)).unwrap();
+    assert!(pipeline.wait_idle(Duration::from_secs(30)));
+    assert_eq!(stage.runs.lock()[0].2, Some((48, 64)));
+    let item = pipeline.items().remove(0);
+    let stored = kestrel_db::media::facts(&db, item.id).unwrap().unwrap();
+    assert_eq!((stored.width, stored.height), (Some(240), Some(320)));
+    pipeline.stop();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn text_in_an_image_is_recognised() {
     let _com = Apartment::enter();
@@ -418,6 +453,123 @@ fn failures_are_recorded_with_their_reason_and_not_retried() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A file that has gone by the time a worker comes to it (the index hasn't heard yet) waits for
+/// the next plan: the workers once put it straight back at the head of the queue and spun on it
+/// a hundred thousand times a second.
+#[test]
+fn a_file_missing_when_read_waits_for_the_next_plan() {
+    let _com = Apartment::enter();
+    let dir = scratch("missing");
+    let base = std::time::SystemTime::now() - Duration::from_secs(3600);
+    for (n, name) in ["old.jpg", "new.jpg"].iter().enumerate() {
+        let path = dir.join(name);
+        fixtures::write_jpeg(&path, &quarters(32, 32), &Exif::default()).unwrap();
+        // The newer one is read first, so it would come straight back.
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(base + Duration::from_secs(n as u64 * 60)).unwrap();
+    }
+    let found = candidates(&dir);
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let stage = Arc::new(Recording::default());
+    let pipeline = Pipeline::new(db.clone(), Config { workers: 2, conditions: Box::new(|| None), recheck: Duration::from_millis(50) });
+    pipeline.register(stage.clone());
+    let tries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = tries.clone();
+    pipeline.set_listener(move |event| {
+        if matches!(event, crate::pipeline::Event::Processed { .. }) {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    pipeline.plan(found.clone()).unwrap();
+    std::fs::rename(dir.join("new.jpg"), dir.join("away.jpg")).unwrap();
+    pipeline.start();
+    assert!(pipeline.wait_idle(Duration::from_secs(5)), "the workers settle");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(tries.load(Ordering::SeqCst), 2, "each item was tried once");
+    assert_eq!(stage.by_path(), HashMap::from([("old.jpg".to_owned(), 1)]));
+    let progress = pipeline.progress();
+    assert_eq!((progress.state, progress.done, progress.queued), ("idle", 1, 1), "{progress:?}");
+
+    // Back where the index says it is: the next plan tries it again.
+    std::fs::rename(dir.join("away.jpg"), dir.join("new.jpg")).unwrap();
+    pipeline.plan(found).unwrap();
+    assert!(pipeline.wait_idle(Duration::from_secs(30)));
+    assert_eq!(stage.by_path(), HashMap::from([("old.jpg".to_owned(), 1), ("new.jpg".to_owned(), 1)]));
+    assert_eq!(pipeline.progress().done, 2);
+    pipeline.stop();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A stage whose output was lost (a store deleted or reset) has the pass do it again where it
+/// had done it; where it failed, the failure stands.
+#[test]
+fn a_stage_redoes_what_it_lost() {
+    let _com = Apartment::enter();
+    let dir = scratch("redo");
+    fixtures::write_jpeg(&dir.join("a.jpg"), &quarters(32, 32), &Exif::default()).unwrap();
+    std::fs::write(dir.join("broken.jpg"), b"not a picture").unwrap();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let stage = Arc::new(Recording::default());
+    let pipeline = pipeline(&db, &stage, || None);
+    pipeline.plan(candidates(&dir)).unwrap();
+    assert!(pipeline.wait_idle(Duration::from_secs(30)));
+    assert_eq!(stage.count(), 1);
+    let ids: Vec<i64> = pipeline.items().iter().map(|item| item.id).collect();
+    assert_eq!(pipeline.redo("recording", &ids).unwrap(), 1, "only where it was done");
+    assert!(pipeline.wait_idle(Duration::from_secs(30)));
+    assert_eq!(stage.by_path(), HashMap::from([("a.jpg".to_owned(), 2)]));
+    assert_eq!(pipeline.redo("recording", &[]).unwrap(), 0);
+    // Remembered: a new pipeline over the same library has nothing to redo.
+    pipeline.stop();
+    let again = Arc::new(Recording::default());
+    let restarted = self::pipeline(&db, &again, || None);
+    restarted.plan(candidates(&dir)).unwrap();
+    assert!(restarted.wait_idle(Duration::from_secs(30)));
+    assert_eq!(again.count(), 0);
+    restarted.stop();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// What a stage and the pass's listener do happens at normal priority: they take shared locks
+/// (the database, a store, the app's state), which a thread in background mode would hold while
+/// Windows lets it starve. Only the heavy work inside goes into background mode.
+#[test]
+fn locks_are_taken_at_normal_priority() {
+    struct Watching(Mutex<Vec<(bool, bool)>>);
+    impl Stage for Watching {
+        fn name(&self) -> &'static str {
+            "watching"
+        }
+        fn version(&self) -> u32 {
+            1
+        }
+        fn needs(&self) -> Needs {
+            Needs { pixels: 16 }
+        }
+        fn run(&self, _: &Item, _: &Input) -> Result<(), String> {
+            let heavy = crate::priority::background(crate::priority::in_background);
+            self.0.lock().push((crate::priority::in_background(), heavy));
+            Ok(())
+        }
+    }
+    let _com = Apartment::enter();
+    let dir = scratch("priority");
+    fixtures::write_jpeg(&dir.join("a.jpg"), &quarters(32, 32), &Exif::default()).unwrap();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let stage = Arc::new(Watching(Mutex::new(Vec::new())));
+    let pipeline = Pipeline::new(db.clone(), Config { workers: 1, conditions: Box::new(|| None), recheck: Duration::from_millis(50) });
+    pipeline.register(stage.clone());
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let hearing = heard.clone();
+    pipeline.set_listener(move |_| hearing.lock().push(crate::priority::in_background()));
+    pipeline.start();
+    pipeline.plan(candidates(&dir)).unwrap();
+    assert!(pipeline.wait_idle(Duration::from_secs(30)));
+    assert_eq!(*stage.0.lock(), [(false, true)], "the stage runs at normal priority, its heavy work in background mode");
+    assert!(!heard.lock().is_empty() && heard.lock().iter().all(|background| !background), "{:?}", heard.lock());
+    pipeline.stop();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn the_text_stage_stores_what_it_reads_for_searches() {
     let _com = Apartment::enter();
@@ -455,6 +607,105 @@ fn the_text_stage_stores_what_it_reads_for_searches() {
     assert_eq!(search("geo:no"), ["blank.jpg", "ticket.png"]);
     pipeline.stop();
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Text is read at a bounded size, once the processors have room: the recognition runs on
+/// Windows' own threads at normal priority, so the stage waits rather than compete.
+#[test]
+fn text_is_read_once_the_processors_have_room() {
+    let _com = Apartment::enter();
+    let dir = scratch("text-room");
+    let drawn = fixtures::text_bitmap(&["Platform 9", "KESTREL RAIL"], 700, 200).unwrap();
+    std::fs::write(dir.join("sign.png"), drawn.to_png().unwrap()).unwrap();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = asked.clone();
+    // Busy the first three times it is asked.
+    let room = crate::ocr::Room {
+        has_room: Box::new(move || counted.fetch_add(1, Ordering::SeqCst) >= 3),
+        recheck: Duration::from_millis(10),
+        patience: Duration::from_secs(60),
+    };
+    let stage = crate::ocr::TextStage::with_room(db.clone(), room);
+    assert!(stage.needs().pixels <= crate::ocr::READ_SIDE, "{:?}", stage.needs());
+    let pipeline = Pipeline::new(db.clone(), Config { workers: 1, conditions: Box::new(|| None), recheck: Duration::from_millis(50) });
+    pipeline.register(Arc::new(stage));
+    pipeline.start();
+    pipeline.plan(candidates(&dir)).unwrap();
+    assert!(pipeline.wait_idle(Duration::from_secs(60)));
+    assert_eq!(asked.load(Ordering::SeqCst), 4);
+    let item = pipeline.items().remove(0);
+    assert!(kestrel_db::media::text(&db, item.id).unwrap().unwrap().contains("KESTREL"));
+    pipeline.stop();
+
+    // No room for ever: read all the same once its patience runs out.
+    let never = crate::ocr::Room { has_room: Box::new(|| false), recheck: Duration::from_millis(10), patience: Duration::from_millis(200) };
+    let started = Instant::now();
+    never.wait();
+    assert!(started.elapsed() >= Duration::from_millis(200));
+    assert!(crate::ocr::idle_processors().is_some_and(|idle| idle.is_finite() && idle >= 0.0));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The pass over a 48-megapixel phone photo, stored turned, with the text stage and a small
+/// one: its peak memory, measured in a process of its own. Read for its text at 10,000 pixels
+/// and copied four times on the way, it once took about 700 MB per worker.
+#[test]
+fn a_large_photo_is_read_in_bounded_memory() {
+    let _com = Apartment::enter();
+    let dir = scratch("large-memory");
+    let photo = dir.join("large.jpg");
+    fixtures::write_jpeg(&photo, &quarters(8000, 6000), &Exif { orientation: Some(6), ..Exif::default() }).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "files_tests::large_photo_memory", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("KESTREL_MEDIA_MEMORY_DIR", &dir)
+        .output()
+        .unwrap();
+    let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+    let grown = printed
+        .lines()
+        .find_map(|line| line.split("peak growth: ").nth(1))
+        .and_then(|bytes| bytes.trim().parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("the measuring process said:\n{printed}\n{}", String::from_utf8_lossy(&output.stderr)));
+    println!("the pass grew by {} MB at most", grown >> 20);
+    assert!(grown < 350 << 20, "{} MB", grown >> 20);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Run by `a_large_photo_is_read_in_bounded_memory` in a process of its own, over the photo it
+/// wrote: prints how far the process's committed memory grew.
+#[test]
+#[ignore = "run by a_large_photo_is_read_in_bounded_memory"]
+fn large_photo_memory() {
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let Some(dir) = std::env::var_os("KESTREL_MEDIA_MEMORY_DIR") else { return };
+    let committed = || {
+        let mut counters = PROCESS_MEMORY_COUNTERS { cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32, ..Default::default() };
+        // SAFETY: the counters are sized as the call expects, for this process's own handle.
+        unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+        (counters.PagefileUsage as u64, counters.PeakPagefileUsage as u64)
+    };
+    let _com = Apartment::enter();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let pipeline = Pipeline::new(db.clone(), Config { workers: 1, conditions: Box::new(|| None), recheck: Duration::from_millis(50) });
+    let room = crate::ocr::Room { has_room: Box::new(|| true), recheck: Duration::from_millis(10), patience: Duration::ZERO };
+    pipeline.register(Arc::new(crate::ocr::TextStage::with_room(db.clone(), room)));
+    pipeline.register(Arc::new(Recording::default()));
+    // Everything that starts once (COM, WIC, the recogniser) is started before measuring.
+    let warm = scratch("large-memory-warm");
+    std::fs::write(warm.join("small.png"), fixtures::text_bitmap(&["warm"], 200, 80).unwrap().to_png().unwrap()).unwrap();
+    pipeline.start();
+    pipeline.plan(candidates(&warm)).unwrap();
+    assert!(pipeline.wait_idle(Duration::from_secs(60)));
+    let (before, _) = committed();
+    pipeline.plan(candidates(Path::new(&dir))).unwrap();
+    assert!(pipeline.wait_idle(Duration::from_secs(120)));
+    assert_eq!(pipeline.progress().done, 1, "{:?}", pipeline.progress());
+    let (_, peak) = committed();
+    println!("peak growth: {}", peak.saturating_sub(before));
+    pipeline.stop();
+    let _ = std::fs::remove_dir_all(&warm);
 }
 
 /// A stage whose model comes and goes: not ready, ready at one version, then at another.

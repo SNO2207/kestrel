@@ -171,10 +171,18 @@ pub fn search_index(engine: &Engine, args: &SearchArgs, context: &Context, under
     if args.query.trim().is_empty() && folder.is_none() {
         return Err(Failure::bad_request("Give something to search for"));
     }
+    // A search inside files walks its folder from disk, `taken:` reads photos and a picture to
+    // find similar ones to is read: a share named here would make Kestrel contact its server.
+    if let Some(share) = folder.clone().filter(|folder| is_share(folder)).or_else(|| named_share(&args.query)) {
+        return Err(share_refused(&share));
+    }
     // As the search box reads it: a phrase into clauses, contents and dates taken to read.
     let options = crate::search::Options::default();
     let ask = Ask { text: &args.query, scope: folder.as_deref(), folder: folder.as_deref(), visibility: shown, options: &options, library: understanding.library };
     let (understood, decided) = crate::search::decide(&ask, Clock::local(), understanding.places).map_err(Failure::bad_request)?;
+    if let Some(share) = named_share(&understood.query) {
+        return Err(share_refused(&share));
+    }
     let ran_as = (understood.natural && understood.query != args.query.trim()).then(|| understood.query.clone());
     let (total, results) = match decided {
         Decided::Index { query } => {
@@ -197,18 +205,19 @@ pub fn search_index(engine: &Engine, args: &SearchArgs, context: &Context, under
             (total, ids.iter().map(|&id| entry_of(&index, id)).collect::<Vec<Entry>>())
         }
         Decided::Content { plan_query, patterns, taken } => {
-            let choose = |plan_query: &str| -> Result<Vec<(String, DirItem)>, String> {
+            let choose = |plan_query: &str| -> Result<crate::search::Chosen, String> {
                 let mut resolver = resolver(understanding, plan_query).map_err(|failure| failure.message)?;
                 let index = engine.index().read();
                 let (ids, _) = index_ids(&index, plan_query, folder.as_deref(), shown, &mut resolver, context).map_err(|failure| failure.message)?;
-                Ok(ids
-                    .into_iter()
-                    .filter(|&id| !index.is_dir(id))
-                    .map(|id| {
-                        let meta = Meta { size: index.size(id), alloc: index.alloc(id), mtime: index.mtime(id), attrs: index.attrs(id), file_id: 0 };
-                        (index.path(index.parent(id)), DirItem { name: index.name(id).to_owned(), meta, alias: false })
-                    })
-                    .collect())
+                Ok(Arc::new(
+                    ids.into_iter()
+                        .filter(|&id| !index.is_dir(id))
+                        .map(|id| {
+                            let meta = Meta { size: index.size(id), alloc: index.alloc(id), mtime: index.mtime(id), attrs: index.attrs(id), file_id: 0 };
+                            (index.path(index.parent(id)), DirItem { name: index.name(id).to_owned(), meta, alias: false })
+                        })
+                        .collect(),
+                ))
             };
             let plan = crate::search::plan(engine, &ask, &plan_query, patterns, taken, choose).map_err(Failure::bad_request)?;
             let (found, status) = crate::search::run_to_end(plan, context.cancelled.clone());
@@ -271,6 +280,21 @@ pub fn is_share(path: &str) -> bool {
     path.starts_with(r"\\") || path.starts_with("//")
 }
 
+/// A share the query names as a place to search or a picture to compare (`in:`, `like:`, `~`).
+fn named_share(text: &str) -> Option<String> {
+    let query = parse(text, Clock::local()).ok()?;
+    query.clauses.into_iter().find_map(|clause| match clause.kind {
+        ClauseKind::Within(path) | ClauseKind::Like(path) if is_share(path.trim()) => Some(path),
+        _ => None,
+    })
+}
+
+/// Why a share is not read for another program: a path a client names must never make Kestrel
+/// connect to some server (and offer it this account's credentials).
+fn share_refused(path: &str) -> Failure {
+    Failure::not_found(format!("{path} is on a network share; other programs can ask Kestrel about this PC's own drives only"))
+}
+
 /// The live, indexed folder at `path` (not a link to one, whose contents the index never holds).
 fn indexed_folder(index: &Index, path: &str) -> Option<EntryId> {
     index
@@ -312,7 +336,7 @@ pub fn list_folder(engine: &Engine, args: &ListArgs, _context: &Context) -> Resu
     // programs: a path a client names must never make Kestrel connect to some server (and offer
     // it this account's credentials).
     if is_share(&path) {
-        return Err(Failure::not_found(format!("{path} is on a network share; other programs can ask Kestrel about this PC's own drives only")));
+        return Err(share_refused(&path));
     }
     let listed = walk::list(&path).map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => Failure::not_found(format!("{path} is not a folder")),
@@ -800,6 +824,31 @@ mod tests {
         assert_eq!(media.total, 0);
         // A description needs AI search's model: without one it is the asker's mistake to fix.
         assert_eq!(search_index(&engine, &inside("like:dog"), &context(5), &plain(&database)).unwrap_err().kind, FailureKind::BadRequest);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A path another program names never makes Kestrel contact a server: a share as the folder
+    /// of a search that reads files, or as a picture to find similar ones to, is refused before
+    /// anything is read, as a listing of one is. (A search inside files once walked it from
+    /// disk, with this account's credentials.)
+    #[test]
+    fn searches_never_reach_a_share() {
+        let database = db();
+        let (engine, root, _) = scratch("shares");
+        let server = r"\\kestrel-test-server.invalid";
+        for (query, folder) in [
+            ("content:anything".to_owned(), Some(format!(r"{server}\share"))),
+            ("taken:2023".to_owned(), Some(r"\\?\UNC\kestrel-test-server.invalid\share\photos".to_owned())),
+            ("report".to_owned(), Some(format!(r"{server}\share"))),
+            (format!(r#"like:"{server}\share\a.jpg""#), None),
+            (format!(r"~{server}\share\b.jpg"), None),
+            (format!(r#"ext:md in:"{server}\share""#), None),
+        ] {
+            let args = SearchArgs { query: query.clone(), folder, ..SearchArgs::default() };
+            let refused = search_index(&engine, &args, &context(5), &plain(&database)).unwrap_err();
+            assert_eq!(refused.kind, FailureKind::NotFound, "{query}: {}", refused.message);
+            assert!(refused.message.contains("network share"), "{query}: {}", refused.message);
+        }
         fs::remove_dir_all(&root).unwrap();
     }
 

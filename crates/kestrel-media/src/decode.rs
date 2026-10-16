@@ -15,9 +15,10 @@ use windows::Win32::Graphics::Imaging::{
 };
 use windows::Win32::Media::MediaFoundation::{
     IMFAttributes, IMFMediaType, IMFSourceReader, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
-    MF_MT_SUBTYPE, MF_PD_DURATION, MF_SOURCE_READER_ALL_STREAMS, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
-    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READER_MEDIASOURCE, MF_SOURCE_READERF_ENDOFSTREAM,
-    MFCreateAttributes, MFCreateMediaType, MFCreateSourceReaderFromURL, MFMediaType_Video, MFVideoFormat_RGB32,
+    MF_MT_SUBTYPE, MF_MT_VIDEO_ROTATION, MF_PD_DURATION, MF_SOURCE_READER_ALL_STREAMS,
+    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READER_MEDIASOURCE,
+    MF_SOURCE_READERF_ENDOFSTREAM, MFCreateAttributes, MFCreateMediaType, MFCreateSourceReaderFromURL,
+    MFMediaType_Video, MFVideoFormat_RGB32,
 };
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PropVariantToUInt64};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, STREAM_SEEK_END, STREAM_SEEK_SET};
@@ -215,6 +216,32 @@ impl Bitmap {
 
 // ---------- video frames ----------
 
+/// The EXIF orientation that shows a video's stored frames upright. Phones record upright video
+/// sideways and say how far to turn it clockwise (`MF_MT_VIDEO_ROTATION`, from the file's
+/// track matrix), which is how Windows' own thumbnails turn it: 90 degrees is EXIF's 6.
+pub fn orientation_of_rotation(degrees: u32) -> u16 {
+    match degrees {
+        90 => 6,
+        180 => 3,
+        270 => 8,
+        _ => 1,
+    }
+}
+
+/// How far a video's first video stream asks to be turned, clockwise in degrees.
+///
+/// # Safety
+/// COM and Media Foundation must be started on this thread.
+unsafe fn rotation_of(reader: &IMFSourceReader) -> u32 {
+    // SAFETY: as the caller promises; the native type is the file's own, before any conversion.
+    unsafe {
+        reader
+            .GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, 0)
+            .and_then(|native| native.GetUINT32(&MF_MT_VIDEO_ROTATION))
+            .unwrap_or(0)
+    }
+}
+
 /// A frame of a video and how long the video is.
 pub struct Frame {
     pub bitmap: Bitmap,
@@ -223,10 +250,11 @@ pub struct Frame {
 }
 
 /// Decodes the frame `at` of the way through a video (0.0 is the start, 0.5 the middle),
-/// scaled to fit `max_side`. Media Foundation converts it to RGB32.
+/// scaled to fit `max_side` and turned as the video is shown. Media Foundation converts it to
+/// RGB32.
 pub fn video_frame(path: &str, at: f64, max_side: u32) -> Result<Frame, String> {
     crate::com::media_foundation()?;
-    let read = || -> windows::core::Result<Frame> {
+    let read = || -> windows::core::Result<(Frame, u16)> {
         // SAFETY: COM and Media Foundation are started on this thread; the buffer is locked
         // only while it is copied, and every interface is released when dropped.
         unsafe {
@@ -237,6 +265,7 @@ pub fn video_frame(path: &str, at: f64, max_side: u32) -> Result<Frame, String> 
             attributes.SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)?;
             let reader: IMFSourceReader = MFCreateSourceReaderFromURL(&HSTRING::from(path), &attributes)?;
             let video = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+            let orientation = orientation_of_rotation(rotation_of(&reader));
             reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)?;
             reader.SetStreamSelection(video, true)?;
             let wanted: IMFMediaType = MFCreateMediaType()?;
@@ -292,11 +321,12 @@ pub fn video_frame(path: &str, at: f64, max_side: u32) -> Result<Frame, String> 
             for pixel in pixels.chunks_exact_mut(4) {
                 pixel[3] = 255;
             }
-            Ok(Frame { bitmap: Bitmap { width, height, pixels }, duration_ms: duration.map(|ticks| ticks / 10_000) })
+            Ok((Frame { bitmap: Bitmap { width, height, pixels }, duration_ms: duration.map(|ticks| ticks / 10_000) }, orientation))
         }
     };
-    let frame = read().map_err(|error| describe(&error))?;
-    let bitmap = frame.bitmap.fit(max_side)?;
+    let (frame, orientation) = read().map_err(|error| describe(&error))?;
+    // Turned after it is scaled, which the turn doesn't change, so less is copied.
+    let bitmap = frame.bitmap.fit(max_side)?.oriented(orientation);
     Ok(Frame { bitmap, duration_ms: frame.duration_ms })
 }
 

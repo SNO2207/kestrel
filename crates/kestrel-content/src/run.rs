@@ -92,8 +92,9 @@ pub enum Source<'a> {
     /// Every file beneath a folder, listed from disk now. `shows` says whether an item with
     /// these attributes is shown (hidden and system items, as the window's options say).
     Folder { root: String, shows: &'a (dyn Fn(u32) -> bool + Sync) },
-    /// These files, as an index search found them: `(folder, item)`.
-    Files(Vec<(String, DirItem)>),
+    /// These files, as an index search found them: `(folder, item)`. Shared, so searches that
+    /// choose the same files (one per keystroke) need not copy them.
+    Files(std::sync::Arc<Vec<(String, DirItem)>>),
 }
 
 /// A test a file must pass, given its path and its directory entry.
@@ -229,15 +230,15 @@ impl Run<'_> {
             }
             Source::Files(files) => {
                 let ignores = Ignores::default();
-                files.into_par_iter().for_each(|(dir, item)| {
+                files.par_iter().for_each(|(dir, item)| {
                     if self.halted() {
                         return;
                     }
-                    if self.gitignore && ignores.ignored(&join(&dir, &item.name)) {
+                    if self.gitignore && ignores.ignored(&join(dir, &item.name)) {
                         self.progress.ignored.fetch_add(1, Ordering::Relaxed);
                         return;
                     }
-                    self.file(&dir, item, found);
+                    self.file(dir, item.clone(), found);
                 });
             }
         };

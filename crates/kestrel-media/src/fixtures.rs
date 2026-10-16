@@ -11,7 +11,7 @@ use std::path::Path;
 
 use windows::Win32::Media::MediaFoundation::{
     IMFMediaType, IMFSinkWriter, MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
-    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MFCreateMediaType,
+    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_VIDEO_ROTATION, MFCreateMediaType,
     MFCreateMemoryBuffer, MFCreateSample, MFCreateSinkWriterFromURL, MFMediaType_Video, MFVideoFormat_H264,
     MFVideoFormat_RGB32, MFVideoInterlace_Progressive,
 };
@@ -276,6 +276,12 @@ pub fn text_bitmap(lines: &[&str], width: u32, height: u32) -> Result<Bitmap, St
 /// Writes an H.264 MP4 of `frames` frames at `fps`, each from `frame(n)`, through Media
 /// Foundation's sink writer (which converts the RGB32 frames for the encoder).
 pub fn write_video(path: &Path, width: u32, height: u32, fps: u32, frames: u32, frame: impl Fn(u32) -> Bitmap) -> Result<(), String> {
+    write_video_turned(path, width, height, fps, frames, 0, frame)
+}
+
+/// [`write_video`], stored with a rotation (degrees clockwise), as phones store upright video
+/// sideways: a `width` x `height` video turned 90 degrees is shown `height` wide.
+pub fn write_video_turned(path: &Path, width: u32, height: u32, fps: u32, frames: u32, rotation: u32, frame: impl Fn(u32) -> Bitmap) -> Result<(), String> {
     crate::com::media_foundation()?;
     let write = || -> windows::core::Result<()> {
         // SAFETY: COM and Media Foundation are started on this thread; each buffer is locked
@@ -294,6 +300,9 @@ pub fn write_video(path: &Path, width: u32, height: u32, fps: u32, frames: u32, 
             };
             let output = typed(&MFVideoFormat_H264)?;
             output.SetUINT32(&MF_MT_AVG_BITRATE, 1_000_000)?;
+            if rotation != 0 {
+                output.SetUINT32(&MF_MT_VIDEO_ROTATION, rotation)?;
+            }
             let stream = writer.AddStream(&output)?;
             let input = typed(&MFVideoFormat_RGB32)?;
             // Positive: the rows given are top row first.

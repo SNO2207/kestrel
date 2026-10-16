@@ -143,6 +143,35 @@ try {
     await row("during.txt").waitFor({ timeout: 5_000 });
   });
 
+  await step("a refresh already on its way to the list when F2 is pressed is drawn after the rename", async () => {
+    await row("beta.txt").click();
+    const swapsBefore = await page.evaluate(() => window.__kestrelSwaps.length);
+    // The refreshed listing reaches the list and waits there, its rows fetched, so F2 comes
+    // before it is drawn every time (a folder change a moment before F2 once did this by chance,
+    // and the listing drawn over the edit ended it).
+    await page.evaluate(() => window.__kestrelStage.hold(true));
+    try {
+      await page.locator('button[aria-label="Refresh"]').click();
+      await page.waitForFunction(() => window.__kestrelStage.held() > 0);
+      await page.evaluate(() =>
+        document.querySelector(".tab-panel.active .list-viewport").dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true, cancelable: true })),
+      );
+      await panel.locator("input.rename").waitFor();
+    } finally {
+      await page.evaluate(() => window.__kestrelStage.hold(false));
+    }
+    await page.waitForTimeout(400);
+    const input = panel.locator("input.rename");
+    assert.equal(await input.count(), 1, "the rename box outlives the refreshed listing");
+    assert.equal(await input.inputValue(), "beta.txt");
+    assert.equal(await page.evaluate(() => window.__kestrelSwaps.length), swapsBefore, "not drawn during the edit");
+    await page.keyboard.press("Escape");
+    await input.waitFor({ state: "detached" });
+    // Drawn once the edit is over.
+    await page.waitForFunction((count) => window.__kestrelSwaps.length > count, swapsBefore);
+    await row("beta.txt").waitFor();
+  });
+
   await step("copy and paste in place makes a duplicate and selects it", async () => {
     await row("beta.txt").click();
     await page.keyboard.press("Control+c");

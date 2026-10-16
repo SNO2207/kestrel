@@ -657,6 +657,8 @@ pub struct Detail {
     reclaimable_dirs: Vec<Reclaimable>,
 }
 
+/// The project's README, when its contents are on this PC: an online-only one (a project in
+/// OneDrive) is never opened, which would download it (`scripts::read_local`).
 fn find_readme(root: &Path) -> Option<Readme> {
     let mut candidates: Vec<(u8, PathBuf)> = std::fs::read_dir(root)
         .ok()?
@@ -670,20 +672,14 @@ fn find_readme(root: &Path) -> Option<Readme> {
                 "readme.rst" => 3,
                 _ => return None,
             };
-            entry.path().is_file().then(|| (rank, entry.path()))
+            // The listing's own type, not `is_file`, which opens the file.
+            entry.file_type().is_ok_and(|kind| kind.is_file()).then(|| (rank, entry.path()))
         })
         .collect();
     candidates.sort();
     let (_, path) = candidates.into_iter().next()?;
-    let length = std::fs::metadata(&path).ok()?.len();
-    let mut bytes = Vec::new();
-    use std::io::Read;
-    std::fs::File::open(&path).ok()?.take(MAX_README).read_to_end(&mut bytes).ok()?;
-    Some(Readme {
-        path: path.display().to_string(),
-        text: String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_owned(),
-        truncated: length > MAX_README,
-    })
+    let (bytes, truncated) = scripts::read_local(&path, MAX_README)?;
+    Some(Readme { path: path.display().to_string(), text: String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_owned(), truncated })
 }
 
 /// Everything the detail panel shows about one project. `offset_minutes` is the viewer's time

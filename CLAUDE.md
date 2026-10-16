@@ -439,17 +439,25 @@ see README); what else Explorer does that Kestrel does not is listed in
   to redo everything), `applies_to(kind)` (photos, videos or both), and `needs()`: `Needs { pixels:
   N }` asks for the picture at least N pixels on its longer side (a photo decoded once by WIC and
   turned upright by its EXIF orientation, or a video's frame a tenth of the way in, from Media
-  Foundation), shared with the other stages of that item; scale it down with `Bitmap::fit`.
-  `run(&Item, &Input)` gets the item (`id`, the library's stable id for the file, which is what
-  the stage keys its own tables by; `path`, `kind`, `size`, `mtime`) and `Input { facts,
-  picture }`; it returns `Err(reason)` in words for the settings page, after which it is not tried
-  again until the file changes. `run` is called from two worker threads at once, at background
-  priority, in a COM multithreaded apartment; per-thread state (a WinML session, say) goes in a
-  `thread_local!` (as `ocr::TextStage` keeps its recogniser). `forget(ids)` hears of items dropped
-  after a month gone. A stage that can't always work (no model downloaded yet) says so with
-  `ready()`: it then has no work queued, and an error from a run during which it stopped being
-  ready (or changed `version()`) is not recorded; call `Pipeline::requeue` once it is ready.
-  Records name the version a stage was planned at. A new stage's work is queued at once over
+  Foundation, turned by its rotation), shared with the other stages of that item; scale it down
+  with `Bitmap::fit`. It is already shrunk: a stage that needs the whole picture (the embedding
+  stage, which must prepare a photo exactly as the model's reference does) asks for 0 and decodes
+  the file itself. `run(&Item, &Input)` gets the item (`id`, the library's stable id for the file,
+  which is what the stage keys its own tables by; `path`, `kind`, `size`, `mtime`) and `Input {
+  facts, picture }`; it returns `Err(reason)` in words for the settings page, after which it is
+  not tried again until the file changes. `run` is called from two worker threads at once, at
+  normal priority, in a COM multithreaded apartment: do the heavy work (decoding, recognising,
+  encoding) inside `kestrel_media::priority::background` and take shared locks (the database, a
+  store, a cache) outside it (see the gotcha on background mode). Per-thread state (a WinML
+  session, say) goes in a `thread_local!` (as `ocr::TextStage` keeps its recogniser).
+  `forget(ids)` hears of items dropped after a month gone. A stage that can't always work (no
+  model downloaded yet) says so with `ready()`: it then has no work queued, and an error from a
+  run during which it stopped being ready (or changed `version()`) is not recorded; call
+  `Pipeline::requeue` once it is ready. A stage whose output can be lost while its records stay
+  (a store deleted or reset) calls `Pipeline::redo(name, ids)` for the items it lacks, as
+  `semantic::stage::reconcile` does after each plan and when a model loads: records outlive
+  output, and nothing else makes it again. A file missing when a worker comes to it waits for the
+  next plan. Records name the version a stage was planned at. A new stage's work is queued at once over
   everything it applies to; the settings page lists it by name (add a label to `STAGE_LABELS` in
   `media.ts`). Item ids, facts
   and text are in `kestrel_db::media`; a stage's output belongs in tables of its own, in a module
@@ -478,9 +486,11 @@ see README); what else Explorer does that Kestrel does not is listed in
   shared state), the page in `AiSearchPage.tsx`, the bar above results in `DescribeBar.tsx`
   (mounted by FileList for any description query).
 - Similar photos (`semantic/similar.rs`): the live photo rows of the model in use's store
-  (video frames left out), found under the Duplicates tab's folders through the index by file id,
-  each searched for its neighbours at the model's `near_duplicate` cutoff and joined by
-  union-find. `cleanup::dupes_similar` keeps the groups with the exact ones (`Latest::similar`),
+  (video frames left out), found under the Duplicates tab's folders through the index by file id
+  (in steps, `Engine::in_steps`), each searched for its neighbours at the model's
+  `near_duplicate` cutoff (eight at a time in one pass over the store, `Store::search_many`, the
+  store's lock let go between batches; photos known by file, since a compaction between batches
+  renumbers rows) and joined by union-find. `cleanup::dupes_similar` keeps the groups with the exact ones (`Latest::similar`),
   and `dupes_recycle` takes either kind, with the same checks.
 - Search (`src-tauri/src/search/`, front end `search.ts`): every search the search box runs goes
   through `search_run`, the tabs' search source (`setSearchSource` in state.ts; without one,
@@ -580,6 +590,13 @@ Git:
 - A navigation that fails leaves the tab in its folder with the message in place of the rows
   (`Tab.failed` in `state.ts`), and Back shows that folder again rather than stepping through
   the history; tests that check a failed address should wait for the message to go.
+- A refreshed listing that reaches the file list while a name is edited is drawn when the edit
+  ends (`drawWhenFree` in `FileList.tsx`): drawing a listing starts the list afresh, which ends
+  the edit. `heldForRename` in `state.ts` holds back refreshes that come back during an edit, but
+  one already handed to the list when F2 was pressed (a folder change a moment before) got past
+  it. A rename waiting for its row follows a refresh to the same item. The dev hook
+  `__kestrelStage.hold` holds staged listings at the gate so a test can press F2 meanwhile
+  (`fileops.mjs`).
 - Result sets live in the backend and the UI holds handles to them. A set is released only
   after the tab's list draws its replacement (`show` retires it, `listShows` releases it, in
   `src/state.ts`); releasing earlier makes in-flight row requests look like a stale index, and a
@@ -678,8 +695,13 @@ Git:
   they have an `aria-label` (`lib/sidebarSections.ts`), remembered in the slot's database: a
   suite that folds one unfolds it again in its `finally`.
 - The folder tree draws only the rows in view: a row scrolled away is not in the DOM (the dev
-  build's `window.__kestrelTree.rows()` lists them all). Deep in the tree a row's middle can
-  fall on its chevron, so tests click a row's `.tree-label`.
+  build's `window.__kestrelTree.rows()` lists them all, `drawn(path)` says whether one is drawn).
+  Deep in the tree a row's middle can fall on its chevron, so tests click a row's `.tree-label`.
+  A reveal of the open folder replaces one still waiting for the backend, and a request to scroll
+  it into view carries over to whichever finishes (`scrollWanted` in `FolderTree.tsx`): the
+  index's news of new folders asks for a reveal that doesn't scroll, and once took
+  Ctrl+Shift+E's scroll with it. `__kestrelTree.holdReveals` and `foldersChanged` let a test put
+  them in that order (`parity2.mjs`).
 - The Recycle Bin page acts on the owner's real bin. Tests select only rows whose original
   location is their own scratch folder, compare the bin's other items before and after, and
   never click Restore all or Empty Recycle Bin; emptying has no test hook.
@@ -857,6 +879,12 @@ Git:
   flag; it must never call `Engine::search_resolving` or `search_ranked`, which keep a result set
   and replace the window's cancel flag. Its searches inside files choose files the same way
   (`search::plan` with its own chooser) and run on its thread (`search::run_to_end`).
+- A search inside files answers its command at once (with what it found by then) and tells the
+  window of its first match as soon as it has one (`search-progress`): a tab runs one search
+  command at a time, so a command that waited for results held up the next keystroke. The files
+  the other clauses chose are kept per tab while those clauses and the index's revision stand
+  (`Searches::chosen`), and a new keystroke stops the previous search before anything else
+  (`Searches::supersede`). Tests that check a search inside files wait for its rows.
 - A search inside files is one per window and tab (`search::Searches`), and an `update` of it
   never starts it again: Stop raises its cancel flag and keeps what it found (`search_cancel`
   with `forget: false`), so an update already on its way shows that; leaving the search forgets
@@ -903,7 +931,10 @@ Git:
   for the windows and would drop theirs) and never uses `Engine::search_resolving`, whose cancel
   flag is shared with the window's own search box. Anything added to it follows `query.rs`.
 - A path another program names must never make Kestrel contact a server: the query service
-  refuses shares (`query::is_share`) and the terminal never probes a printed share path. Mapped
+  refuses shares (`query::is_share`: a listing of one, and a search whose folder, `in:` or
+  `like:` picture names one) and the terminal never probes a printed share path. Files it reads
+  for another program (a project's README and manifests) are read only when their contents are
+  on this PC (`kestrel_content::fsinfo`), never online-only ones. Mapped
   drives and the index are fine.
 - ConPTY: the shell's standard handles are set to invalid (`STARTF_USESTDHANDLES`), or a child of
   the dev build (whose own handles are pipes) writes to those instead of the pseudoconsole; and
@@ -921,3 +952,27 @@ Git:
 - The terminal pane is a grid row only while shown: `.app:has(> .terminal-pane:not([hidden]))`
   in `devtools.css` redefines the grid that `parity.css` set. A change to the `.app` grid has to
   change both.
+- Background mode (`THREAD_MODE_BACKGROUND_BEGIN`) is for heavy work that holds no lock anyone
+  else waits for. While every core is busy, Windows lets a background thread starve for seconds,
+  and a lock it holds starves with it: parking_lot's locks are fair, so the writer queued behind
+  it holds up every new reader too (a background scan holding the index's read lock froze every
+  keystroke search for two seconds at a time under a build). The media pass's threads run at
+  normal priority and wrap only their decoding and recognising in
+  `kestrel_media::priority::background`; the media watch thread, which holds the index, the
+  database and the vector store, never enters it. `priority::in_background()` lets a test check.
+- Any long hold of a shared `RwLock`'s read side is as bad as a write: once a writer queues,
+  every new reader waits behind it. Work over a whole store or index goes in steps that let go
+  between them (`Engine::in_steps`, similar photos' batches, the vector store's three-step
+  compaction and its `flusher`, which syncs to disk from handles of its own).
+- Windows' text recognition runs on its own thread pool at normal priority, whatever the asking
+  thread's priority, so the text stage reads at most `ocr::READ_SIDE` (4,000) pixels and waits for
+  a processor's worth of idle time (`ocr::Room`) before asking.
+- Media Foundation's source reader does not turn a phone's portrait video: the native media type's
+  `MF_MT_VIDEO_ROTATION` (90 is EXIF orientation 6, a quarter turn clockwise, as Windows'
+  thumbnails show it) is applied by `kestrel_media::decode::video_frame` and
+  `kestrel_embed::video`. The property system's frame width and height are already turned.
+- A named pipe's `FlushFileBuffers` waits, with no time limit, until the client has read
+  everything: the query service waits for its last answer to be read within the write time limit
+  (`Pipe::drained`, which polls `FilePipeLocalInformation`), and only after a final answer.
+- Python run from the Bash tool on this machine may write files with CRLF line endings; strip the
+  carriage returns before committing or comparing (`.gitattributes` keeps the repository LF).

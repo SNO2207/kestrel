@@ -164,7 +164,8 @@ fn picture_vector(loaded: &Loaded, path: &str) -> Result<Vec<f32>, String> {
             .map_err(|e| e.0)?;
             frames
         }
-        _ => vec![kestrel_embed::resize::resize(&kestrel_embed::image::decode(std::path::Path::new(path)).map_err(|e| e.0)?, side, side)],
+        // As the describing prepares a photo, so the same photo makes the same vector.
+        _ => vec![super::stage::square_of(path, side)?],
     };
     let vectors = loaded.embedder.embed_images(&pictures).map_err(|e| e.0)?;
     let mut mean = vec![0f32; loaded.embedder.dim()];

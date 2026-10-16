@@ -228,7 +228,7 @@ mod tests {
         assert_eq!(found.len(), 10);
         assert!(counts.full);
         assert_eq!(counts.matched, 10);
-        let (_, counts) = search(&root, Source::Files(vec![(root.clone(), item("big.txt", 4103))]), &[pattern("needle")], limits, false);
+        let (_, counts) = search(&root, Source::Files(std::sync::Arc::new(vec![(root.clone(), item("big.txt", 4103))])), &[pattern("needle")], limits, false);
         assert_eq!((counts.too_large, counts.matched), (1, 0));
         // Matching lines are counted up to the limit.
         let many = scratch.write("many.txt", "needle\n".repeat(20).as_bytes());
@@ -252,11 +252,11 @@ mod tests {
             (format!(r"{root}\repo\build"), item("out.txt", 7)),
             (root.clone(), item("nothing.txt", 17)),
         ];
-        let (found, counts) = search(&root, Source::Files(files.clone()), &[pattern("needle")], Limits::default(), true);
+        let (found, counts) = search(&root, Source::Files(std::sync::Arc::new(files.clone())), &[pattern("needle")], Limits::default(), true);
         assert_eq!(found.keys().collect::<Vec<_>>(), ["plain.txt", "repo\\kept.rs"]);
         assert_eq!(counts.ignored, 2);
         assert_eq!(counts.searched, 3);
-        let (found, _) = search(&root, Source::Files(files), &[pattern("needle")], Limits::default(), false);
+        let (found, _) = search(&root, Source::Files(std::sync::Arc::new(files)), &[pattern("needle")], Limits::default(), false);
         assert_eq!(found.len(), 4);
     }
 

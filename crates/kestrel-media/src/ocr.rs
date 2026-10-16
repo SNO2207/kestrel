@@ -4,15 +4,29 @@
 //!
 //! COM must be initialised on the calling thread ([`crate::Apartment`]); a [`Recognizer`] is
 //! made on the thread that uses it.
+//!
+//! Windows recognises text on a thread of its own thread pool, at normal priority, whatever the
+//! priority of the thread that asked: the pass's background mode doesn't reach it. So the text
+//! stage reads at most [`READ_SIDE`] pixels (a photo's text is legible well below the 10,000
+//! the recogniser takes, at a fraction of the work and memory), and waits for the processors to
+//! have room ([`Room`]) before asking, rather than competing with the owner's own work.
 
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 use windows::Globalization::Language;
-use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
+use windows::Graphics::Imaging::{BitmapBufferAccessMode, BitmapPixelFormat, SoftwareBitmap};
 use windows::Media::Ocr::OcrEngine;
-use windows::Storage::Streams::DataWriter;
 use windows::System::UserProfile::GlobalizationPreferences;
-use windows::core::HSTRING;
+use windows::Win32::System::WinRT::IMemoryBufferByteAccess;
+use windows::core::{HSTRING, Interface};
 
 use crate::decode::Bitmap;
+
+/// The longest side the text stage reads a photo at. The recogniser takes up to its
+/// `MaxImageDimension` (10,000 on Windows 11), but text a phone photo shows legibly is still
+/// legible at 4,000; a 48-megapixel photo decoded whole for it was 190 MB a copy.
+pub const READ_SIDE: u32 = 4000;
 
 /// The recogniser's engines, one per writing system among the owner's languages.
 pub struct Recognizer {
@@ -98,20 +112,97 @@ impl Recognizer {
     }
 }
 
+/// When the text stage may ask Windows to recognise text: once the processors have room, or
+/// once it has waited long enough (so a machine busy for hours still gets its photos read, a
+/// recognition every `patience` at most).
+pub struct Room {
+    pub has_room: Box<dyn Fn() -> bool + Send + Sync>,
+    pub recheck: Duration,
+    pub patience: Duration,
+}
+
+impl Default for Room {
+    fn default() -> Self {
+        Room { has_room: Box::new(processors_have_room), recheck: Duration::from_millis(250), patience: Duration::from_secs(10) }
+    }
+}
+
+impl Room {
+    /// Waits for room, or for its patience to run out.
+    pub fn wait(&self) {
+        let started = Instant::now();
+        while !(self.has_room)() && started.elapsed() < self.patience {
+            std::thread::sleep(self.recheck);
+        }
+    }
+}
+
+/// The system's idle time, and its kernel (which includes idle) and user time, summed over the
+/// processors.
+#[derive(Clone, Copy)]
+struct Times {
+    idle: u64,
+    all: u64,
+}
+
+fn system_times() -> Option<Times> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetSystemTimes;
+    let ticks = |time: FILETIME| u64::from(time.dwHighDateTime) << 32 | u64::from(time.dwLowDateTime);
+    let (mut idle, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default());
+    // SAFETY: three valid FILETIMEs for the call to fill.
+    (unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } != 0).then(|| Times { idle: ticks(idle), all: ticks(kernel) + ticks(user) })
+}
+
+/// How many processors' worth of time went idle lately: since the last look, when that was a
+/// moment ago, or else over a fresh moment. `None` when Windows doesn't say.
+pub fn idle_processors() -> Option<f64> {
+    const MOMENT: Duration = Duration::from_millis(100);
+    const STALE: Duration = Duration::from_secs(2);
+    static LAST: Mutex<Option<(Instant, Times)>> = Mutex::new(None);
+    let previous = *LAST.lock();
+    let from = match previous {
+        Some((at, times)) if at.elapsed() >= MOMENT && at.elapsed() <= STALE => times,
+        _ => {
+            let start = system_times()?;
+            std::thread::sleep(MOMENT);
+            start
+        }
+    };
+    let now = system_times()?;
+    *LAST.lock() = Some((Instant::now(), now));
+    let total = now.all.checked_sub(from.all).filter(|&total| total > 0)?;
+    let idle = now.idle.saturating_sub(from.idle).min(total);
+    let processors = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
+    Some(idle as f64 / total as f64 * processors)
+}
+
+/// Whether at least one processor's worth of time is going idle: otherwise the owner's work
+/// has every core, and a recognition would take its share at normal priority.
+pub fn processors_have_room() -> bool {
+    idle_processors().is_none_or(|idle| idle >= 1.0)
+}
+
 /// The pipeline's text stage: every photo is read for text (screenshots, receipts, signs), at
-/// most at the recogniser's largest size, and the text is stored for `text:` searches and the
-/// details pane. Videos are not read.
+/// most at [`READ_SIDE`], and the text is stored for `text:` searches and the details pane.
+/// Videos are not read.
 pub struct TextStage {
     db: std::sync::Arc<kestrel_db::Db>,
     max_dimension: u32,
+    room: Room,
 }
 
 impl TextStage {
     pub const NAME: &'static str = "text";
 
     pub fn new(db: std::sync::Arc<kestrel_db::Db>) -> Self {
-        let max_dimension = OcrEngine::MaxImageDimension().unwrap_or(2600).clamp(256, 10_000);
-        TextStage { db, max_dimension }
+        Self::with_room(db, Room::default())
+    }
+
+    /// The stage, asking `room` before each recognition.
+    pub fn with_room(db: std::sync::Arc<kestrel_db::Db>, room: Room) -> Self {
+        let max_dimension = OcrEngine::MaxImageDimension().unwrap_or(2600).clamp(256, READ_SIDE);
+        TextStage { db, max_dimension, room }
     }
 }
 
@@ -143,17 +234,45 @@ impl crate::pipeline::Stage for TextStage {
 
     fn run(&self, item: &crate::Item, input: &crate::Input) -> Result<(), String> {
         let picture = input.picture.ok_or("No picture to read")?;
-        let text = RECOGNIZER.with(|cell| match cell.get_or_init(Recognizer::for_user) {
-            Some(recognizer) => recognizer.recognize(picture),
-            None => Err(NO_LANGUAGE.to_owned()),
+        let text = crate::priority::background(|| {
+            RECOGNIZER.with(|cell| match cell.get_or_init(Recognizer::for_user) {
+                Some(recognizer) => {
+                    self.room.wait();
+                    recognizer.recognize(picture)
+                }
+                None => Err(NO_LANGUAGE.to_owned()),
+            })
         })?;
         kestrel_db::media::set_text(&self.db, item.id, &text).map_err(|error| error.to_string())
     }
 }
 
+/// The picture as the recogniser takes it, copied once, straight into the bitmap's own buffer.
 fn software_bitmap(bitmap: &Bitmap) -> windows::core::Result<SoftwareBitmap> {
-    let writer = DataWriter::new()?;
-    writer.WriteBytes(&bitmap.pixels)?;
-    let buffer = writer.DetachBuffer()?;
-    SoftwareBitmap::CreateCopyFromBuffer(&buffer, BitmapPixelFormat::Bgra8, bitmap.width as i32, bitmap.height as i32)
+    let software = SoftwareBitmap::Create(BitmapPixelFormat::Bgra8, bitmap.width as i32, bitmap.height as i32)?;
+    {
+        let buffer = software.LockBuffer(BitmapBufferAccessMode::Write)?;
+        let plane = buffer.GetPlaneDescription(0)?;
+        let reference = buffer.CreateReference()?;
+        let access: IMemoryBufferByteAccess = reference.cast()?;
+        let (mut data, mut capacity) = (std::ptr::null_mut(), 0u32);
+        // SAFETY: the buffer stays locked for writing while `reference` lives; rows are written
+        // at the plane's own start and stride, within the capacity it reports.
+        unsafe {
+            access.GetBuffer(&mut data, &mut capacity)?;
+            let row = bitmap.width as usize * 4;
+            let (start, stride) = (plane.StartIndex.max(0) as usize, plane.Stride.max(0) as usize);
+            let needed = start + stride * (bitmap.height as usize).saturating_sub(1) + row;
+            if data.is_null() || stride < row || needed > capacity as usize {
+                return Err(windows::core::Error::new(windows::core::HRESULT(0x8007_000Eu32 as i32), "the bitmap's buffer is too small"));
+            }
+            let out = std::slice::from_raw_parts_mut(data, capacity as usize);
+            for (y, source) in bitmap.pixels.chunks_exact(row).enumerate() {
+                out[start + y * stride..][..row].copy_from_slice(source);
+            }
+        }
+        reference.Close()?;
+        buffer.Close()?;
+    }
+    Ok(software)
 }

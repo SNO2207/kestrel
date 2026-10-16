@@ -10,6 +10,8 @@ publish.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 windows-sys = { workspace = true, features = [
+    # NtQueryInformationFile's FilePipeLocalInformation: how much of an answer is still unread.
+    "Wdk_Storage_FileSystem",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",

@@ -18,11 +18,16 @@
 //! (the built-in `metadata` stage), decode it once at the largest size any stage needs (WIC for
 //! photos, a frame a tenth of the way in for videos, turned as shown), and hand the facts and
 //! the picture to each stage that still has work on it. A stage that fails says why; that is
-//! recorded and the stage is not tried again until the file changes.
+//! recorded and the stage is not tried again until the file changes. A file that turned out to
+//! be missing (or whose records couldn't be written) waits for the next plan, which says where
+//! it went.
 //!
-//! Workers run at background priority (`THREAD_MODE_BACKGROUND_BEGIN`, which lowers their I/O
-//! and memory priority too), stop between items while paused ([`Pipeline::set_paused`]), and
-//! wait while [`Config::conditions`] gives a reason (a full-screen app or game, battery saver).
+//! Workers run at normal priority and do their heavy work (reading properties, decoding, and
+//! each stage's own) in background mode ([`crate::priority`], which lowers I/O and memory
+//! priority too), so they never hold the database, their own state or a stage's shared data at
+//! a priority Windows lets starve. They stop between items while paused
+//! ([`Pipeline::set_paused`]), and wait while [`Config::conditions`] gives a reason (a
+//! full-screen app or game, battery saver).
 //!
 //! # Adding a stage
 //!
@@ -30,7 +35,10 @@
 //! output belongs in tables of its own, keyed by [`Item::id`], which stays the same for a file
 //! for as long as the library knows it; [`Stage::forget`] is told which ids were dropped. Per
 //! thread state (an OCR engine, a model session) is the stage's own business, such as a
-//! `thread_local!`; `run` is called from several worker threads at once.
+//! `thread_local!`; `run` is called from several worker threads at once, at normal priority: a
+//! stage does its heavy work inside [`crate::priority::background`] and takes its locks outside
+//! it. A stage whose output can be lost (a store reset) asks for it again with
+//! [`Pipeline::redo`].
 
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
@@ -104,7 +112,8 @@ pub trait Stage: Send + Sync {
         true
     }
     /// Does the stage's work on one item. An error says, in words for the owner, why it could
-    /// not; the stage is not tried on the item again until the file changes.
+    /// not; the stage is not tried on the item again until the file changes. Called at normal
+    /// priority: heavy work goes inside [`crate::priority::background`], locks outside it.
     fn run(&self, item: &Item, input: &Input) -> Result<(), String>;
     /// The library has forgotten these items (gone from the scopes for a month).
     fn forget(&self, ids: &[i64]) {
@@ -208,6 +217,9 @@ struct Entry {
     mtime: i64,
     attrs: u32,
     gone: bool,
+    /// The file was missing when a worker came to it (or its records couldn't be written): it
+    /// is not queued again until the next plan looks at it.
+    held: bool,
     records: HashMap<String, Record>,
 }
 
@@ -292,7 +304,7 @@ impl Shared {
 
     fn enqueue(&self, state: &mut State, key: &(String, u64)) {
         let Some(entry) = state.known.get(key) else { return };
-        if entry.gone || entry.cloud_only() || state.queued.contains(&entry.id) || self.pending(entry).is_empty() {
+        if entry.gone || entry.held || entry.cloud_only() || state.queued.contains(&entry.id) || self.pending(entry).is_empty() {
             return;
         }
         state.queued.insert(entry.id);
@@ -390,6 +402,7 @@ impl Pipeline {
                 mtime: known.mtime,
                 attrs: 0,
                 gone: known.gone,
+                held: false,
                 records: records_of(known.stages),
             });
         }
@@ -420,6 +433,8 @@ impl Pipeline {
             }
             match state.known.get_mut(&key) {
                 Some(entry) => {
+                    // Looked at again: a file missing when last read is tried once more.
+                    entry.held = false;
                     if entry.gone || entry.path != candidate.path || entry.size != candidate.size || entry.mtime != candidate.mtime {
                         changed.push((entry.id, candidate.size, candidate.mtime, candidate.path.clone()));
                         entry.gone = false;
@@ -469,6 +484,7 @@ impl Pipeline {
                 mtime: found.mtime,
                 attrs: entry_attrs,
                 gone: false,
+                held: false,
                 records: HashMap::new(),
             });
         }
@@ -515,6 +531,9 @@ impl Pipeline {
         };
         let mut counts: Vec<StageCount> =
             std::iter::once(METADATA).chain(stages.iter().map(|s| s.name())).map(|name| StageCount { name: name.to_owned(), ..StageCount::default() }).collect();
+        // Items with work left that a worker will come to; those held for the next plan wait,
+        // but nothing works on them meanwhile.
+        let mut workable = 0u64;
         for entry in state.known.values().filter(|entry| !entry.gone) {
             progress.total += 1;
             match entry.kind {
@@ -536,6 +555,7 @@ impl Pipeline {
             }
             if !pending.is_empty() {
                 progress.queued += 1;
+                workable += u64::from(!entry.held);
             } else if let Some(failed) = entry.records.values().find_map(|r| r.failed.as_deref()) {
                 skip(failed, &entry.path);
             } else {
@@ -551,7 +571,7 @@ impl Pipeline {
         progress.skipped = skipped;
         progress.stages = counts;
         progress.working = state.working.iter().map(|(_, path)| path.clone()).collect();
-        let busy = progress.queued > 0 || !state.working.is_empty();
+        let busy = workable > 0 || !state.working.is_empty();
         (progress.state, progress.reason) = if state.paused {
             ("paused", None)
         } else if let Some(reason) = state.waiting.clone().filter(|_| busy) {
@@ -571,7 +591,7 @@ impl Pipeline {
         let mut hurried = 0;
         for key in keys {
             let Some(entry) = state.known.get(key) else { continue };
-            if entry.gone || entry.cloud_only() || self.shared.pending(entry).is_empty() {
+            if entry.gone || entry.held || entry.cloud_only() || self.shared.pending(entry).is_empty() {
                 continue;
             }
             let queued = Queued { urgent: true, mtime: entry.mtime, id: entry.id };
@@ -584,6 +604,37 @@ impl Pipeline {
             self.shared.wake.notify_all();
         }
         hurried
+    }
+
+    /// Runs `stage` again on these items where it did its work (a failure stays recorded): what
+    /// it made of them is gone, such as vectors lost with a store that was deleted or reset.
+    /// Returns how many it will run on again.
+    pub fn redo(&self, stage: &str, ids: &[i64]) -> Result<usize, String> {
+        let shared = &self.shared;
+        let did = |entry: &Entry| entry.records.get(stage).is_some_and(|record| record.failed.is_none());
+        let done: Vec<i64> = {
+            let state = shared.state.lock();
+            ids.iter().copied().filter(|id| state.by_id.get(id).and_then(|key| state.known.get(key)).is_some_and(did)).collect()
+        };
+        if done.is_empty() {
+            return Ok(0);
+        }
+        // Written outside the lock, as plans are; a worker that records the stage meanwhile only
+        // makes it run once more.
+        store::forget_done(&shared.db, stage, &done)?;
+        let mut state = shared.state.lock();
+        for id in &done {
+            let Some(key) = state.by_id.get(id).cloned() else { continue };
+            if let Some(entry) = state.known.get_mut(&key)
+                && did(entry)
+            {
+                entry.records.remove(stage);
+            }
+            shared.enqueue(&mut state, &key);
+        }
+        drop(state);
+        shared.wake.notify_all();
+        Ok(done.len())
     }
 
     /// Waits until nothing is queued or being worked on, for at most `timeout`. True if so.
@@ -614,21 +665,16 @@ impl Pipeline {
     }
 }
 
-/// Lowers the calling thread to background priority: CPU, I/O and memory.
-pub fn background_priority() {
-    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN};
-    // SAFETY: changes only this thread's own priority.
-    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) };
-}
-
 /// One item's work, taken from the queue.
 struct Job {
     item: Item,
     pending: Vec<(&'static str, u32)>,
 }
 
+/// A worker. It runs at normal priority, so the locks it takes (the state's, the database's,
+/// a stage's) are never held by a thread Windows lets starve; its heavy work goes into
+/// background mode ([`crate::priority`]).
 fn work(shared: &Shared) {
-    background_priority();
     let _com = crate::Apartment::enter();
     loop {
         let reason = (shared.conditions)();
@@ -672,7 +718,8 @@ fn work(shared: &Shared) {
         state.working.retain(|(working, _)| *working != id);
         if let Some(key) = state.by_id.get(&id).cloned() {
             apply(&mut state, &key, outcome);
-            // Anything still left (a stage registered meanwhile) goes back in the queue.
+            // Anything still left (a stage registered meanwhile) goes back in the queue; an item
+            // held for the next plan does not.
             shared.enqueue(&mut state, &key);
         }
         drop(state);
@@ -701,7 +748,8 @@ enum Outcome {
     Ran { size: u64, mtime: i64, records: Vec<(String, Record)> },
     /// The file turned out to be online only: its attributes now.
     CloudOnly(u32),
-    /// The file is not there any more; the next plan will say where it went.
+    /// The file is not there any more (or can't be found by its path); the next plan will say
+    /// where it went, and until then it waits.
     Missing,
     /// Writing the records failed; the item is tried again at the next plan.
     Failed,
@@ -716,7 +764,9 @@ fn apply(state: &mut State, key: &(String, u64), outcome: Outcome) {
             entry.records.extend(records);
         }
         Outcome::CloudOnly(attrs) => entry.attrs = attrs,
-        Outcome::Missing | Outcome::Failed => {}
+        // Queued again at once, it would come straight back (it is still the newest) and the
+        // workers would spin on it until the next plan.
+        Outcome::Missing | Outcome::Failed => entry.held = true,
     }
 }
 
@@ -749,7 +799,7 @@ fn process(shared: &Shared, job: Job) -> Outcome {
 
     // Facts first: the other stages are given them, and the picture is turned by them.
     let facts = if pending.iter().any(|(name, _)| *name == METADATA) {
-        match crate::props::read(&item.path, item.kind) {
+        match crate::priority::background(|| crate::props::read(&item.path, item.kind)) {
             Ok(facts) => {
                 if store::save_facts(&shared.db, item.id, &facts).is_err() || !record(METADATA, METADATA_VERSION, None) {
                     return Outcome::Failed;
@@ -776,9 +826,11 @@ fn process(shared: &Shared, job: Job) -> Outcome {
             .collect()
     };
     let largest = stages.iter().map(|(stage, _)| stage.needs().pixels).max().unwrap_or(0);
-    let picture: Option<Result<Bitmap, String>> = (largest > 0).then(|| match item.kind {
-        Kind::Photo => crate::decode::image(&item.path, largest, facts.orientation.unwrap_or(1)),
-        Kind::Video => crate::decode::video_frame(&item.path, 0.1, largest).map(|frame| frame.bitmap),
+    let picture: Option<Result<Bitmap, String>> = (largest > 0).then(|| {
+        crate::priority::background(|| match item.kind {
+            Kind::Photo => crate::decode::image(&item.path, largest, facts.orientation.unwrap_or(1)),
+            Kind::Video => crate::decode::video_frame(&item.path, 0.1, largest).map(|frame| frame.bitmap),
+        })
     });
     let mut facts = facts;
     if let Some(Ok(bitmap)) = &picture

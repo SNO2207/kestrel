@@ -246,3 +246,47 @@ fn a_stopped_server_is_gone() {
     // The name is free again.
     assert!(Server::start(&name, Limits::default(), echo(), None).is_ok());
 }
+
+/// Clients that ask and then never read the answer (hung, suspended, or careless) are let go
+/// within the limits: the server once waited in `FlushFileBuffers` for them to read, for as long
+/// as they lived, and with every connection held so the next client was told Kestrel is busy.
+#[test]
+fn clients_that_never_read_their_answers_are_let_go() {
+    let name = unique("unread");
+    let short = Duration::from_millis(300);
+    let limits = Limits { max_clients: 2, read_timeout: short, idle_timeout: short, write_timeout: short, ..Limits::default() };
+    let _server = Server::start(&name, limits, echo(), None).unwrap();
+    let line = b"{\"op\":\"hello\"}\n";
+    let careless: Vec<Client> = (0..2)
+        .map(|_| {
+            let client = Client::connect(&name, SECOND).unwrap();
+            client.pipe.write_all(line, SECOND).unwrap();
+            client
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(1200));
+    // Both are still connected (their processes live), never having read a byte; the next
+    // client is answered all the same.
+    let started = Instant::now();
+    assert_eq!(client::call(&name, &Request::Hello, Duration::from_secs(3)).unwrap(), json!({"app": "test"}));
+    assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+    drop(careless);
+}
+
+/// The last answer a connection gets before the server closes it is still read in full.
+#[test]
+fn the_last_answer_before_the_connection_closes_arrives() {
+    let name = unique("last");
+    let limits = Limits { max_requests_per_connection: 2, ..Limits::default() };
+    let big: Arc<Handler> = Arc::new(|_: Request, _: &Context| Ok(Value::String("y".repeat(200_000))));
+    let _server = Server::start(&name, limits, big, None).unwrap();
+    let mut client = Client::connect(&name, SECOND).unwrap();
+    // Two requests at once; the answers (more than the pipe's buffer each) are read slowly.
+    client.pipe.write_all(b"{\"op\":\"hello\"}\n{\"op\":\"hello\"}\n", SECOND).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    for _ in 0..2 {
+        let answer = read_line(&client.pipe, &mut client.pending, 1 << 20, SECOND).unwrap().unwrap();
+        assert!(answer.len() > 200_000);
+    }
+    assert!(read_line(&client.pipe, &mut client.pending, 1 << 20, SECOND).unwrap().is_none(), "then the server hung up");
+}
