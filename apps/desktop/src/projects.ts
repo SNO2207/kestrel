@@ -11,6 +11,7 @@ import {
 } from "./lib/projectsApi";
 import { baseName, parentPath } from "./lib/format";
 import { activeTab, navigate, notify, openTab, selectInFolder } from "./state";
+import { runScriptHere } from "./devtools";
 
 /**
  * The projects hub: whether it is open, the projects found, the filters, and the project whose
@@ -297,6 +298,8 @@ export async function launchProject(root: string, launcher: Launcher) {
 }
 
 export async function runScript(root: string, script: Script) {
+  // In the terminal pane instead, when the Developer tools settings say so (devtools.ts).
+  if (await runScriptHere(root, script)) return;
   await projectsApi.runScript(root, script).catch(notify);
 }
 

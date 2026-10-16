@@ -17,6 +17,7 @@ pub use rusqlite;
 
 pub mod archives;
 pub mod cleanup;
+pub mod devtools;
 pub mod disk;
 pub mod layout;
 pub mod media;
@@ -50,6 +51,7 @@ pub const MIGRATIONS: &[&[Migration]] = &[
     media::MIGRATIONS,
     semantic::MIGRATIONS,
     triage::MIGRATIONS,
+    devtools::MIGRATIONS,
 ];
 
 const SETTINGS: &[Migration] = &[Migration {

@@ -7,6 +7,7 @@ mod archive;
 mod batchrename;
 mod cleanup;
 mod clipboard;
+mod devtools;
 mod disk;
 mod dragdrop;
 mod engine;
@@ -429,6 +430,9 @@ fn main() {
         .manage(Arc::new(thispc::Drives::default()))
         // Searches inside files, one per tab (search/).
         .manage(search::Searches::default())
+        // The terminal pane's shells, and the query service other programs ask (devtools/).
+        .manage(Arc::new(devtools::Terminals::default()))
+        .manage(Arc::new(devtools::QueryService::new(&indexer::data_dir())))
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
             thumbs.handle(&request, responder)
@@ -668,11 +672,27 @@ fn main() {
             wsl::wsl_distros,
             wsl::wsl_modes,
             wsl::wsl_dev_distros,
+            devtools::terminal::terminal_shells,
+            devtools::terminal::terminal_open,
+            devtools::terminal::terminal_write,
+            devtools::terminal::terminal_resize,
+            devtools::terminal::terminal_close,
+            devtools::terminal::terminal_reset,
+            devtools::terminal::terminal_cd,
+            devtools::terminal::terminal_paths,
+            devtools::terminal::terminal_clipboard_text,
+            devtools::terminal::terminal_dev_sessions,
+            devtools::terminal::terminal_dev_alive,
+            devtools::devtools_state,
+            devtools::devtools_set_settings,
+            devtools::devtools_queries,
+            devtools::devtools_clear_queries,
         ]))
         .on_window_event(|window, event| {
             dragdrop::on_window_event(event);
             parity::appwindows::on_window_event(window, event);
             launcher::on_window_event(window, event);
+            devtools::on_window_event(window, event);
         })
         .setup(move |app| {
             if let Some(window) = app.get_window("main")
@@ -711,6 +731,8 @@ fn main() {
             foldertree::watch(app.handle().clone(), app.state::<Arc<Engine>>().inner().clone());
             // The sidebar's count of new downloads follows the Downloads folder (triage.rs).
             triage::watch(app.handle());
+            // Other programs' questions, over a pipe only this account can open (devtools/).
+            devtools::setup(app.handle());
             let handle = app.handle().clone();
             let engine = app.state::<Arc<Engine>>().inner().clone();
             std::thread::Builder::new()
@@ -720,8 +742,10 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while starting Kestrel")
-        .run(move |_app, event| {
+        .run(move |app, event| {
             if let RunEvent::Exit = event {
+                // Terminals end with Kestrel, and so does the query service.
+                devtools::on_exit(app);
                 // Decrypted copies of password-protected items don't outlast the run.
                 archive::forget_protected_copies();
                 // Saving on the way out means the next start only replays what changed since.

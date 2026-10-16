@@ -12,7 +12,8 @@ Bin, tabs and a second pane, Group by, columns and a filter box, the command bar
 pane, archives that open like folders, and more windows (`docs/explorer-parity.md` lists
 Explorer's features one by one). Searches also look inside files, read plain phrases ("videos
 from last month over 1 GB"), and a page sorts out what arrived in Downloads; WSL's Linux
-distributions browse like drives.
+distributions browse like drives. For programmers there is a terminal docked at the bottom of the
+window, and the index answers Claude Code (through an MCP server) and the command line.
 
 *Kestrel is a working name.*
 
@@ -29,10 +30,13 @@ distributions browse like drives.
 | `crates/kestrel-media` | The media library: the background pass over photos and videos (facts, thumbnails, text), through Windows' own property system, WIC, Media Foundation and OCR |
 | `crates/kestrel-embed` | AI search's models: SigLIP 2 through Windows ML, image and text preprocessing, the downloader, video frames, text in pictures, the self-test |
 | `crates/kestrel-vector` | A memory-mapped store of f16 vectors, searched by brute force |
-| `crates/kestrel-cli` | Command-line front end and benchmark harness |
+| `crates/kestrel-cli` | Command-line front end and benchmark harness; `--live` asks the running app |
+| `crates/kestrel-ipc` | The local query service: protocol, the named pipe server the app runs, its client |
+| `crates/kestrel-term` | Shells in Windows pseudoconsoles (ConPTY) for the terminal pane, and the shells installed |
 | `apps/desktop` | The app: Tauri 2 backend in `src-tauri`, SolidJS front end in `src` |
 | `apps/broker` | Optional Windows service that reads drives' file tables for the app |
 | `apps/shellhost` | Helper process that shows the Windows context menu and Open With dialog |
+| `apps/mcp` | `kestrel-mcp.exe`, an MCP server (stdio) that lets Claude Code use the running app's index |
 
 ## Running
 
@@ -50,8 +54,9 @@ pnpm tauri build       # target\release\kestrel.exe, with kestrel-shellhost.exe 
 ```
 
 The build also builds `kestrel-shellhost.exe` (`scripts/shellhost.mjs`, run before the front
-end is built) into the same folder as `kestrel.exe`, which is where Kestrel looks for it. The
-front end is built into the executable, so the folder's two programs are all it needs.
+end is built) into the same folder as `kestrel.exe`, which is where Kestrel looks for it, and
+`kestrel-mcp.exe` beside them (the MCP server; see "Terminal, Claude Code and the command line").
+The front end is built into the executable, so the folder's programs are all it needs.
 
 The first launch builds an index of every fixed drive and saves it to
 `%LOCALAPPDATA%\Kestrel\index.kidx`: by crawling (25–40 seconds for 3 million files), or, with
@@ -200,6 +205,8 @@ chips says how many files were read and what was skipped.
 | Mouse back / forward buttons | Back / forward |
 | Middle-click a folder | Open it in a new tab |
 | Ctrl+Shift+E | Expand the folder tree to the open folder and give the tree the keyboard |
+| Ctrl+` | Show the terminal pane (opening a terminal in the open folder), give it the keyboard, or hide it |
+| Ctrl+Shift+` | A new terminal tab, in the open folder |
 
 Every view (details, list, tiles, content and icons) has the same mouse and keyboard handling:
 click, Ctrl+click and Shift+click to select, a rectangle drawn from empty space (Ctrl adds to the
@@ -526,7 +533,7 @@ pinning are the user's own, kept in `kestrel.db`.
 
 Selecting a project shows its README, notes, scripts (`package.json` scripts, Cargo's build,
 test and run, justfile recipes and Makefile targets, each run in a new Windows Terminal in the
-project folder), launchers (VS Code, Visual Studio for a `.sln`, Windows Terminal, Claude Code,
+project folder, or in Kestrel's terminal pane if the Developer tools page says so), launchers (VS Code, Visual Studio for a `.sln`, Windows Terminal, Claude Code,
 the folder in Kestrel or Explorer, the web page), a year of activity (commits and changed
 files per day) and the files changed most recently that git does not ignore.
 
@@ -843,6 +850,65 @@ shows Linux permissions (`-rw-r--r--`) where WSL's share gives them. Up from a d
 to This PC, whose crumb leads its address. Open in Terminal there opens the distribution's shell
 (`wsl.exe -d <distro> --cd <folder>`, in Windows Terminal when installed). Without WSL nothing
 about it shows.
+## Terminal, Claude Code and the command line
+
+**The terminal pane.** Ctrl+` (as in VS Code) shows a terminal docked at the bottom of the
+window, under the files and beside the sidebar, opened in the folder on screen; Ctrl+Shift+`,
+the + in its strip, or "Open terminal here" in any folder's menu (or the folder background's)
+opens another tab. Drag the pane's top edge to make it taller. Each tab is a shell in a Windows
+pseudoconsole (ConPTY) drawn by xterm.js: the default shell is PowerShell 7 if it is installed,
+else Windows PowerShell; Command Prompt and each WSL distribution are in the chevron's menu, and
+the Developer tools page sets which one new terminals start. "cd to this folder" takes the
+terminal to the folder the file list shows (`Set-Location -LiteralPath`, `cd /d`, or `cd` to the
+`/mnt/c/...` path in WSL). Paths printed in a terminal are links: a click opens a folder in
+Kestrel, or shows a file selected in its folder (a compiler's `:line:col` after a file is left
+out; shares are never links, so text a program prints can't make Kestrel contact a server).
+Ctrl+C copies a selection (and interrupts otherwise), Ctrl+V and Ctrl+Shift+V paste, and the
+right-click menu has Copy, Paste, Select all, Clear, "cd to this folder" and Close. Keys typed
+into a terminal stay there (Backspace, Tab, Ctrl+W, Ctrl+R are the shell's), apart from Ctrl+`,
+Ctrl+K, Ctrl+Shift+P, Ctrl+Shift+U, Ctrl+Shift+D, Ctrl+Tab and F11. Hiding the pane keeps the
+shells running. Closing a tab, its window (or hiding the window in the tray) or Kestrel ends the
+shell and every console program it started (a dev server, a build); windowed programs it opened,
+such as an editor, stay open, as with Windows Terminal. A shell that exits by itself closes its
+tab, or with an error code says so in it. "Run project scripts in the terminal pane" (Developer
+tools) makes the projects hub's Run buttons run a script in a new tab of the pane instead of in
+Windows Terminal, the same command in Command Prompt, which stays open afterwards.
+
+**Kestrel for other programs.** While Kestrel runs, programs of your own account can ask it
+questions over a named pipe, `\\.\pipe\kestrel-query-<your SID>-<hash of the data folder>`:
+search (in the search syntax above), a folder's listing with sizes, a folder's size and how many
+files it holds, the projects with their git state, one project's details (scripts, README, recent
+files), the recent files, and a disk usage summary. Nothing they can ask changes a file. The pipe's
+access list admits your account alone (not other users, not even administrators or SYSTEM), it
+refuses remote clients, and clients check that the program serving it runs as you. Every answer
+is bounded: results per question (search 500 at most, 50 by default; listings 2000), 64 KB a
+question, 4 MB an answer, 10 seconds to answer, 8 connections and 16 questions at once. Folders
+on shares are never read for another program. The Developer tools page (type `Developer tools`
+in the address bar, or find it in the palette) turns the service off, and lists what was asked
+lately and by which program.
+
+**Claude Code.** `kestrel-mcp.exe`, built beside `kestrel.exe`, is an MCP server (stdio) that
+offers those questions to Claude Code as read-only tools: `search_files` (with the query syntax
+in its description), `list_folder`, `folder_size`, `list_projects`, `project_details`,
+`recent_files` and `disk_usage`. The Developer tools page shows the command that adds it, with a
+Copy button; Kestrel never edits Claude Code's or any MCP configuration itself:
+
+```powershell
+claude mcp add --scope user kestrel -- "C:\path\to\kestrel-mcp.exe"
+claude mcp remove kestrel            # takes it out again
+```
+
+**The command line.** `kestrel-cli --live` asks the running Kestrel instead of loading the saved
+index, falling back to the snapshot when Kestrel isn't running: `search`, `ls`, `size` and
+`usage`. `projects`, `project`, `recent` and `status` need Kestrel running; `--json` prints its
+answers as they come. A terminal in Kestrel's pane has `KESTREL_PIPE` set, so the CLI there asks
+that Kestrel; `--pipe` (or `KESTREL_PIPE`) names another, such as a test slot's.
+
+```powershell
+kestrel-cli --live search ext:rs main -n 10
+kestrel-cli --live size C:\Users\me\Downloads
+kestrel-cli projects rust
+```
 
 ## Testing
 
@@ -892,6 +958,7 @@ node e2e/navigation.mjs     # locations and archives in either pane, history, ta
 node e2e/media.mjs          # the media library, its searches and columns, the Gallery, pausing
 node e2e/semantic.mjs       # AI search on a tiny model: the page, Describe, the slider, video moments, Find similar, downloads
 node e2e/search.mjs         # inside files, phrases and chips, New downloads, WSL, in a scratch folder
+node e2e/devtools.mjs       # the terminal pane, the Developer tools page, kestrel-mcp and kestrel-cli --live
 node e2e/dev.mjs stop
 ```
 
@@ -901,7 +968,8 @@ instead: it runs `tauri build` (no installer) with the slot's identity and start
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
 `shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`, `integration.mjs`,
 `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs`, `places.mjs`, `layout.mjs`,
-`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs`, `navigation.mjs`, `media.mjs`, `semantic.mjs` and `search.mjs` need a dev build,
+`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs`, `navigation.mjs`, `media.mjs`, `semantic.mjs`, `search.mjs`
+and `devtools.mjs` need a dev build,
 whose test hooks they use. A release build has the Windows menu's test hook only when started with
 `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
@@ -1039,3 +1107,15 @@ extracts a zip through the archive feature's dialog (restoring its "Show extract
 preference), and records Open in Terminal's launch through the projects feature's hook instead
 of starting it. "Choose a folder…" (Windows' folder picker) and a real WSL distribution (its
 `\\wsl.localhost` share, Linux permissions over it, and its shell) are manual checks.
+`devtools.mjs` runs the default shell in a scratch folder (echo, "cd to this folder", a printed
+path clicked open, a second tab running `ping 127.0.0.1`, a tab from a folder's menu, a terminal
+in a second window that it closes), and checks through Windows that no process any terminal
+started is left once the tabs and the window are closed. It starts `kestrel-mcp.exe` over stdio
+against the slot and asks `search_files` for a file in the sandbox, builds `kestrel-cli` in the
+slot's target folder and asks it with `--live`, and, with "Run project scripts in the terminal
+pane" on, runs a sandbox project's npm script from the projects hub (skipped without npm). It
+never touches the clipboard: Copy, Paste and the page's Copy button are manual checks. The unit
+tests of `kestrel-ipc` (the pipe's access list read back from Windows, size, time and connection
+limits), `kestrel-term` (real shells in pseudoconsoles, and their processes ended) and
+`apps/mcp` (the MCP server driven over stdio against a stand-in pipe) run with
+`cargo test --workspace`.

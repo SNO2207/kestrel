@@ -35,6 +35,7 @@ import { folderOptions } from "../lib/folderOptions";
 import { inverted, type SelectControl } from "../lib/selectionOps";
 import { activeId } from "../state";
 import { newEntries, openInTerminal, openNewWindow, revealInFolder } from "../parity";
+import { terminalHere } from "../devtools";
 import { SyncGlyph } from "./SyncGlyph";
 import { DescribeBar } from "./DescribeBar";
 import { MomentBadge } from "./MomentBadge";
@@ -736,6 +737,8 @@ export function FileList(props: Props) {
         ? [
             { label: "Open in new window", run: () => openNewWindow(sole.path) },
             { label: "Open in Terminal", run: () => openInTerminal(sole.path) },
+            // The terminal pane at the bottom of the window (devtools.ts).
+            { label: "Open terminal here", run: () => terminalHere(sole.path) },
           ]
         : []),
       ...(sole && !browsing ? [{ label: "Open file location", run: () => revealInFolder(sole.path) }] : []),
@@ -776,6 +779,7 @@ export function FileList(props: Props) {
       "separator",
       { label: "Refresh", hint: "F5", run: command("refresh") },
       { label: "Open in Terminal", disabled: !browsing, run: () => props.listing && openInTerminal(props.listing.path) },
+      { label: "Open terminal here", disabled: !browsing, run: () => props.listing && terminalHere(props.listing.path) },
       "separator",
       { label: "Properties", hint: "Alt+Enter", disabled: !browsing, run: command("folder-properties") },
       ...moreOptions(false),

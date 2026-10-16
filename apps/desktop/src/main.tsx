@@ -13,5 +13,6 @@ import "./cleanup.css";
 import "./media.css";
 import "./semantic.css";
 import "./search.css";
+import "./devtools.css";
 
 render(() => <App />, document.getElementById("root")!);

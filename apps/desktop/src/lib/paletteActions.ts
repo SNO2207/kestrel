@@ -6,6 +6,7 @@
  */
 import { inArchive } from "../archives";
 import { cleanupActions } from "../cleanup";
+import { devtoolsActions } from "../devtools";
 import type { ListCommand } from "../components/FileList";
 import { openGoto } from "../components/GoToFolder";
 import { askName } from "../components/ShortcutDialogs";
@@ -164,6 +165,8 @@ function actions(): Action[] {
       run: () => openDiskUsage(driveOf(activeTab()?.path ?? "C:\\")),
     },
     ...cleanupActions(),
+    // The terminal pane (devtools.ts).
+    ...devtoolsActions(),
     { id: "search", title: "Search", hint: "Ctrl+F", icon: "search", keywords: "find", run: () => focusTargets.search?.() },
     {
       id: "search-scope",

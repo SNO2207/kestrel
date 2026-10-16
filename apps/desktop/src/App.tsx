@@ -37,6 +37,9 @@ import { TitleBar } from "./components/TitleBar";
 import { Toolbar, focusTargets } from "./components/Toolbar";
 import { groupByEntry } from "./components/GroupMenu";
 import { PaneBar, Splitter } from "./components/Panes";
+import { TerminalPane } from "./components/TerminalPane";
+import { listenForTerminalKeys } from "./devtools";
+import "./devtoolsSetup";
 import type { MenuEntry } from "./components/ContextMenu";
 import { bindListFocus, layoutKey, openLayout, otherPaneFolder, sendToOtherPane, split, startPanes } from "./panes";
 import {
@@ -207,6 +210,8 @@ export function App() {
     setDiskUsageHandler((path) => openDiskUsage(path));
     const stopDrops = listenForDrops();
     onCleanup(() => void stopDrops.then((stop) => stop()));
+    // Ctrl+` shows and hides the terminal pane (devtools.ts).
+    onCleanup(listenForTerminalKeys(focusList));
   });
 
   return (
@@ -309,6 +314,7 @@ export function App() {
           </div>
         </Show>
       </main>
+      <TerminalPane focusList={focusList} />
       <StatusBar />
       <BatchRenameDialog onClose={focusList} />
       <QuickLook focusList={focusList} />

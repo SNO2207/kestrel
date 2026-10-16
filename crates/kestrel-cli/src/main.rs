@@ -1,4 +1,5 @@
 mod disk;
+mod live;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -17,6 +18,17 @@ struct Cli {
     /// Index snapshot to read or write. Defaults to %LOCALAPPDATA%\Kestrel\index.kidx.
     #[arg(long, short, global = true)]
     snapshot: Option<PathBuf>,
+    /// Ask the running Kestrel (current within a second, nothing to load) for search, ls, size
+    /// and usage; the saved index is read only when Kestrel isn't running.
+    #[arg(long, global = true)]
+    live: bool,
+    /// The running Kestrel's query pipe, when it isn't the one of your own Kestrel (also
+    /// KESTREL_PIPE).
+    #[arg(long, global = true)]
+    pipe: Option<String>,
+    /// Print what the running Kestrel answers as JSON.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -96,6 +108,27 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         runs: usize,
     },
+    /// A folder's size and how many files and folders it holds.
+    Size { path: String },
+    /// The running Kestrel's projects (needs Kestrel running).
+    Projects {
+        /// Only projects whose name, folder, stack, tags, status or branch contain this.
+        filter: Option<String>,
+        #[arg(long, short = 'n', default_value_t = 100)]
+        limit: usize,
+    },
+    /// One project's details: git, scripts, recent files (needs Kestrel running).
+    Project {
+        /// The project's folder or name.
+        project: String,
+    },
+    /// Files opened recently (needs Kestrel running).
+    Recent {
+        #[arg(long, short = 'n', default_value_t = 20)]
+        limit: usize,
+    },
+    /// Whether Kestrel is running and answering, and its index's state.
+    Status,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -126,8 +159,51 @@ fn main() -> Result<()> {
             PathBuf::from(base).join("Kestrel").join("index.kidx")
         }
     };
+    let live = live::Live { pipe: kestrel_ipc::name::resolve(cli.pipe.as_deref())?, json: cli.json };
+    /// Says the saved index is read instead, once Kestrel turned out not to be running.
+    fn falling_back() {
+        eprintln!("Kestrel isn't running; reading the saved index instead.");
+    }
 
     match cli.command {
+        Command::Search { query, sort: key, desc, limit } if cli.live => {
+            let sort = match key {
+                SortArg::Name => kestrel_ipc::protocol::SortBy::Name,
+                SortArg::Size => kestrel_ipc::protocol::SortBy::Size,
+                SortArg::Modified => kestrel_ipc::protocol::SortBy::Modified,
+                SortArg::Type => kestrel_ipc::protocol::SortBy::Type,
+            };
+            if !live.search(query.join(" "), sort, desc, limit)? {
+                falling_back();
+                search_snapshot(&snapshot_path, &query, key, desc, limit)?;
+            }
+        }
+        Command::Ls { path } if cli.live => {
+            if !live.ls(path.clone())? {
+                falling_back();
+                ls_snapshot(&snapshot_path, &path)?;
+            }
+        }
+        Command::Usage { path } if cli.live => {
+            if !live.usage(path.clone())? {
+                falling_back();
+                disk::usage(&load(&snapshot_path)?, &path)?;
+            }
+        }
+        Command::Size { path } => {
+            if !(cli.live && live.size(path.clone())?) {
+                if cli.live {
+                    falling_back();
+                }
+                size_snapshot(&snapshot_path, &path)?;
+            }
+        }
+        Command::Projects { filter, limit } => live.projects(filter, limit)?,
+        Command::Project { project } => live.project(project)?,
+        Command::Recent { limit } => live.recent(limit)?,
+        Command::Status => live.status()?,
+        Command::Search { query, sort: key, desc, limit } => search_snapshot(&snapshot_path, &query, key, desc, limit)?,
+        Command::Ls { path } => ls_snapshot(&snapshot_path, &path)?,
         Command::Index { root } => {
             let started = Instant::now();
             // The journal position is taken before the crawl so that changes made during it
@@ -157,31 +233,6 @@ fn main() -> Result<()> {
             let root_id = index.roots()[0];
             println!("size   {} logical, {} on disk", human(index.size(root_id)), human(index.alloc(root_id)));
             println!("saved  {}", snapshot_path.display());
-        }
-        Command::Search { query, sort: key, desc, limit } => {
-            let index = load(&snapshot_path)?;
-            let text = query.join(" ");
-            let started = Instant::now();
-            let compiled = compile(&parse(&text, Clock::local())?, &index)?;
-            let mut ids = search(&index, &compiled, &AtomicBool::new(false)).unwrap_or_default();
-            let searched = started.elapsed();
-            sort(&index, &mut ids, Sort { key: key.into(), descending: desc, folders_first: false });
-            let sorted = started.elapsed();
-            for &id in ids.iter().take(limit) {
-                println!("{:>10}  {}", human(index.size(id)), index.path(id));
-            }
-            println!("{} results in {:.2?} (+{:.2?} to sort)", ids.len(), searched, sorted - searched);
-        }
-        Command::Ls { path } => {
-            let index = load(&snapshot_path)?;
-            let Some(dir) = index.lookup(&path) else { bail!("{path} is not in the index") };
-            let mut ids: Vec<EntryId> = index.children(dir).collect();
-            sort(&index, &mut ids, Sort { key: SortKey::Size, descending: true, folders_first: false });
-            for &id in &ids {
-                let marker = if index.is_dir(id) { "\\" } else { "" };
-                println!("{:>10}  {}{marker}", human(index.size(id)), index.name(id));
-            }
-            println!("{} items, {} total", ids.len(), human(index.size(dir)));
         }
         Command::CatchUp => {
             let started = Instant::now();
@@ -314,6 +365,57 @@ fn vector_bench(count: usize, runs: usize) -> Result<()> {
 fn load(path: &PathBuf) -> Result<Index> {
     snapshot::load(path)
         .with_context(|| format!("loading {} (run `kestrel-cli index C:\\` first)", path.display()))
+}
+
+fn search_snapshot(snapshot_path: &PathBuf, query: &[String], key: SortArg, desc: bool, limit: usize) -> Result<()> {
+    let index = load(snapshot_path)?;
+    let text = query.join(" ");
+    let started = Instant::now();
+    let compiled = compile(&parse(&text, Clock::local())?, &index)?;
+    let mut ids = search(&index, &compiled, &AtomicBool::new(false)).unwrap_or_default();
+    let searched = started.elapsed();
+    sort(&index, &mut ids, Sort { key: key.into(), descending: desc, folders_first: false });
+    let sorted = started.elapsed();
+    for &id in ids.iter().take(limit) {
+        println!("{:>10}  {}", human(index.size(id)), index.path(id));
+    }
+    println!("{} results in {:.2?} (+{:.2?} to sort)", ids.len(), searched, sorted - searched);
+    Ok(())
+}
+
+fn ls_snapshot(snapshot_path: &PathBuf, path: &str) -> Result<()> {
+    let index = load(snapshot_path)?;
+    let Some(dir) = index.lookup(path) else { bail!("{path} is not in the index") };
+    let mut ids: Vec<EntryId> = index.children(dir).collect();
+    sort(&index, &mut ids, Sort { key: SortKey::Size, descending: true, folders_first: false });
+    for &id in &ids {
+        let marker = if index.is_dir(id) { "\\" } else { "" };
+        println!("{:>10}  {}{marker}", human(index.size(id)), index.name(id));
+    }
+    println!("{} items, {} total", ids.len(), human(index.size(dir)));
+    Ok(())
+}
+
+fn size_snapshot(snapshot_path: &PathBuf, path: &str) -> Result<()> {
+    let index = load(snapshot_path)?;
+    let Some(item) = index.lookup(path) else { bail!("{path} is not in the index") };
+    let (mut files, mut folders) = (0u64, 0u64);
+    let mut stack = vec![item];
+    while let Some(dir) = stack.pop() {
+        for child in index.children(dir) {
+            if index.is_dir(child) {
+                folders += 1;
+                stack.push(child);
+            } else {
+                files += 1;
+            }
+        }
+    }
+    if !index.is_dir(item) {
+        files = 1;
+    }
+    live::print_size(&index.path(item), index.size(item), index.alloc(item), files, folders);
+    Ok(())
 }
 
 fn bench(snapshot_path: &PathBuf, runs: usize) -> Result<()> {

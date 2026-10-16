@@ -1,0 +1,438 @@
+/*
+ * Developer tools: the terminal pane docked at the bottom of the window, and the Developer
+ * tools page. Loaded after styles.css and parity.css, whose tokens and grid it uses; the one
+ * colour borrowed is the tag swatches' green (shortcuts.css), for "Answering". The terminal's
+ * own ANSI colours are in TerminalPane.tsx, where xterm.js takes them.
+ */
+
+/* ---------- layout: while the pane shows, a row of its own under the files ---------- */
+
+/* The sidebar runs down beside it, as in VS Code; the status bar stays at the bottom. */
+.app:has(> .terminal-pane:not([hidden])) {
+  grid-template-rows: 38px 44px 40px minmax(0, 1fr) var(--terminal-height, 280px) 26px;
+  grid-template-areas:
+    "title title"
+    "tools tools"
+    "commands commands"
+    "side main"
+    "side terminal"
+    "status status";
+}
+
+.terminal-pane {
+  grid-area: terminal;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+.terminal-pane[hidden] {
+  display: none;
+}
+
+.terminal-pane.dragging {
+  cursor: row-resize;
+  user-select: none;
+}
+
+/* Over the pane's top border; drag to resize. */
+.terminal-resizer {
+  position: absolute;
+  top: -4px;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  height: 8px;
+  cursor: row-resize;
+  outline: 0;
+}
+
+.terminal-resizer::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 0;
+  left: 0;
+  height: 2px;
+}
+
+.terminal-resizer:hover::after,
+.terminal-resizer:focus-visible::after,
+.terminal-pane.dragging .terminal-resizer::after {
+  background: var(--accent);
+}
+
+/* ---------- the strip of terminal tabs ---------- */
+
+.terminal-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 6px 0 8px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--line);
+}
+
+.terminal-tabs {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.terminal-tab {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 70px;
+  max-width: 220px;
+  height: 26px;
+  padding: 0 4px 0 9px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: default;
+}
+
+.terminal-tab:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.terminal-tab.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.terminal-tab.ended .terminal-tab-title {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.terminal-tab > .icon {
+  color: var(--muted);
+}
+
+.terminal-tab.active > .icon {
+  color: var(--accent);
+}
+
+.terminal-tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-tab-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  color: var(--faint);
+  visibility: hidden;
+}
+
+.terminal-tab:hover .terminal-tab-close,
+.terminal-tab.active .terminal-tab-close {
+  visibility: visible;
+}
+
+.terminal-tab-close:hover {
+  background: var(--line);
+  color: var(--text);
+}
+
+.terminal-button {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+.terminal-button:hover:not(:disabled) {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.terminal-button:disabled {
+  opacity: 0.45;
+}
+
+/* The chevron points down: it opens a menu. */
+.terminal-shells .icon {
+  transform: rotate(90deg);
+}
+
+.terminal-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.terminal-cd span {
+  font-size: 12px;
+}
+
+/* ---------- the terminals ---------- */
+
+.terminal-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.terminal-host {
+  position: absolute;
+  inset: 4px 0 0 10px;
+  display: none;
+}
+
+.terminal-host.shown {
+  display: block;
+}
+
+.terminal-host .xterm {
+  height: 100%;
+}
+
+.terminal-host .xterm-viewport {
+  /* xterm draws its own scrollbar; the page's colours behind it. */
+  background-color: var(--surface) !important;
+}
+
+/* ---------- the Developer tools page ---------- */
+
+.devtools-page {
+  height: 100%;
+  padding: 18px 24px 32px;
+  overflow-y: auto;
+  outline: 0;
+  user-select: text;
+}
+
+.devtools-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.devtools-header h1 .icon {
+  color: var(--accent);
+}
+
+.devtools-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+.devtools-section {
+  display: grid;
+  /* A long command wraps rather than widening the page. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  max-width: 820px;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.devtools-section h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.devtools-section h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.devtools-note {
+  margin: 0;
+  color: var(--muted);
+}
+
+.devtools-field {
+  grid-template-columns: auto minmax(0, 260px);
+  align-items: center;
+  justify-content: start;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.devtools-check {
+  align-items: flex-start;
+}
+
+.devtools-check input {
+  margin-top: 2px;
+}
+
+.devtools-check > span {
+  display: grid;
+  gap: 2px;
+}
+
+.devtools-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.devtools-warning {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--raised);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+.devtools-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  background: var(--chrome);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.devtools-command-text {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.devtools-copy {
+  flex: none;
+  min-width: 76px;
+}
+
+.devtools-tools {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.devtools-tools li {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 10px;
+  color: var(--muted);
+}
+
+.devtools-tools code {
+  justify-self: start;
+  color: var(--text);
+}
+
+.devtools-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.devtools-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  /* The tag swatches' green (shortcuts.css), as the sync checks borrow it. */
+  background: var(--tag-green, #5fb37a);
+}
+
+.devtools-status.off .devtools-dot {
+  background: var(--faint);
+}
+
+.devtools-pipe {
+  color: var(--faint);
+  overflow-wrap: anywhere;
+}
+
+.devtools-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+
+.devtools-empty {
+  margin: 0;
+  color: var(--faint);
+}
+
+.devtools-log {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.devtools-log th {
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  text-align: left;
+  color: var(--muted);
+}
+
+.devtools-log td {
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.devtools-log td:first-child,
+.devtools-log td:nth-child(2) {
+  white-space: nowrap;
+}
+
+.devtools-log .devtools-took {
+  text-align: right;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.devtools-summary {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.devtools-failed {
+  color: var(--danger);
+}

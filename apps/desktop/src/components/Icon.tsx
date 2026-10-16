@@ -36,6 +36,8 @@ const PATHS = {
   sparkle: "M7 2.5C7.4 5.2 8.8 6.6 11.5 7 8.8 7.4 7.4 8.8 7 11.5 6.6 8.8 5.2 7.4 2.5 7 5.2 6.6 6.6 5.2 7 2.5ZM12 10.5v3M10.5 12h3",
   // A penguin, for WSL's Linux distributions (wsl.ts), on This PC.
   linux: "M8 2.5c-1.6 0-2.4 1.3-2.4 2.9v1.4L3.8 10c-.5 1 .1 2.5 1.4 2.5h5.6c1.3 0 1.9-1.5 1.4-2.5l-1.8-3.2V5.4c0-1.6-.8-2.9-2.4-2.9ZM6.6 8.5c.4.9.8 1.3 1.4 1.3s1-.4 1.4-1.3M7 5.2h.01M9 5.2h.01M5 12.5l-.7 1M11 12.5l.7 1",
+  // The terminal pane and the Developer tools page (devtools.ts).
+  terminal: "M2.5 3.5h11v9h-11ZM5 6.5l2 1.75L5 10M8.5 10h2.5",
 } as const;
 
 export type IconName = keyof typeof PATHS;
