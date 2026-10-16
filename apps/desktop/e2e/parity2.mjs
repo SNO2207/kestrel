@@ -1,5 +1,6 @@
 // End-to-end test of Explorer parity's second round: rows that never go blank while a folder is
-// refreshed or re-sorted (sampled on every animation frame, and measured), compact view, item
+// refreshed or re-sorted (sampled on every animation frame, and measured), clicks whose release
+// comes after a new listing is drawn acting on the item pressed, compact view, item
 // check boxes, Ctrl+Space and Ctrl+arrows, compressed files in colour, icons instead of
 // thumbnails, the navigation pane hidden, Num Lock+plus and minus in the folder tree, tab
 // commands (Duplicate tab, Close other tabs) and a tab moved out to a new window and back, the
@@ -306,6 +307,81 @@ try {
     await chooseView("Details");
     await page.locator(".view-button").click();
     await menuItem("Sort by name").click();
+  });
+
+  await step("a double-click, a single click and a right-click act on the item pressed, even when the folder's listing changes before the button comes up", async () => {
+    // Folders only, so whatever is opened is only gone into. Each time, while the button is down
+    // on c-two, a folder that sorts first arrives and the folder's new listing is drawn before the
+    // button comes up, with b-one under the pointer by then. The dev build holds the listing until
+    // the press, so it comes in that order every time. Rows are drawn by place, and what a release
+    // did used to be for whatever was under the pointer when it came.
+    const PRESSED = join(sandbox, "pressed");
+    for (const name of ["b-one", "c-two", "d-three"]) mkdirSync(join(PRESSED, name), { recursive: true });
+    const crumb = () => page.evaluate(() => [...document.querySelectorAll(".crumb")].at(-1)?.textContent);
+    const nameAt = (point) => page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest(".row")?.querySelector(".label")?.textContent ?? null, point);
+    let arrivals = 0;
+    /** Points at c-two, nothing selected, and has a folder that sorts first arrive, its listing held. */
+    const pointAndArrive = async () => {
+      await open(PRESSED, "pressed");
+      await item("c-two").waitFor();
+      await list.focus();
+      await page.keyboard.press("Escape");
+      const box = await item("c-two").boundingBox();
+      const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      await page.mouse.move(point.x, point.y);
+      await page.evaluate(() => window.__kestrelStage.hold(true));
+      const arrival = `a-new-${++arrivals}`;
+      mkdirSync(join(PRESSED, arrival));
+      // The listing with the arrival has reached the tab (the status bar counts it), and waits
+      // at the gate.
+      await page.locator(".statusbar > span", { hasText: new RegExp(`^${3 + arrivals} items$`) }).waitFor();
+      return { point, arrival };
+    };
+    /** Draws the held listing, which has b-one where c-two was. */
+    const drawHeld = async ({ point, arrival }) => {
+      await page.evaluate(() => window.__kestrelStage.hold(false));
+      await item(arrival).waitFor();
+      assert.equal(await nameAt(point), "b-one", "another folder is under the pointer now");
+    };
+    /** The folder the tab goes into. */
+    const wentInto = async () => {
+      await page.waitForFunction(() => [...document.querySelectorAll(".crumb")].at(-1)?.textContent !== "pressed");
+      return crumb();
+    };
+    try {
+      // A double-click whose second release comes after the new listing is drawn.
+      let pressed = await pointAndArrive();
+      await page.mouse.down();
+      await page.mouse.up();
+      await page.mouse.down({ clickCount: 2 });
+      await drawHeld(pressed);
+      await page.mouse.up({ clickCount: 2 });
+      assert.equal(await wentInto(), "c-two", "the double-click opens the folder pressed");
+
+      // Folder Options' single click, released after the new listing is drawn.
+      await page.evaluate(() => window.__kestrelParity.setOptions({ singleClick: true }));
+      pressed = await pointAndArrive();
+      await page.mouse.down();
+      await drawHeld(pressed);
+      await page.mouse.up();
+      assert.equal(await wentInto(), "c-two", "the single click opens the folder pressed");
+      await page.evaluate(() => window.__kestrelParity.setOptions({ singleClick: false }));
+
+      // A right-click: its menu is for the selection, which holds the folder pressed.
+      pressed = await pointAndArrive();
+      await page.mouse.down({ button: "right" });
+      await drawHeld(pressed);
+      await page.mouse.up({ button: "right" });
+      await menuItem("Open in new tab").waitFor();
+      assert.deepEqual(await panel.locator(".row.selected .label").allTextContents(), ["c-two"]);
+      await page.keyboard.press("Escape");
+      await menu.first().waitFor({ state: "detached" });
+    } finally {
+      await page.evaluate(() => {
+        window.__kestrelStage.hold(false);
+        window.__kestrelParity.setOptions({ singleClick: false });
+      });
+    }
   });
 
   await step("opening a folder of 10,000 files, typing a search and moving the focus stay within the plan's targets", async () => {

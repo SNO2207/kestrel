@@ -305,8 +305,9 @@ see README); what else Explorer does that Kestrel does not is listed in
   reports carries the set it belongs to (`reportSelection`'s `set`), and `state.ts` acts on that
   set (`selected`, `carryMarks`), which stays alive until the swap. A selection made on the rows
   drawn while the new ones load (a right-click as a refresh arrives) is carried into the new
-  listing before the swap (`api.carryMarks` from the set drawn); a re-sort keeps its set, whose
-  old order is gone, so its marks stand as `sort_set` gave them.
+  listing before the swap (`api.carryMarks` from the set drawn), a late swap included; a re-sort
+  keeps its set, whose old order is gone, so its marks stand as `sort_set` gave them, and a
+  selection made while it loads, which can't be placed, leaves nothing selected.
 - `src-tauri/src/parity2/`: `libraries.rs` (the `.library-ms` files, the `list_dir` hook for
   `shell:Libraries\<name>`, `folder_for` used by every command given a folder: New, Paste, drops,
   Open in Terminal; `properties_target`), `network.rs` (the dialogs, `Network::browse` with a
@@ -646,6 +647,18 @@ Git:
   no longer blanks its rows (it keeps them until the new ones are in, `FileList.tsx` `stage`),
   but a new listing reaches the DOM a few milliseconds after `tab.listing` changes: a test that
   needs the new rows waits for them (`window.__kestrelSwaps` counts the swaps in dev builds).
+- Rows are drawn by place (`data-index`): a listing drawn between a press and its release puts
+  another item under the pointer. The press decides (`pressed` in `FileList.tsx`): a right press
+  selects its item, as Explorer's does, and the menu the release opens, a double-click's and a
+  single click's Open, are for the item pressed, where the selection carried it (`stage`), never
+  for the item the release lands on. A listing drawn late (`STAGE_LIMIT_MS`) carries a selection
+  made meanwhile too, and one that can't be carried leaves nothing selected, never the selection
+  from before it. In tests, search results keep the crumb of the folder they were started from and
+  may hold the item a step clicks next: wait for the folder's own listing
+  (`.filelist:not(.results)` with the item's `data-path`, `open` in `shortcuts.mjs`) or the click
+  lands on whatever the folder's listing has in that row a moment later. `__kestrelStage.hold`
+  holds a listing at the swap, `holdRows` before its rows are fetched and `late()` draws it as a
+  late one (`shortcuts.mjs`, `parity2.mjs`).
 - WebView2 leaves `document.visibilityState` alone when a webview is hidden; e2e checks of the
   preview webview's visibility ask Windows (`e2e/windows.mjs`).
 - `dev.mjs stop` kills the app, so a setting saved in local storage just before may be lost;

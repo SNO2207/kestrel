@@ -83,14 +83,31 @@ async function centre(locator) {
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 }
 
-/** Opens a folder through the address bar. */
+/**
+ * Opens a folder through the address bar. With `expectName`, waits until the list draws the
+ * folder's own listing with that item in it. Search results keep the crumb of the folder they
+ * were started from and may hold the same item, so for the moment after a search is left they
+ * would pass for the folder, and a click meant for their row lands on whichever item the folder's
+ * listing, drawn a moment later, has in its place.
+ */
 async function open(path, expectName) {
   await page.keyboard.press("Control+l");
   await page.locator(".address-input").fill(path);
   await page.keyboard.press("Enter");
   await page.waitForFunction((name) => [...document.querySelectorAll(".crumb")].at(-1)?.textContent === name, basename(path));
-  if (expectName) await item(expectName).waitFor();
+  if (expectName) {
+    await page.waitForFunction(
+      (wanted) =>
+        [...document.querySelectorAll(".tab-panel.active .filelist:not(.results) [data-path]")].some(
+          (element) => element.getAttribute("data-path").toLowerCase() === wanted,
+        ),
+      join(path, expectName).toLowerCase(),
+    );
+  }
 }
+
+/** The name of the item drawn at a point of the window. */
+const nameAt = (point) => page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest(".row")?.querySelector(".label")?.textContent ?? null, point);
 
 /** Presses on `source` and drags it, with the mouse, to the top, middle or bottom of `target`. */
 async function dragTo(source, target, where = "middle", beforeRelease = async () => {}) {
@@ -421,6 +438,7 @@ try {
     await menuItem("Tags…").click();
     const picker = page.locator(".tag-picker");
     await picker.waitFor();
+    assert.equal(await picker.locator(".dialog-title").textContent(), "Tags for report.txt");
     await picker.locator(".tag-new input").fill("Urgent");
     await picker.locator('.swatch[data-color="red"]').click();
     await picker.locator(".dialog-button", { hasText: "Add tag" }).click();
@@ -432,6 +450,7 @@ try {
     // A second item, through the picker's existing tag.
     await row("notes.txt").click({ button: "right" });
     await menuItem("Tags…").click();
+    await picker.locator(".dialog-title", { hasText: "Tags for notes.txt" }).waitFor();
     await picker.locator(".tag-choice", { hasText: "Urgent" }).click();
     await picker.locator(".tag-choice", { hasText: "Urgent" }).and(page.locator('[aria-checked="true"]')).waitFor();
     await page.keyboard.press("Escape");
@@ -491,10 +510,63 @@ try {
     await row("notes.txt").click({ button: "right" });
     await menuItem("Tags…").click();
     const picker = page.locator(".tag-picker");
-    await picker.locator(".tag-choice", { hasText: "Urgent" }).click();
-    await picker.locator(".tag-choice", { hasText: "Urgent" }).and(page.locator('[aria-checked="false"]')).waitFor();
+    await picker.locator(".dialog-title", { hasText: "Tags for notes.txt" }).waitFor();
+    const urgent = picker.locator(".tag-choice", { hasText: "Urgent" });
+    await urgent.and(page.locator('[aria-checked="true"]')).waitFor();
+    await urgent.click();
+    await urgent.and(page.locator('[aria-checked="false"]')).waitFor();
     await picker.locator(".dialog-button.primary").click();
     await row("notes.txt").locator(".tag-dot").waitFor({ state: "detached" });
+    // Nothing else was tagged on the way.
+    assert.deepEqual((await hook.read("tags")).items.map((tagged) => tagged.path), [at("report final.txt").toLowerCase()]);
+  });
+
+  await step("a right-click's menu is for the item pressed, even when the folder's listing changes before the button comes up", async () => {
+    // Beta holds big.bin, notes.txt and small.txt. While the right button is down on notes.txt, a
+    // file that sorts first arrives, and the folder's new listing is drawn before the button comes
+    // up: big.bin is under the pointer by then. The dev build holds the listing until the press,
+    // so it comes in that order every time. Rows are drawn by place, and the menu used to be for
+    // whatever was under the pointer when the button came up.
+    const picker = page.locator(".tag-picker");
+    const rightClickAcross = async (arrival, items, late) => {
+      const point = await centre(row("notes.txt"));
+      await page.evaluate((late) => (late ? window.__kestrelStage.holdRows(true) : window.__kestrelStage.hold(true)), late);
+      try {
+        writeFileSync(at("Beta", arrival), "new");
+        // The listing with the arrival has reached the tab (the status bar counts it) and waits at
+        // the gate, so the press comes while it is on its way to the list.
+        await page.locator(".statusbar > span", { hasText: new RegExp(`^${items} items$`) }).waitFor();
+        await page.waitForFunction(() => window.__kestrelStage.held() > 0);
+        await page.mouse.move(point.x, point.y);
+        await page.mouse.down({ button: "right" });
+        // Drawn with its rows, or (`late`) as a listing whose rows don't come in time is, with
+        // rows still loading.
+        await page.evaluate((late) => (late ? window.__kestrelStage.late() : window.__kestrelStage.hold(false)), late);
+        await row(arrival).waitFor();
+        assert.equal(await nameAt(point), "big.bin", "another item is under the pointer now");
+        await page.mouse.up({ button: "right" });
+      } finally {
+        await page.evaluate(() => {
+          window.__kestrelStage.hold(false);
+          window.__kestrelStage.holdRows(false);
+        });
+      }
+      await menuItem("Tags…").click();
+      await picker.waitFor();
+      assert.equal(await picker.locator(".dialog-title").textContent(), "Tags for notes.txt");
+      await page.keyboard.press("Escape");
+      await picker.waitFor({ state: "detached" });
+    };
+    await open(at("Beta"), "notes.txt");
+    await row("small.txt").click();
+    await rightClickAcross("apple.txt", 4, false);
+    // With big.bin selected before, and the listing drawn late: the menu is still for notes.txt,
+    // not for big.bin, where the selection was before the press.
+    await row("big.bin").click();
+    await rightClickAcross("aardvark.txt", 5, true);
+    for (const name of ["apple.txt", "aardvark.txt"]) rmSync(at("Beta", name));
+    await row("apple.txt").waitFor({ state: "detached" });
+    await row("aardvark.txt").waitFor({ state: "detached" });
   });
 
   await step("a workspace saves the tabs with their views and sorts, and restores them", async () => {
