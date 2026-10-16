@@ -159,6 +159,9 @@ pub fn compile(query: &Query, index: &Index) -> Result<Compiled, ParseError> {
                 }
                 Test::Among(ids.clone())
             }
+            ClauseKind::Content(_) | ClauseKind::Taken(..) => {
+                return Err(ParseError("content: and taken: are answered by reading the files, not by the index".into()));
+            }
         };
         clauses.push(Clause { negate: clause.negate, test });
     }

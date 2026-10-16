@@ -32,6 +32,8 @@ const PATHS = {
   "network-drive": "M2.5 2.5h11v5h-11ZM8 7.5v4M3 13.5h10M11 5h.01",
   "restore-item": "M5.5 3.5 2.5 6.5l3 3M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7",
   eject: "M3 9.5 8 4l5 5.5ZM3 12.5h10",
+  // A penguin, for WSL's Linux distributions (wsl.ts), on This PC.
+  linux: "M8 2.5c-1.6 0-2.4 1.3-2.4 2.9v1.4L3.8 10c-.5 1 .1 2.5 1.4 2.5h5.6c1.3 0 1.9-1.5 1.4-2.5l-1.8-3.2V5.4c0-1.6-.8-2.9-2.4-2.9ZM6.6 8.5c.4.9.8 1.3 1.4 1.3s1-.4 1.4-1.3M7 5.2h.01M9 5.2h.01M5 12.5l-.7 1M11 12.5l.7 1",
 } as const;
 
 export type IconName = keyof typeof PATHS;

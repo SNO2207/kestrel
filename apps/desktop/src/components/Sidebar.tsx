@@ -16,6 +16,8 @@ import { ParityIcon } from "./ParityIcon";
 import { ProjectIcon } from "./ProjectIcon";
 import { ShortcutLists } from "./ShortcutLists";
 import { SidebarResizer } from "./SidebarResizer";
+import { TriageEntry } from "./TriageEntry";
+import { WslPlaces } from "./WslPlaces";
 
 /**
  * The sidebar: the projects hub, pinned places, places, frequent folders, saved searches, tags
@@ -54,6 +56,7 @@ export function Sidebar() {
             <span>Projects</span>
           </button>
           <DiskEntry />
+          <TriageEntry />
         </section>
         <PinnedPlaces />
 
@@ -101,6 +104,7 @@ export function Sidebar() {
             <span>Recycle Bin</span>
           </button>
         </section>
+        <WslPlaces />
         <ShortcutLists />
       </div>
       <FolderTree />

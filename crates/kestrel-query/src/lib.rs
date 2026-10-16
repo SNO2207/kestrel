@@ -15,12 +15,17 @@
 //! | `in:C:\Projects` | only beneath this folder |
 //! | `regex:^a.*\d$` | regular expression on the name |
 //! | `tag:urgent` | carries this tag (resolved by the caller with [`resolve_tags`]) |
+//! | `content:"fn main"` | the file contains this text (searched by the app, not the index) |
+//! | `taken:2023` | a photo taken then, as `dm:` takes dates (read from the file by the app) |
 //! | `!clause` | negates any clause |
+//!
+//! [`natural::understand`] turns phrases ("videos from last month over 1 GB") into clauses.
 
 mod exec;
 mod filter;
 mod glob;
 pub mod group;
+pub mod natural;
 mod parse;
 mod sort;
 mod time;
@@ -28,6 +33,6 @@ mod time;
 pub use exec::{Compiled, compile, search};
 pub use filter::NameFilter;
 pub use group::{DateEdges, Group, GroupBy, Grouping};
-pub use parse::{Clause, ClauseKind, ParseError, Query, parse, resolve_tags};
+pub use parse::{Clause, ClauseKind, FILTER_KEYS, ParseError, Query, is_filter, parse, resolve_tags};
 pub use sort::{Sort, SortKey, sort};
 pub use time::Clock;

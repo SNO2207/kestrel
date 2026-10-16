@@ -117,6 +117,19 @@ Done and verified:
   duplicates by size, then ends, then BLAKE3, hashes cached by file id. The two panels are the
   disk usage hub's Cleanup and Duplicates tabs, on the hub's drive or folder; the palette's
   "Cleanup recommendations" and "Find duplicate files" open the hub there.
+- **Search inside files, phrases, New downloads, WSL** (branch `feature/search`;
+  `crates/kestrel-content`, `kestrel_query::natural`, `src-tauri/src/search/`, `triage.rs`,
+  `wsl.rs`, `kestrel_db::triage`, `search.ts`, `triage.ts`, `wsl.ts`, `lib/searchApi.ts`,
+  `lib/previewHit.ts`, `lib/linuxNames.ts`, `SearchBanner.tsx`, `SearchOptions.tsx`,
+  `HitSnippet.tsx`, `TriagePage.tsx`, `TriageEntry.tsx`, `WslPlaces.tsx`, `SearchIcon.tsx`,
+  `search.css`; suite `e2e/search.mjs`): content search with ripgrep's crates (`content:` and the
+  search box's page button), streaming into the results list with the matching line in every
+  view and the preview opened at it; `taken:` (date taken, from the property system); phrases
+  read into clauses by rules and shown as editable chips; the New downloads page (a special
+  location, `kestrel:new-downloads`) with a sidebar badge, learnt move suggestions, moves and
+  recycling through `fileops` and the undo journal; WSL distributions from the registry in This
+  PC and the sidebar, browsed the Linux way. Verified with stand-ins only: this machine has no
+  WSL, so the `\\wsl.localhost` share and Linux permissions over it are untested.
 
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette, then places, layout, parity, archives, disk and
@@ -137,7 +150,16 @@ see README); what else Explorer does that Kestrel does not is listed in
 - `crates/kestrel-index`: the index (`index.rs`), its builder, snapshots, crawl (`walk.rs`),
   MFT build (`mft.rs`), folder reconciliation (`sync.rs`), journal following (`live.rs`) and
   the broker client (`broker.rs`).
-- `crates/kestrel-query`: query parsing, parallel search and sorting over an index.
+- `crates/kestrel-query`: query parsing, parallel search and sorting over an index; `natural.rs`
+  reads phrases into clauses (`understand`, with a `Places` resolver for known folders and
+  projects) and labels clauses for chips (`describe`). `content:` and `taken:` parse but
+  `compile` refuses them: the app's search reads files for them.
+- `crates/kestrel-content`: search inside files. `search.rs` (patterns compiled with grep-regex,
+  one file searched with grep-searcher, BOM sniffing for UTF-16, a NUL byte means binary, the
+  snippet with UTF-16 offsets), `run.rs` (a folder walked with `walk::list` on a pool of its own,
+  or files an index search chose; progress counters; the found-files limit), `ignores.rs`
+  (`.gitignore` only inside repositories, matched by the `ignore` crate), `fsinfo.rs`
+  (attributes without opening; `open` refuses cloud-only files at the last moment).
 - `crates/kestrel-analyze`: disk usage from an index, no I/O: `treemap.rs` (squarified layout of
   only what is visible), `category.rs` (types by extension and location), `overview.rs` (totals,
   types, ages, largest items, recent changes, one walk split across threads), `growth.rs` (the
@@ -285,6 +307,26 @@ see README); what else Explorer does that Kestrel does not is listed in
   tools instead of running them. Run a scan's rules one per index lock (`Scan`), never the whole
   scan under one. The panels are tabs of the disk usage hub (`TABS` in `DiskHub.tsx`), which
   gives them its root; `cleanup.ts` only holds the palette's ways in.
+- Search (`src-tauri/src/search/`, front end `search.ts`): every search the search box runs goes
+  through `search_run`, the tabs' search source (`setSearchSource` in state.ts; without one,
+  `runSearch` calls the plain `search`). It reads the text as a phrase (`places.rs` resolves
+  known folders and projects; `search_dev_places` stands scratch folders in), then either runs
+  the index search or, for `content:`/`taken:` or "Search inside files", starts a search inside
+  files for that window and tab (`content.rs`, `Searches`): it runs on its own threads, sends
+  `search-progress` to its window, and the window asks again with `update` (`updateSearch` in
+  state.ts), getting a fresh `Rows::Found` set of everything so far (`Engine::show_found`); rows
+  carry `hit`, drawn by `HitSnippet` in `FileList` and `ViewItem`. Chips and progress show in
+  `SearchBanner` (FileList's `banner` prop). The preview opens at the hit (`lib/previewHit.ts`:
+  a marker at the line in the highlighted HTML, the match marked with the CSS highlight API).
+- New downloads (`triage.rs`, `TriagePage.tsx`, `triage.ts`): the Downloads folder's top level
+  read from directory entries (nothing opened), watched as owner `"triage"`; `triage-changed`
+  carries the badge's count, `triage-folder` says the folder changed. Moves and recycling are
+  `fileops::execute` then `journal.record`; moves teach `kestrel_db::triage`.
+- WSL (`wsl.rs`, `wsl.ts`): distributions from `HKCU\...\Lxss` (a `Registry` trait so tests read
+  made-up keys); `list_dir` hands a path inside one to `wsl::list` (after arming the watch), which
+  lists it with `walk::list`, marks dot files hidden and shows it through `Engine::show_live`;
+  `open_in_terminal` asks `wsl::terminal` first. This PC adopts distribution roots
+  (`placesSetup.ts`), so Up goes there; `wsl_dev_distros` stands folders in for distributions.
 - Shortcuts: data in `kestrel_db::shortcuts` (pins and groups, frecency, saved searches, tags,
   workspaces), commands in `src-tauri/src/shortcuts/`, front end in `src/shortcuts.ts`,
   `lib/shortcutsApi.ts`, `shortcuts.css` and the `Pinned*`, `Shortcut*`, `GoToFolder`,
@@ -549,3 +591,28 @@ Git:
 - Windows' compression filter (WOF, `compact /exe`) hides its reparse point from user mode:
   attributes read 0x20 and `fsutil reparsepoint query` finds none. Only the file table (the
   broker's index) shows 0x620. Tests of such files set the attributes in the index.
+- A search inside files is one per window and tab (`search::Searches`), and an `update` of it
+  never starts it again: Stop raises its cancel flag and keeps what it found (`search_cancel`
+  with `forget: false`), so an update already on its way shows that; leaving the search forgets
+  it. A stopped search reports itself done at once, whatever its threads are still finishing.
+- Never open a file to decide whether to search it: `kestrel_content::fsinfo` reads attributes
+  with `GetFileAttributesExW` (std's `metadata` opens the file), checks them when listed and again
+  in `fsinfo::open`, and a `.gitignore` that is only in the cloud counts as empty. The walk is
+  Kestrel's own (`walk::list`) rather than the `ignore` crate's, for that reason and because it
+  never follows junctions.
+- The New downloads page reloads on `triage-folder`, never on `triage-changed`: marking the page
+  seen sends `triage-changed`, and a page that reloaded on it marked itself seen again, for ever.
+  Its rows are drawn by path, so a reload keeps the ones that stay (and their buttons) in place.
+- Chips carry their kind as `data-kind`, not a class: a chip of kind `place` once picked up the
+  sidebar's `.place` rule and stretched across the banner.
+- A phrase needs more than one kind word to be one: "videos" alone stays a name, "videos from
+  last month" is read. Verbs and prepositions left without a date or place are dropped from a
+  phrase, so they never become name terms.
+- `search_dev_places` stands scratch folders in for the known folders for phrases and for the New
+  downloads page alike (and re-arms the page's watch); stand-in projects count as visited, so the
+  page offers them. `search_dev_slow` makes each file wait before it is read, to watch results
+  stream; `wsl_dev_distros` stands folders in for distributions (an empty list is "no WSL").
+- e2e checks of how many results a search found read the status bar: the list draws only the
+  rows in view.
+- `kestrel_content::Filter<'f>` keeps its lifetime: a plain alias of `dyn Fn(...) + Sync` is
+  `'static`, and closures borrowing the plan stopped compiling.

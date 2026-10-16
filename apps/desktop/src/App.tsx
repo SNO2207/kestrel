@@ -71,6 +71,10 @@ import {
 } from "./state";
 import { redoLast, undoLast } from "./undo";
 import { registerStepper, setFocusedRow } from "./previewState";
+import { SearchBanner } from "./components/SearchBanner";
+import { startSearch, stillSearching } from "./search";
+import { startTriage } from "./triage";
+import { startWsl } from "./wsl";
 
 export function App() {
   /** Focus functions for each tab's list, so shortcuts can hand focus back to the files. */
@@ -188,6 +192,10 @@ export function App() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("contextmenu", onContextMenu);
     });
+    // Phrases and searches inside files, the Downloads triage page's count, WSL's distributions.
+    startSearch();
+    startTriage();
+    startWsl();
     void start(openLayout).then(focusList);
     startPlaces();
     // This PC's drives and the folder tree's drives open the disk usage hub.
@@ -266,6 +274,9 @@ export function App() {
                 onFocusRow={(row) => !pageOf(tab) && setFocusedRow(tab.id, row)}
                 stepRef={(step) => onCleanup(registerStepper(tab.id, step))}
                 selectRef={(control) => onCleanup(registerSelector(tab.id, control))}
+                // How the search was read, and a search inside files' progress (search.ts).
+                banner={<SearchBanner tabId={tab.id} />}
+                emptyMessage={stillSearching(tab.id) ? "Searching inside files…" : null}
               />
             </div>
           )}

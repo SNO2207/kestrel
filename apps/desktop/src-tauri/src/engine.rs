@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as Atomic};
 use kestrel_index::sync::Sync;
 use std::time::Instant;
 
+use kestrel_content::{Found, Hit};
 use kestrel_index::walk::{self, DirItem};
 use kestrel_index::{EntryId, Index, IndexBuilder, attr, fold, natural_cmp};
 use kestrel_query::group::attribute_key;
@@ -113,6 +114,9 @@ pub struct Row {
     /// The file attributes: the details view's Attributes column, and a cloud file's sync
     /// status (`parity::syncroots`).
     pub attrs: u32,
+    /// For a result of a search inside files, its first matching line (`search/`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hit: Option<Hit>,
 }
 
 #[derive(Clone, Serialize)]
@@ -130,6 +134,8 @@ enum Rows {
     Indexed(Vec<EntryId>),
     /// A folder outside the index, read directly from disk.
     Live { dir: String, items: Vec<DirItem> },
+    /// Items from any folders, found by reading files: a search inside files (`search/`).
+    Found(Vec<Found>),
 }
 
 struct ResultSet {
@@ -359,7 +365,13 @@ impl Engine {
 
     /// Shows items that are not on disk as a folder at `dir`: the contents of a folder inside
     /// the archive at `archive`. Rows are paged, sorted, grouped and selected as any folder's are.
-    pub fn show_items(&self, dir: String, mut items: Vec<DirItem>, spec: SortSpec, visibility: Visibility, archive: String) -> Listing {
+    pub fn show_items(&self, dir: String, items: Vec<DirItem>, spec: SortSpec, visibility: Visibility, archive: String) -> Listing {
+        Listing { archive: Some(archive), ..self.show_live(dir, items, spec, visibility) }
+    }
+
+    /// Shows a folder its caller listed from disk, as `list_dir` shows one outside the index:
+    /// a folder in a WSL distribution, whose items it marks as Linux would (`wsl.rs`).
+    pub fn show_live(&self, dir: String, mut items: Vec<DirItem>, spec: SortSpec, visibility: Visibility) -> Listing {
         let started = Instant::now();
         let sort_spec = spec.resolve(true);
         items.retain(|item| visibility.shows(item.meta.attrs));
@@ -367,7 +379,19 @@ impl Engine {
         let max_size = items.iter().map(|item| item.meta.size).max().unwrap_or(0);
         let total = items.len() as u32;
         let set = self.store(ResultSet { rows: Rows::Live { dir: dir.clone(), items }, is_search: false, arranged: Arranged::sorted(sort_spec) });
-        Listing { set, total, path: dir, max_size, took_us: started.elapsed().as_micros() as u64, archive: Some(archive) }
+        Listing { set, total, path: dir, max_size, took_us: started.elapsed().as_micros() as u64, archive: None }
+    }
+
+    /// Shows items found by reading files (a search inside files) as search results, sorted by
+    /// `spec`. Rows are paged, sorted, grouped, narrowed and acted on as any results are.
+    pub fn show_found(&self, mut items: Vec<Found>, spec: SortSpec) -> Listing {
+        let started = Instant::now();
+        let sort_spec = spec.resolve(false);
+        sort_found(&mut items, sort_spec);
+        let max_size = items.iter().map(|found| found.item.meta.size).max().unwrap_or(0);
+        let total = items.len() as u32;
+        let set = self.store(ResultSet { rows: Rows::Found(items), is_search: true, arranged: Arranged::sorted(sort_spec) });
+        Listing { set, total, path: String::new(), max_size, took_us: started.elapsed().as_micros() as u64, archive: None }
     }
 
     /// Runs a query, optionally restricted to the folder `scope`. Hidden items are included,
@@ -467,6 +491,7 @@ impl Engine {
                     std::str::from_utf8(index.lower_bytes(ids[row as usize])).is_ok_and(|n| wanted.contains(n))
                 }
                 Rows::Live { items, .. } => wanted.contains(&fold(&items[row as usize].name)),
+                Rows::Found(items) => wanted.contains(&fold(&items[row as usize].item.name)),
             };
             if found {
                 match ranges.last_mut() {
@@ -514,6 +539,7 @@ impl Engine {
                         hidden: is_hidden(index.attrs(id)),
                         alloc: index.alloc(id),
                         attrs: index.attrs(id) & !attr::DELETED,
+                        hit: None,
                     }
                 })
                 .collect(),
@@ -536,7 +562,24 @@ impl Engine {
                         hidden: is_hidden(item.meta.attrs),
                         alloc: item.meta.alloc,
                         attrs: item.meta.attrs,
+                        hit: None,
                     }
+                })
+                .collect(),
+            Rows::Found(items) => items[range(items.len())]
+                .iter()
+                .map(|found| Row {
+                    name: found.item.name.clone(),
+                    path: join(&found.dir, &found.item.name),
+                    location: Some(found.dir.clone()),
+                    dir: found.item.meta.attrs & attr::DIRECTORY != 0,
+                    size: found.item.meta.size,
+                    mtime: unix_ms(found.item.meta.mtime),
+                    ext: live_extension(&found.item),
+                    hidden: is_hidden(found.item.meta.attrs),
+                    alloc: found.item.meta.alloc,
+                    attrs: found.item.meta.attrs,
+                    hit: found.hit.clone(),
                 })
                 .collect(),
         })
@@ -569,6 +612,13 @@ impl Engine {
                 }
                 items.len() as u32
             }
+            Rows::Found(items) => {
+                let items = &items[range(items.len())];
+                for found in items {
+                    visit(found.item.meta.attrs & attr::DIRECTORY != 0, found.item.meta.size, unix_ms(found.item.meta.mtime));
+                }
+                items.len() as u32
+            }
         })
     }
 
@@ -583,6 +633,7 @@ impl Engine {
         (0..len).map(|step| (from + step) % len).find(|&row| match &set.rows {
             Rows::Indexed(ids) => index.lower_bytes(ids[row as usize]).starts_with(prefix.as_bytes()),
             Rows::Live { items, .. } => fold(&items[row as usize].name).starts_with(&prefix),
+            Rows::Found(items) => fold(&items[row as usize].item.name).starts_with(&prefix),
         })
     }
 }
@@ -592,6 +643,7 @@ impl Rows {
         match self {
             Rows::Indexed(ids) => ids.len() as u32,
             Rows::Live { items, .. } => items.len() as u32,
+            Rows::Found(items) => items.len() as u32,
         }
     }
 
@@ -599,6 +651,7 @@ impl Rows {
         match self {
             Rows::Indexed(ids) => index.path(ids[row as usize]),
             Rows::Live { dir, items } => join(dir, &items[row as usize].name),
+            Rows::Found(items) => items[row as usize].path(),
         }
     }
 
@@ -684,7 +737,7 @@ impl ResultSet {
         match (&mut self.rows, self.arranged.plain.take()) {
             (Rows::Indexed(ids), Some(plain)) => *ids = plain,
             // Grouping rearranged a folder listed from disk; it is sorted again, which is cheap.
-            (Rows::Live { .. }, _) if was_grouped => self.arranged.sorted = None,
+            (Rows::Live { .. } | Rows::Found(_), _) if was_grouped => self.arranged.sorted = None,
             _ => {}
         }
     }
@@ -697,6 +750,7 @@ impl ResultSet {
         match &mut self.rows {
             Rows::Indexed(ids) => sort(index, ids, spec),
             Rows::Live { items, .. } => sort_live(items, spec),
+            Rows::Found(items) => sort_found(items, spec),
         }
         self.arranged.sorted = Some(spec);
     }
@@ -706,7 +760,7 @@ impl ResultSet {
         let Some(grouping) = grouping else { return };
         match &self.rows {
             Rows::Indexed(ids) => self.arranged.plain = Some(ids.clone()),
-            Rows::Live { .. } => self.arranged.sorted = None,
+            Rows::Live { .. } | Rows::Found(_) => self.arranged.sorted = None,
         }
         self.arranged.groups = Some((grouping, self.rows.group(index, grouping)));
     }
@@ -773,6 +827,9 @@ impl Engine {
                 dir: dir.clone(),
                 items: items.iter().filter(|item| filter.matches(fold(&item.name).as_bytes())).cloned().collect(),
             },
+            (Rows::Found(items), _) => {
+                Rows::Found(items.iter().filter(|found| filter.matches(fold(&found.item.name).as_bytes())).cloned().collect())
+            }
         };
         let mut narrowed = ResultSet { rows, is_search, arranged: Arranged { sorted: entry.arranged.sorted, ..Arranged::default() } };
         drop(sets);
@@ -781,6 +838,7 @@ impl Engine {
         let max_size = match &narrowed.rows {
             Rows::Indexed(ids) => ids.iter().map(|&id| index.size(id)).max().unwrap_or(0),
             Rows::Live { items, .. } => items.iter().map(|item| item.meta.size).max().unwrap_or(0),
+            Rows::Found(items) => items.iter().map(|found| found.item.meta.size).max().unwrap_or(0),
         };
         drop(index);
         let starts = narrowed.arranged.starts();
@@ -808,6 +866,28 @@ impl Rows {
                         dir: items[i as usize].meta.attrs & attr::DIRECTORY != 0,
                         size: items[i as usize].meta.size,
                         mtime: items[i as usize].meta.mtime,
+                    },
+                    grouping,
+                    &edges,
+                );
+                let arranged = order.iter().map(|&i| items[i as usize].clone()).collect();
+                *items = arranged;
+                groups
+            }
+            Rows::Found(items) => {
+                let exts: Vec<String> = items.iter().map(|found| live_extension(&found.item)).collect();
+                let mut order: Vec<u32> = (0..items.len() as u32).collect();
+                let groups = kestrel_query::group::group_rows(
+                    &mut order,
+                    |&i| {
+                        let item = &items[i as usize].item;
+                        kestrel_query::group::Facts {
+                            name: &item.name,
+                            ext: &exts[i as usize],
+                            dir: item.meta.attrs & attr::DIRECTORY != 0,
+                            size: item.meta.size,
+                            mtime: item.meta.mtime,
+                        }
                     },
                     grouping,
                     &edges,
@@ -850,6 +930,27 @@ fn sort_live(items: &mut [DirItem], spec: Sort) {
         let ordering = by_key.then_with(|| by_name(a, b));
         let ordering = if spec.descending { ordering.reverse() } else { ordering };
         if spec.folders_first { is_dir(b).cmp(&is_dir(a)).then(ordering) } else { ordering }
+    });
+}
+
+/// Sorts items found by reading files as search results sort: by the key, then by name, with
+/// the Folder path column comparing their folders first.
+fn sort_found(items: &mut [Found], spec: Sort) {
+    let by_folder = |a: &Found, b: &Found| natural_cmp(fold(&a.dir).as_bytes(), fold(&b.dir).as_bytes());
+    items.sort_by(|a, b| {
+        let by_key = match spec.key {
+            SortKey::Name => Ordering::Equal,
+            SortKey::Size => a.item.meta.size.cmp(&b.item.meta.size),
+            SortKey::Modified => a.item.meta.mtime.cmp(&b.item.meta.mtime),
+            SortKey::Type => live_extension(&a.item).cmp(&live_extension(&b.item)),
+            SortKey::Alloc => a.item.meta.alloc.cmp(&b.item.meta.alloc),
+            SortKey::Attributes => attribute_key(a.item.meta.attrs).cmp(&attribute_key(b.item.meta.attrs)),
+            SortKey::Path => by_folder(a, b),
+        };
+        let ordering = by_key
+            .then_with(|| natural_cmp(fold(&a.item.name).as_bytes(), fold(&b.item.name).as_bytes()))
+            .then_with(|| by_folder(a, b));
+        if spec.descending { ordering.reverse() } else { ordering }
     });
 }
 

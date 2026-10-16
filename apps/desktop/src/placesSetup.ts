@@ -6,9 +6,12 @@
 import { HomeView } from "./components/HomeView";
 import { RecycleBinPage } from "./components/RecycleBin";
 import { ThisPcPage } from "./components/ThisPC";
+import { TriagePage } from "./components/TriagePage";
 import { HOME_ALIASES, HOME_PATH } from "./lib/home";
 import { registerLocation } from "./lib/locations";
 import { RECYCLE_BIN, THIS_PC, driveTitle, isDriveRoot } from "./places";
+import { TRIAGE, TRIAGE_ALIASES } from "./triage";
+import { isWslRoot, wslTitle } from "./wsl";
 
 // Explorer's start page: quick access, favorites and recent files (HomeView.tsx).
 registerLocation({
@@ -32,10 +35,11 @@ registerLocation({
     "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
     "shell:::{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
   ],
-  // Drives sit under This PC: Up from C:\ comes here, and its crumb leads every drive's path.
-  adopts: isDriveRoot,
+  // Drives, and WSL's distributions (wsl.ts), sit under This PC: Up from C:\ comes here, and its
+  // crumb leads every drive's path.
+  adopts: (path) => isDriveRoot(path) || isWslRoot(path),
   // A drive is called as This PC calls it, in the breadcrumb and its tab: "OS (C:)".
-  rootTitle: driveTitle,
+  rootTitle: (root) => driveTitle(root) ?? wslTitle(root),
   keywords: "computer drives disks devices",
 });
 
@@ -46,6 +50,16 @@ registerLocation({
   page: RecycleBinPage,
   aliases: ["Recycle Bin", "::{645FF040-5081-101B-9F08-00AA002F954E}", "shell:::{645FF040-5081-101B-9F08-00AA002F954E}"],
   keywords: "trash deleted restore",
+});
+
+// What arrived in Downloads since the owner last looked (TriagePage.tsx).
+registerLocation({
+  address: TRIAGE,
+  title: "New downloads",
+  icon: "downloads",
+  page: TriagePage,
+  aliases: TRIAGE_ALIASES,
+  keywords: "downloads triage arrived recent installers archives",
 });
 
 export { startPlaces } from "./places";

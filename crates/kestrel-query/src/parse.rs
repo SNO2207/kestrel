@@ -42,6 +42,27 @@ pub enum ClauseKind {
     Tag(String),
     /// Exactly these entries, in ascending id order: a tag, once resolved.
     Entries(Vec<EntryId>),
+    /// Text inside the file, as typed: `content:"fn main"`. The index holds no contents, so
+    /// the app's content search reads the files (`kestrel-content`); [`compile`] refuses it.
+    ///
+    /// [`compile`]: crate::compile
+    Content(String),
+    /// Half-open range of the dates photos were taken, as FILETIME ticks: `taken:2023`. Read
+    /// from each file, as `Content` is.
+    Taken(i64, i64),
+}
+
+/// The keys of filter clauses (`ext:`, `dm:`...). Anything else before a colon, such as the
+/// drive letter in `C:\Users`, is ordinary text.
+pub const FILTER_KEYS: &[&str] = &[
+    "ext", "type", "kind", "size", "dm", "modified", "date", "in", "folder", "regex", "path", "name", "tag", "content",
+    "taken", "dt",
+];
+
+/// Whether `token` (as typed, possibly negated with `!`) is a filter clause such as `ext:pdf`.
+pub fn is_filter(token: &str) -> bool {
+    let token = token.strip_prefix('!').unwrap_or(token);
+    token.split_once(':').is_some_and(|(key, _)| FILTER_KEYS.contains(&key.to_ascii_lowercase().as_str()))
 }
 
 /// Replaces every `tag:` clause with the entries `resolve` finds for its tag name, sorted.
@@ -135,6 +156,10 @@ fn clause(text: &str, clock: Clock) -> Result<Option<ClauseKind>, ParseError> {
             "path" => Some(ClauseKind::Path(fold(value).replace('/', "\\"))),
             "name" => Some(ClauseKind::Name(fold(value))),
             "tag" => Some(ClauseKind::Tag(value.to_owned())),
+            "content" => Some(ClauseKind::Content(value.to_owned())),
+            // An empty value is dropped below, before it would be read as a date.
+            "taken" | "dt" if value.is_empty() => Some(ClauseKind::Taken(0, 0)),
+            "taken" | "dt" => Some(taken(value, clock)?),
             // Anything else, such as the drive letter in `C:\Users`, is ordinary text.
             _ => None,
         };
@@ -345,8 +370,16 @@ fn modified(value: &str, clock: Clock) -> Result<ClauseKind, ParseError> {
     Ok(ClauseKind::Modified(from, to))
 }
 
+/// `taken:`, which takes the same dates as `dm:`.
+fn taken(value: &str, clock: Clock) -> Result<ClauseKind, ParseError> {
+    Ok(match modified(value, clock)? {
+        ClauseKind::Modified(from, to) => ClauseKind::Taken(from, to),
+        other => other,
+    })
+}
+
 /// 1 January of the year containing `day`.
-fn year_start(day: i64) -> i64 {
+pub(crate) fn year_start(day: i64) -> i64 {
     days_from_civil(civil_from_days(day).0, 1, 1)
 }
 
@@ -469,5 +502,36 @@ mod tests {
         )]);
         assert!(parse("dm:2026-13", CLOCK).is_err());
         assert!(parse("dm:soon", CLOCK).is_err());
+    }
+
+    #[test]
+    fn content_and_date_taken_clauses() {
+        // Contents keep their case and spaces: the content search decides how to match them.
+        assert_eq!(kinds(r#"content:"Fn Main" ext:rs"#), [
+            ClauseKind::Content("Fn Main".into()),
+            ClauseKind::Ext(vec!["rs".into()])
+        ]);
+        assert_eq!(kinds("taken:2023"), [ClauseKind::Taken(local_midnight(2023, 1, 1), local_midnight(2024, 1, 1))]);
+        assert_eq!(kinds("dt:lastmonth"), [ClauseKind::Taken(local_midnight(2026, 9, 1), local_midnight(2026, 10, 1))]);
+        // Still being typed: ignored, as other filters are.
+        assert!(kinds("content: taken:").is_empty());
+        assert!(parse("taken:someday", CLOCK).is_err());
+        // The index can't answer either; the content search takes them out first.
+        let index = kestrel_index::IndexBuilder::new().finish();
+        assert!(crate::compile(&parse("content:x", CLOCK).unwrap(), &index).is_err());
+        assert!(crate::compile(&parse("taken:2023", CLOCK).unwrap(), &index).is_err());
+    }
+
+    #[test]
+    fn filter_tokens_are_recognised_by_key() {
+        for key in FILTER_KEYS {
+            let token = format!("{key}:x");
+            assert!(is_filter(&token), "{token}");
+            assert!(is_filter(&format!("!{token}")));
+        }
+        assert!(is_filter("EXT:pdf"));
+        for plain in ["report", r"C:\Users", "a:b", "*.rs", "\"ext:pdf\"", "content"] {
+            assert!(!is_filter(plain), "{plain}");
+        }
     }
 }

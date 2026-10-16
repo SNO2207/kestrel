@@ -1,4 +1,4 @@
-import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
+import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount, type JSX } from "solid-js";
 
 import { api, iconUrl, type Listing, type Marks, type Row, type RowRange, type SortKey, type SortSpec } from "../lib/api";
 import { LOCKED_MESSAGE, checkFolders, foldersOf, isLocked } from "../lib/access";
@@ -25,6 +25,7 @@ import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import { FilterBar } from "./FilterBar";
 import { GitGlyph } from "./GitGlyph";
 import { GroupHeader } from "./GroupHeader";
+import { HitSnippet } from "./HitSnippet";
 import { LockGlyph } from "./LockGlyph";
 import type { ShortcutCommand } from "./ShortcutsLayer";
 import { TagDots } from "./TagDots";
@@ -34,6 +35,7 @@ import { inverted, type SelectControl } from "../lib/selectionOps";
 import { activeId } from "../state";
 import { newEntries, openInTerminal, openNewWindow, revealInFolder } from "../parity";
 import { SyncGlyph } from "./SyncGlyph";
+import { checkModes, isWslPath, linuxMode } from "../wsl";
 
 const PAGE_SIZE = 128;
 /** Pixels rendered beyond each edge of the view, so short scrolls never show a gap. */
@@ -125,6 +127,10 @@ interface Props {
   stepRef?: (step: (delta: number) => void) => void;
   /** Hands the owner Select all, Select none, Invert selection and Rename (`lib/selectionOps.ts`). */
   selectRef?: (control: SelectControl) => void;
+  /** Shown above the rows: how a search was read, and how far a search inside files got. */
+  banner?: JSX.Element;
+  /** Said in place of "Nothing matches" while there are no rows yet, such as while still searching. */
+  emptyMessage?: string | null;
 }
 
 const sameRows = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((value, i) => value === b[i]);
@@ -463,6 +469,13 @@ export function FileList(props: Props) {
   });
   /** The row's git badge, in folder views only. */
   const badgeOf = (row: Row | undefined) => (isSearch() ? undefined : gitBadge(row));
+
+  // In a WSL distribution, Linux's permissions are likewise asked for the rows on screen only.
+  createEffect(() => {
+    const listing = props.listing;
+    if (!listing || isSearch() || !isWslPath(listing.path)) return;
+    checkModes(visibleRows().flatMap((index) => rowAt(index) ?? []));
+  });
 
   createEffect(() => {
     const listing = props.listing;
@@ -1069,6 +1082,7 @@ export function FileList(props: Props) {
             <Show when={badgeOf(data())?.change}>{(change) => <GitGlyph change={change()} dir={data().dir} />}</Show>
             <SyncGlyph row={data()} />
             <TagDots path={data().path} />
+            <Show when={data().hit}>{(hit) => <HitSnippet hit={hit()} />}</Show>
           </div>
         );
       case "location":
@@ -1093,7 +1107,8 @@ export function FileList(props: Props) {
       case "alloc":
         return <div class="cell alloc">{data().dir && data().alloc === 0 ? "" : formatSize(data().alloc)}</div>;
       case "attributes":
-        return <div class="cell attributes">{attributeLetters(data().attrs)}</div>;
+        // In a WSL distribution, Linux's permissions where WSL gives them (wsl.ts).
+        return <div class="cell attributes">{linuxMode(data()) ?? attributeLetters(data().attrs)}</div>;
       case "extension":
         return <div class="cell extension">{data().dir ? "" : data().ext}</div>;
     }
@@ -1123,6 +1138,7 @@ export function FileList(props: Props) {
           onDone={() => viewport.focus()}
         />
       </Show>
+      {props.banner}
       <ColumnHeaders kind={columnKind()} sort={props.sort} shift={shift()} onSort={props.onSort} measure={measure} />
 
       <Show when={props.error}>
@@ -1277,11 +1293,20 @@ export function FileList(props: Props) {
               when={(props.filter ?? "").trim() !== ""}
               fallback={
                 <Show when={isSearch()} fallback={<p>This folder is empty.</p>}>
-                  <p>Nothing matches “{props.query}”.</p>
-                  <p class="hint">
-                    Try fewer words, or filters such as <code>ext:pdf</code>, <code>size:&gt;100mb</code> or{" "}
-                    <code>dm:thisweek</code>.
-                  </p>
+                  <Show
+                    when={props.emptyMessage}
+                    fallback={
+                      <>
+                        <p>Nothing matches “{props.query}”.</p>
+                        <p class="hint">
+                          Try fewer words, or filters such as <code>ext:pdf</code>, <code>size:&gt;100mb</code> or{" "}
+                          <code>dm:thisweek</code>.
+                        </p>
+                      </>
+                    }
+                  >
+                    {(message) => <p>{message()}</p>}
+                  </Show>
                 </Show>
               }
             >

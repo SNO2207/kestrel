@@ -1,7 +1,10 @@
 import type { Row } from "./api";
 
-/** What the preview pane and Quick Look need to know about an item. */
-export type PreviewItem = Pick<Row, "name" | "path" | "dir" | "size" | "mtime" | "ext">;
+/**
+ * What the preview pane and Quick Look need to know about an item; `hit`, for a search inside
+ * files' result, is where the text view opens (`lib/previewHit.ts`).
+ */
+export type PreviewItem = Pick<Row, "name" | "path" | "dir" | "size" | "mtime" | "ext" | "hit">;
 
 /** How an item is shown. */
 export type PreviewKind =

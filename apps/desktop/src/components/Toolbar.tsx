@@ -22,6 +22,7 @@ import { LayoutButtons } from "./Panes";
 import { ViewMenu } from "./ViewMenu";
 import { PreviewToggle } from "./PreviewPane";
 import { SaveSearchButton } from "./SaveSearchButton";
+import { SearchOptionsButtons, searchPlaceholder } from "./SearchOptions";
 
 /** Lets the app's keyboard shortcuts focus the address and search fields. */
 export const focusTargets: { address?: () => void; search?: () => void } = {};
@@ -114,7 +115,7 @@ export function Toolbar(props: { focusList: () => void }) {
         <input
           ref={searchInput}
           aria-label="Search"
-          placeholder={everywhere() || locationOf(tab()?.path ?? "") ? "Search everywhere" : "Search this folder"}
+          placeholder={searchPlaceholder(everywhere() || !!locationOf(tab()?.path ?? ""))}
           spellcheck={false}
           value={tab()?.query ?? ""}
           onInput={(event) => tab() && setQuery(tab()!.id, event.currentTarget.value)}
@@ -129,6 +130,7 @@ export function Toolbar(props: { focusList: () => void }) {
             }
           }}
         />
+        <SearchOptionsButtons />
         <SaveSearchButton />
         <button
           class="scope"

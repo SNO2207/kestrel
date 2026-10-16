@@ -24,6 +24,7 @@ pub mod parity;
 pub mod places;
 pub mod projects;
 pub mod shortcuts;
+pub mod triage;
 pub mod undo;
 
 /// One schema change.
@@ -44,6 +45,7 @@ pub const MIGRATIONS: &[&[Migration]] = &[
     parity::MIGRATIONS,
     disk::MIGRATIONS,
     cleanup::MIGRATIONS,
+    triage::MIGRATIONS,
 ];
 
 const SETTINGS: &[Migration] = &[Migration {

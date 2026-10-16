@@ -304,6 +304,8 @@ function showLocation(tabId: number, address: string, mode: NavigateMode) {
 export function navigate(tabId: number, path: string, mode: NavigateMode = "push") {
   // A listing still running for somewhere else is no longer wanted.
   cancelListing(tabId, path);
+  // The search text as it was asked to leave; text typed while the folder is listed is kept.
+  const leaving = find(tabId)?.query;
   enqueue(tabId, async () => {
     const tab = find(tabId);
     if (!tab) return;
@@ -333,7 +335,9 @@ export function navigate(tabId: number, path: string, mode: NavigateMode = "push
         }
         if (!samePath(tab.path, listing.path)) tab.pending = null;
         tab.path = listing.path;
-        tab.query = "";
+        // A key typed into the search box while the folder was listed (just after clearing
+        // it) starts a search that runs next; clearing it here would lose that keystroke.
+        if (tab.query === leaving) tab.query = "";
       });
     } catch (error) {
       // Cancelled because the tab went elsewhere, which is loading next.
@@ -346,7 +350,19 @@ export function navigate(tabId: number, path: string, mode: NavigateMode = "push
   });
 }
 
-function runSearch(tabId: number, keepSelection = false) {
+/**
+ * What answers a tab's search, when not the index's plain search: the search box's phrases and
+ * searches inside files (search.ts). With `update`, a search still running brings back what it
+ * found so far rather than starting again.
+ */
+export type SearchSource = (tabId: number, query: string, scope: string | null, sort: SortSpec, update: boolean) => Promise<Listing>;
+let searchSource: SearchSource | null = null;
+export const setSearchSource = (source: SearchSource | null) => void (searchSource = source);
+
+/** Shows what the tab's search found so far, keeping the selection: a search inside files goes on. */
+export const updateSearch = (tabId: number) => runSearch(tabId, true, true);
+
+function runSearch(tabId: number, keepSelection = false, update = false) {
   enqueue(tabId, async () => {
     const tab = find(tabId);
     if (!tab || tab.query.trim() === "") return;
@@ -355,7 +371,8 @@ function runSearch(tabId: number, keepSelection = false) {
       const scope = everywhere() || locationOf(tab.path) ? null : tab.path;
       // Search results keep a sort of their own, separate from any folder's.
       const sort = { ...(recall(SEARCH_LOCATION).sort ?? DEFAULT_SORT) };
-      const shown = await arrange(tabId, await api.search(tab.query, scope, sort), sort);
+      const found = searchSource ? await searchSource(tabId, tab.query, scope, sort, update) : await api.search(tab.query, scope, sort);
+      const shown = await arrange(tabId, found, sort);
       if (keepSelection && heldForRename(tabId, shown)) return;
       const listing = shown.listing;
       const restore = keepSelection ? await carryMarks(tabId, listing) : NO_MARKS;

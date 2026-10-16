@@ -1,0 +1,23 @@
+[package]
+name = "kestrel-content"
+description = "Search inside files: ripgrep's searcher over folders or chosen files, never opening cloud-only files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# ripgrep's own crates: the line searcher (binary detection, BOM sniffing for UTF-16), its regex
+# matcher, and .gitignore matching. The walk is Kestrel's own (`walk.rs`), so a .gitignore that
+# is only in the cloud is never read, and junctions are never followed.
+grep-matcher = "0.1.9"
+grep-regex = "0.1.14"
+grep-searcher = "0.1.17"
+ignore = "0.4.33"
+kestrel-index = { workspace = true }
+parking_lot = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

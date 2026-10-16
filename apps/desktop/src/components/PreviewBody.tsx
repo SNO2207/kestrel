@@ -16,6 +16,7 @@ import { api, iconUrl, type PreviewDetails, type TextPreview } from "../lib/api"
 import { formatCount, formatDate, formatSize } from "../lib/format";
 import { highlight } from "../lib/highlight";
 import { linkTarget, renderMarkdown } from "../lib/markdown";
+import { markLine, revealLine, revealText } from "../lib/previewHit";
 import {
   MAX_WHOLE,
   TEXT_LIMIT,
@@ -361,7 +362,8 @@ function TextContent(props: ContentProps) {
       return;
     }
     const json = props.kind === "json";
-    const code = (json && !preview.truncated && prettyJson(preview.text)) || preview.text;
+    // Re-indenting would move the line a search inside files found (`props.item.hit`).
+    const code = (json && !preview.truncated && !props.item.hit && prettyJson(preview.text)) || preview.text;
     const language = json ? "json" : (languageOf(props.item) ?? "plaintext");
     void highlight(code, language).then(setHtml);
   });
@@ -386,6 +388,19 @@ function TextContent(props: ContentProps) {
     if (link) void api.openLink(link).catch(notify);
   };
 
+  // A search inside files' result opens at its line (`lib/previewHit.ts`).
+  let scroller: HTMLDivElement | undefined;
+  createEffect(
+    on([html, () => props.item.hit], ([shown, hit]) => {
+      if (shown === null || !hit) return;
+      queueMicrotask(() => {
+        if (!scroller) return;
+        if (markdown) revealText(scroller, markdown, hit);
+        else revealLine(scroller, hit);
+      });
+    }),
+  );
+
   return (
     <Switch>
       <Match when={text.error}>
@@ -401,7 +416,7 @@ function TextContent(props: ContentProps) {
       </Match>
       <Match when={loaded()}>
         {(preview) => (
-          <div class="preview-text">
+          <div class="preview-text" ref={scroller}>
             <Show when={preview().truncated}>
               <p class="preview-notice" role="note">
                 Showing the first {formatSize(TEXT_LIMIT)} of {formatSize(preview().size)}.
@@ -413,7 +428,7 @@ function TextContent(props: ContentProps) {
                 <pre class="preview-code" classList={{ wrap: props.kind === "text" || props.kind === "other" }}>
                   {/* The plain text shows at once; the highlighted copy replaces it when ready. */}
                   <Show when={html() !== null} fallback={<code class="hljs">{preview().text}</code>}>
-                    <code class="hljs" innerHTML={html() ?? ""} />
+                    <code class="hljs" innerHTML={markLine(html() ?? "", props.item.hit?.line)} />
                   </Show>
                 </pre>
               }

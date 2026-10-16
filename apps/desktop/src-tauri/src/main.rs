@@ -28,13 +28,16 @@ mod projects;
 mod recycle;
 mod recyclebin;
 mod remote;
+mod search;
 mod shellmenu;
 mod shortcuts;
 mod thispc;
 mod thumbs;
+mod triage;
 mod undo;
 mod visibility;
 mod watch;
+mod wsl;
 
 use std::ptr::null;
 use std::sync::Arc;
@@ -96,6 +99,10 @@ fn list_dir(
         watcher.watch_for(window.label(), &path, move |changed| {
             let _ = app.emit("dir-changed", changed);
         });
+    }
+    // A folder in a WSL distribution is listed as Linux would show it (wsl.rs).
+    if let Some(listing) = wsl::list(&engine, &path, sort, visibility) {
+        return listing;
     }
     engine.list_dir_with(&path, sort, visibility)
 }
@@ -408,6 +415,8 @@ fn main() {
         .manage(palette)
         // This PC's drives, each asked about on a thread of its own (thispc.rs).
         .manage(Arc::new(thispc::Drives::default()))
+        // Searches inside files, one per tab (search/).
+        .manage(search::Searches::default())
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
             thumbs.handle(&request, responder)
@@ -607,6 +616,20 @@ fn main() {
             cleanup::dupes_recycle,
             cleanup::cleanup_dev_sandbox,
             cleanup::cleanup_dev_take,
+            search::search_run,
+            search::search_cancel,
+            search::search_dev_places,
+            search::search_dev_slow,
+            triage::triage_list,
+            triage::triage_count,
+            triage::triage_mark_seen,
+            triage::triage_move,
+            triage::triage_recycle,
+            triage::triage_dev_seen,
+            triage::triage_dev_forget,
+            wsl::wsl_distros,
+            wsl::wsl_modes,
+            wsl::wsl_dev_distros,
         ]))
         .on_window_event(|window, event| {
             dragdrop::on_window_event(event);
@@ -643,6 +666,8 @@ fn main() {
                 let _ = late.emit("drive-details", drive);
             });
             foldertree::watch(app.handle().clone(), app.state::<Arc<Engine>>().inner().clone());
+            // The sidebar's count of new downloads follows the Downloads folder (triage.rs).
+            triage::watch(app.handle());
             let handle = app.handle().clone();
             let engine = app.state::<Arc<Engine>>().inner().clone();
             std::thread::Builder::new()
