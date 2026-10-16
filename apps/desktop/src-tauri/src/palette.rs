@@ -34,8 +34,16 @@
 //! Items chosen from the palette, and folders visited, are remembered in the database
 //! (`kestrel_db::palette`). Remembered items rank higher ([`rank::recency_weight`]), and the
 //! empty palette lists them first.
+//!
+//! # Order
+//!
+//! Each palette's newer query cancels its older one, but `palette_query` runs on a pool of
+//! threads, so two queries sent a keystroke apart can arrive in either order. A query
+//! therefore says which of its page's queries it is ([`Sent`]); one that arrives after a newer
+//! one from its page is refused rather than run, and never cancels the newer.
 
 pub mod files;
+pub mod late;
 pub mod paths;
 pub mod rank;
 
@@ -274,6 +282,28 @@ pub struct Request {
     pub limit: Option<usize>,
 }
 
+/// Which of its page's queries a request is, so one that reaches [`Palette::query_sent`] after
+/// a newer one can be told apart. `palette_query` runs on a pool of threads, and under load the
+/// older of two queries sent in quick succession sometimes arrived second: it cancelled the
+/// newer one, whose answer is the one the palette waits for, and the palette went on showing
+/// what it showed before (after "this pc" was typed, the empty palette's list).
+#[derive(Clone, Debug, Deserialize)]
+pub struct Sent {
+    /// The page that sent it: different at every load, since a reloaded page counts afresh.
+    pub page: String,
+    /// Its place among that page's queries, counting up.
+    pub number: u64,
+}
+
+/// What a newer query, or a late older one, gets instead of results.
+const SUPERSEDED: &str = "Superseded by a newer query";
+
+/// A palette's latest query: its cancel flag, and which of its page's queries it is.
+struct Running {
+    cancel: Arc<AtomicBool>,
+    sent: Option<Sent>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Results {
     pub hits: Vec<Hit>,
@@ -301,8 +331,10 @@ pub struct Palette {
     /// The remembered items, read once and kept for a while, or until an item is recorded or
     /// forgotten.
     recents: Mutex<Option<(Instant, Arc<Recents>)>>,
-    /// The cancel flag of each palette's query in flight.
-    running: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Each palette's latest query, by session.
+    running: Mutex<HashMap<String, Running>>,
+    /// The end-to-end tests' way to make a query arrive late (development builds).
+    late: late::Late,
 }
 
 fn now_ms() -> i64 {
@@ -311,7 +343,7 @@ fn now_ms() -> i64 {
 
 impl Palette {
     pub fn new(db: Arc<Db>) -> Self {
-        Self { db, providers: RwLock::default(), recents: Mutex::default(), running: Mutex::default() }
+        Self { db, providers: RwLock::default(), recents: Mutex::default(), running: Mutex::default(), late: late::Late::default() }
     }
 
     /// Adds a provider. A provider registered again under the same id replaces the first.
@@ -356,13 +388,46 @@ impl Palette {
         *self.recents.lock() = None;
     }
 
-    /// Runs a query against every provider it concerns and ranks the results together.
-    pub fn query(&self, request: Request) -> Result<Results, String> {
-        let started = Instant::now();
-        let cancel = Arc::new(AtomicBool::new(false));
-        if let Some(previous) = self.running.lock().insert(request.session.clone(), cancel.clone()) {
-            previous.store(true, Ordering::Relaxed);
+    /// Makes a query its session's latest, cancelling the one before, and returns its cancel
+    /// flag; or `None` when its page has already started a newer one, which it must not cancel.
+    /// A query that doesn't say which it is (or comes from another page, as after a reload)
+    /// counts as the newest.
+    fn begin(&self, session: &str, sent: Option<Sent>) -> Option<Arc<AtomicBool>> {
+        let mut running = self.running.lock();
+        if let (Some(sent), Some(Running { sent: Some(latest), .. })) = (&sent, running.get(session))
+            && sent.page == latest.page
+            && sent.number < latest.number
+        {
+            return None;
         }
+        let cancel = Arc::new(AtomicBool::new(false));
+        if let Some(previous) = running.insert(session.to_owned(), Running { cancel: cancel.clone(), sent }) {
+            previous.cancel.store(true, Ordering::Relaxed);
+        }
+        Some(cancel)
+    }
+
+    /// [`Palette::query_sent`] for a query that doesn't say which of its page's queries it is,
+    /// as the tests send them: queries of a session are then taken in the order they arrive.
+    #[cfg(test)]
+    pub fn query(&self, request: Request) -> Result<Results, String> {
+        self.query_sent(request, None)
+    }
+
+    /// Runs a query against every provider it concerns and ranks the results together. `sent`
+    /// says which of its page's queries it is: it is refused if a newer one from its page has
+    /// already started (see [`Sent`]).
+    pub fn query_sent(&self, request: Request, sent: Option<Sent>) -> Result<Results, String> {
+        let started = Instant::now();
+        // Only the end-to-end tests' hook (`late.rs`, development builds) ever holds a query here.
+        let held = self.late.arrive(&request.text);
+        let begun = self.begin(&request.session, sent);
+        if held {
+            self.late.through();
+        } else {
+            self.late.overtake();
+        }
+        let cancel = begun.ok_or(SUPERSEDED)?;
         let (scope, text) = split_prefix(&request.text);
         let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let recents = self.recents();
@@ -386,7 +451,7 @@ impl Palette {
                 hit
             }));
             if query.cancelled() {
-                return Err("Superseded by a newer query".into());
+                return Err(SUPERSEDED.into());
             }
         }
         if opening {
@@ -497,10 +562,27 @@ fn one_per_path(hits: Vec<Hit>) -> Vec<Hit> {
 
 // ---------- commands ----------
 
-/// Ranks what the palette should show for `request.text`.
+/// Ranks what the palette should show for `request.text`. `sent` says which of its page's
+/// queries it is (the window's palette and the quick launcher send it; see [`Sent`]).
 #[tauri::command(async)]
-pub fn palette_query(palette: State<Arc<Palette>>, request: Request) -> Result<Results, String> {
-    palette.query(request)
+pub fn palette_query(palette: State<Arc<Palette>>, request: Request, sent: Option<Sent>) -> Result<Results, String> {
+    palette.query_sent(request, sent)
+}
+
+/// For the end-to-end tests (development builds only): `hold` holds the next query for that
+/// text back until another query has started, as the pool of threads that runs commands
+/// sometimes does (`palette/late.rs`); `release` lets go of it. Returns where the hold is:
+/// `off`, `armed`, `holding` (the query is waiting) or `overtaken`.
+#[tauri::command]
+pub fn palette_dev_late(palette: State<Arc<Palette>>, hold: Option<String>, release: Option<bool>) -> Result<&'static str, String> {
+    crate::projects::launch::development_only()?;
+    if release == Some(true) {
+        return Ok(palette.late.arm(None));
+    }
+    Ok(match hold {
+        Some(text) => palette.late.arm(Some(text)),
+        None => palette.late.phase(),
+    })
 }
 
 /// Remembers that an item was chosen from the palette, or a folder visited, so it ranks higher.
@@ -711,5 +793,84 @@ mod tests {
         boosted[77].boost = 50;
         let request = Request { text: "item".into(), session: "t".into(), items: boosted, show_hidden: false, limit: Some(3) };
         assert_eq!(palette.query(request).unwrap().hits[0].item.id, "a77");
+    }
+
+    /// Searches for a text starting with "held" only once let go, so a query can be kept in
+    /// flight while another arrives.
+    struct Holds {
+        entered: std::sync::mpsc::SyncSender<()>,
+        go: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl Provider for Holds {
+        fn id(&self) -> &'static str {
+            "holds"
+        }
+        fn search(&self, query: &Query) -> Vec<Hit> {
+            if query.text.starts_with("held") {
+                self.entered.send(()).unwrap();
+                self.go.lock().recv().unwrap();
+            }
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn a_query_arriving_after_a_newer_one_from_its_page_is_refused_and_cancels_nothing() {
+        let palette = Arc::new(palette());
+        let (entered, has_entered) = std::sync::mpsc::sync_channel(0);
+        let (let_go, go) = std::sync::mpsc::channel();
+        palette.register(Arc::new(Holds { entered, go: Mutex::new(go) }));
+        let request = |text: &str| Request { text: text.into(), session: "main".into(), items: Vec::new(), show_hidden: false, limit: None };
+        let sent = |page: &str, number| Some(Sent { page: page.into(), number });
+        let in_flight = |text: &'static str, number| {
+            let palette = palette.clone();
+            let running = std::thread::spawn(move || palette.query_sent(request(text), sent("load 1", number)));
+            has_entered.recv().unwrap();
+            running
+        };
+
+        // The page's second query is running when its first arrives, as a pool of threads may
+        // have them: the first is refused, and the second goes on to its answer.
+        let second = in_flight("held 2", 2);
+        assert_eq!(palette.query_sent(request("hel"), sent("load 1", 1)).unwrap_err(), SUPERSEDED);
+        let_go.send(()).unwrap();
+        assert!(second.join().unwrap().is_ok(), "the newer query was not cancelled");
+
+        // A newer query still cancels an older one in flight.
+        let fourth = in_flight("held 4", 4);
+        assert!(palette.query_sent(request("x"), sent("load 1", 5)).is_ok());
+        let_go.send(()).unwrap();
+        assert_eq!(fourth.join().unwrap().unwrap_err(), SUPERSEDED);
+        assert_eq!(palette.query_sent(request("x"), sent("load 1", 3)).unwrap_err(), SUPERSEDED, "older than one already answered");
+
+        // A page loaded afresh counts from 1 again, and queries that don't count go by arrival.
+        assert!(palette.query_sent(request("x"), sent("load 2", 1)).is_ok());
+        assert!(palette.query(request("x")).is_ok());
+        assert!(palette.query_sent(request("x"), sent("load 2", 1)).is_ok(), "after one that doesn't count");
+        // Each session keeps its own order.
+        let other = Request { session: "quick".into(), ..request("x") };
+        assert!(palette.query_sent(other, sent("load 2", 1)).is_ok());
+    }
+
+    #[test]
+    fn the_late_hook_has_a_query_arrive_after_the_next_one() {
+        let palette = Arc::new(palette());
+        let request = |text: &str| Request { text: text.into(), session: "main".into(), items: Vec::new(), show_hidden: false, limit: None };
+        let sent = |number| Some(Sent { page: "load".into(), number });
+        assert_eq!(palette.late.arm(Some("kes".into())), "armed");
+        let first = {
+            let palette = palette.clone();
+            std::thread::spawn(move || palette.query_sent(request("kes"), sent(1)))
+        };
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while palette.late.phase() != "holding" {
+            assert!(Instant::now() < deadline, "the first query is held back");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let second = palette.query_sent(request("kest"), sent(2)).unwrap();
+        assert_eq!(second.hits[0].item.id, "kestrel");
+        assert_eq!(first.join().unwrap().unwrap_err(), SUPERSEDED, "the first arrived second");
+        assert_eq!(palette.late.phase(), "off");
     }
 }

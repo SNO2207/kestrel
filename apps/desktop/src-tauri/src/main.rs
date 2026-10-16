@@ -580,6 +580,7 @@ fn main() {
             palette::palette_query,
             palette::palette_record,
             palette::palette_forget,
+            palette::palette_dev_late,
             launcher::launcher_settings,
             launcher::set_launcher_hotkey,
             launcher::set_keep_in_tray,

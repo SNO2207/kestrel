@@ -242,7 +242,10 @@ try {
     // Keys typed before the palette's box is there would go to the page beneath it.
     await page.locator(".palette input").waitFor();
     await page.keyboard.type("this pc");
-    await page.locator(".palette-item", { hasText: "This PC" }).first().waitFor();
+    // The answer for what was typed, not the list the palette opened with, which holds This PC
+    // too when it was chosen lately (palette.mjs checks a query that arrives late).
+    await page.locator('.palette-list[aria-busy="false"]').waitFor();
+    assert.equal(await page.locator(".palette-item.active .palette-title").textContent(), "This PC");
     await page.keyboard.press("Enter");
     await page.locator(".pc-page").waitFor();
   });

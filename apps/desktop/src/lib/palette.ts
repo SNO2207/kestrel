@@ -101,6 +101,15 @@ export interface PaletteAnswer {
 }
 
 /**
+ * This page's load, and how many queries it has sent. The backend runs queries on a pool of
+ * threads, so one sent a keystroke before another can reach it second; by these it refuses
+ * that one instead of letting it cancel the newer, whose answer the palette waits for
+ * (`palette::Sent`).
+ */
+const PAGE = `${performance.timeOrigin}-${Math.random().toString(36).slice(2)}`;
+let sent = 0;
+
+/**
  * Asks for the hits for `text`: gathers the front end providers' items, has the backend rank
  * them with its own, and drops hits no registered provider can carry out.
  */
@@ -113,7 +122,10 @@ export async function askPalette(text: string, window: PaletteWindow, showHidden
   const items = taking
     .filter((provider) => provider.items && (prefix !== null || rest !== "" || provider.listWhenEmpty))
     .flatMap((provider) => provider.items!(context));
-  const results: PaletteResults = await paletteApi.query({ text, session: window, items, show_hidden: showHidden, limit: 60 });
+  const results: PaletteResults = await paletteApi.query(
+    { text, session: window, items, show_hidden: showHidden, limit: 60 },
+    { page: PAGE, number: ++sent },
+  );
   const hits = results.hits.filter((hit) => providers.has(hit.provider));
   const provided = taking.some((provider) => provider.items) || results.providers.length > 0;
   return { hits, prefix, provided, tookUs: results.took_us };
