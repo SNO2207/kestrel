@@ -230,9 +230,13 @@ export function FileList(props: Props) {
    * (into the column's order): then the arrow shows again.
    */
   const [resorted, setResorted] = createSignal<number | null>(null);
-  /** The description the results are ranked by, typed (`~…`, `like:`) or read from a phrase. */
+  /**
+   * The description the results are ranked by, typed (`~…`, `like:`) or read from a phrase. What
+   * is typed counts at once, not when its rows arrive: a description that fails (no model yet)
+   * leaves the rows as they were, and the bar says how to get one.
+   */
   const described = (): string | null => {
-    if (isDescribeQuery(shown().query)) return shown().query;
+    if (isDescribeQuery(props.query)) return props.query;
     const ran = props.ranQuery;
     return ran && isSearch() && isDescribeQuery(ran) ? ran : null;
   };
