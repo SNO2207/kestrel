@@ -24,7 +24,6 @@ import {
   goForward,
   goUp,
   isSearch,
-  navigate,
   openTab,
   refresh,
   selectedRows,
@@ -47,8 +46,8 @@ import {
   toggleDetails,
   toggleFullScreen,
 } from "../parity";
-import { HOME_PATH } from "./home";
 import { recheckAccess } from "./access";
+import { locationOf } from "./locations";
 import type { SortKey } from "./api";
 import type { GroupBy } from "./layoutApi";
 import type { PaletteContext, PaletteHit, PaletteItem, PaletteProvider } from "./palette";
@@ -312,7 +311,6 @@ function actions(): Action[] {
       run: (host) => pressInList(host, "F10", { shiftKey: true }),
     },
     // Explorer parity (parity.ts).
-    { id: "home", title: "Go to Home", icon: "home", keywords: "start page quick access favorites recent", run: withTab((id) => navigate(id, HOME_PATH)) },
     { id: "new-window", title: "New window", hint: "Ctrl+N", keywords: "open another window", run: () => openNewWindow() },
     {
       id: "toggle-details",
@@ -361,7 +359,8 @@ function available(action: Action, context: PaletteContext): boolean {
   if (action.id === "show-kestrel") return false;
   const tab = activeTab();
   if (action.selection && (tab?.selected ?? 0) === 0) return false;
-  if (action.folder && (!tab || isSearch(tab))) return false;
+  // Folder actions need a folder that can change: not results, a special location or an archive.
+  if (action.folder && (!tab || isSearch(tab) || locationOf(tab.path) || inArchive(tab.listing))) return false;
   if (action.when && !action.when()) return false;
   return true;
 }

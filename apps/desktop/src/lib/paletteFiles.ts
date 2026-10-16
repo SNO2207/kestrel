@@ -2,10 +2,11 @@
  * The front end half of the palette's files and folders, which the backend finds (the index
  * for plain queries, the disk for paths typed after `/`): what choosing one does.
  *
- * Enter opens a folder in the current tab and a file in its default app; Ctrl+Enter opens a
- * folder in a new tab; Shift+Enter shows either in the folder that holds it, selected. Tab puts
+ * Enter opens a folder in the current tab and a file in its default app (an archive opens as a
+ * folder, as a double-click does); Ctrl+Enter opens a folder in a new tab; Shift+Enter shows either in the folder that holds it, selected. Tab puts
  * the item's path in the input after `/`, so a folder's contents can be listed and narrowed.
  */
+import { isArchiveFile } from "../archives";
 import { activeTab, isSearch, navigate, notify, openTab, selectInFolder } from "../state";
 import { api } from "./api";
 import { baseName, parentPath } from "./format";
@@ -39,20 +40,23 @@ function reveal(path: string) {
   wait();
 }
 
+/** Whether choosing the item opens it as a folder: a folder, or an archive (archives.ts). */
+const opensAsFolder = (hit: PaletteHit) => hit.dir || isArchiveFile({ dir: false, name: baseName(pathOf(hit)) });
+
 export const filesProvider: PaletteProvider = {
   id: ID,
   label: (hit) => (hit.dir ? "Folder" : "File"),
   run: (hit, mode) => {
     const path = pathOf(hit);
     if (mode === "reveal") return reveal(path);
-    if (!hit.dir) return void api.openPath(path).catch(notify);
+    if (!opensAsFolder(hit)) return void api.openPath(path).catch(notify);
     if (mode === "new-tab") return openTab(path);
     const tab = activeTab();
     if (tab) navigate(tab.id, path);
     else openTab(path);
   },
   // Opening a file needs no window of Kestrel's; the quick launcher does that itself.
-  runsAnywhere: (hit, mode) => !hit.dir && mode !== "reveal",
+  runsAnywhere: (hit, mode) => !opensAsFolder(hit) && mode !== "reveal",
   complete: completion,
 };
 

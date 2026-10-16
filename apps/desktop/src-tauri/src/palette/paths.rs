@@ -121,7 +121,8 @@ fn hit(path: String, title: String, subtitle: Option<String>, dir: bool, matched
 /// name order, when nothing has been typed after the separator.
 fn children(dir: &str, rest: &str, query: &Query) -> Vec<Hit> {
     let dir = normalize(dir);
-    let Ok(mut items) = walk::list(&dir) else { return Vec::new() };
+    // An archive, or a folder inside one, lists its contents as a folder would (archive/).
+    let Some(mut items) = walk::list(&dir).ok().or_else(|| crate::archive::entries(&dir)) else { return Vec::new() };
     let visibility = Visibility { hidden: query.show_hidden, ..Visibility::ALL };
     items.retain(|item| visibility.shows(item.meta.attrs));
     let is_dir = |attrs: u32| attrs & attr::DIRECTORY != 0;

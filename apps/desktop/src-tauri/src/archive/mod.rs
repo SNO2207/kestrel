@@ -34,6 +34,7 @@ use std::sync::Arc;
 
 use kestrel_db::Db;
 use kestrel_db::archives::Preferences;
+use kestrel_index::DirItem;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State, Window};
 
@@ -92,6 +93,14 @@ pub fn list(engine: &Engine, path: &str, sort: SortSpec, visibility: Visibility)
             Ok(engine.show_items(located.address.clone(), items, sort, visibility, archive))
         }
     })
+}
+
+/// The items of an archive, or of a folder inside one, as directory entries, for lists other
+/// than the file list (the palette's typed paths); `None` for a path not in an archive, or one
+/// that can't be read without more (a password).
+pub fn entries(path: &str) -> Option<Vec<DirItem>> {
+    let located = browse::locate(path, true)?.ok()?;
+    located.node().dir.then(|| browse::items(&located))
 }
 
 /// The icon for an item inside an archive, which can't be asked of the file itself: its type's.

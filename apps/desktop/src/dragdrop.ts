@@ -15,7 +15,9 @@ import { createSignal } from "solid-js";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 import { api, type DragRehearsal, type DropEffect, type DropKeys, type RowRange } from "./lib/api";
+import { inArchive } from "./archives";
 import { baseName, parentPath } from "./lib/format";
+import { locationOf } from "./lib/locations";
 import { activateTab, activeTab, isSearch, navigate, notify, selectInFolder, tabs } from "./state";
 import { pinPaths } from "./shortcuts";
 
@@ -91,7 +93,8 @@ const sameTarget = (a: DropTarget | null, b: DropTarget | null) =>
  * inside one, and not into the folder they are all already in, where a drop does nothing.
  */
 function accepts(path: string): boolean {
-  if (!session) return false;
+  // Special locations (This PC, the Recycle Bin, Home) take no files.
+  if (!session || locationOf(path)) return false;
   const destination = comparable(path);
   const sources = session.sources;
   if (sources.some((source) => destination === source || destination.startsWith(`${source}\\`))) return false;
@@ -116,7 +119,8 @@ function targetAt(x: number, y: number): DropTarget | null | typeof LOADING {
   const tabElement = element.closest<HTMLElement>("[data-tab-id]");
   if (tabElement) {
     const tab = tabs.find((tab) => tab.id === Number(tabElement.dataset.tabId));
-    return tab && !isSearch(tab) && accepts(tab.path) ? { kind: "tab", path: tab.path, tabId: tab.id } : null;
+    // The inside of an archive is read-only (archives.ts).
+    return tab && !isSearch(tab) && !inArchive(tab.listing) && accepts(tab.path) ? { kind: "tab", path: tab.path, tabId: tab.id } : null;
   }
   const place = element.closest<HTMLElement>("[data-place]");
   if (place) {
@@ -135,6 +139,7 @@ function targetAt(x: number, y: number): DropTarget | null | typeof LOADING {
   const panel = element.closest<HTMLElement>(".tab-panel.active, .tab-panel.current");
   if (!panel || !element.closest(".filelist")) return null;
   const tab = tabs.find((each) => each.id === Number(panel.dataset.panelTab)) ?? activeTab();
+  if (inArchive(tab?.listing)) return null;
   // A details row, or an item of the icon, list and tile views.
   const row = element.closest<HTMLElement>(".row[data-index], .view-item[data-index]");
   if (row && row.dataset.path === undefined) return LOADING;
