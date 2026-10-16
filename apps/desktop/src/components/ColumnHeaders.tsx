@@ -145,7 +145,8 @@ export function ColumnHeaders(props: {
                 onPointerDown={(event) => press(id, event)}
                 onClick={() => {
                   if (dragged) dragged = false;
-                  else props.onSort(info.sort);
+                  // The media library's columns come from outside the index, which sorts.
+                  else if (info.sort) props.onSort(info.sort);
                 }}
                 onContextMenu={(event) => openMenu(event, id)}
               >

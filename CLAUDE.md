@@ -117,6 +117,20 @@ Done and verified:
   duplicates by size, then ends, then BLAKE3, hashes cached by file id. The two panels are the
   disk usage hub's Cleanup and Duplicates tabs, on the hub's drive or folder; the palette's
   "Cleanup recommendations" and "Find duplicate files" open the hub there.
+- **Media library and Gallery** (`crates/kestrel-media`, `src-tauri/src/media/`,
+  `kestrel_db::media`, `kestrel_query`'s media clauses, `media.ts`, `mediaSetup.ts`,
+  `lib/mediaApi.ts`, `lib/justify.ts`, `lib/mediaFacts.ts`, `Gallery.tsx`, `MediaLibrary.tsx`,
+  `MediaText.tsx`, `MediaCell.tsx`, `GalleryEntry.tsx`, `MediaIcon.tsx`, `media.css`): a background
+  pass over the photos and videos in the media scopes (stages: metadata, thumbnail, text), keyed by
+  volume, file id, size and time; `width:`, `height:`, `taken:`, `camera:`, `duration:`,
+  `kind:photo`, `kind:video`, `geo:` and `text:` (FTS5); Date taken, Dimensions and Duration
+  columns (not sortable); the recognised text in the details pane; the Gallery (a special
+  location) and the library's settings page (another, under it). Verified on the owner's own
+  folders in a test slot (`KESTREL_MEDIA_SCOPES=default`): 2,037 photos and videos read at about
+  five a second at background priority (about one core of 24), one online-only file skipped
+  unopened, two images Windows can't decode listed with their reasons (a third failure, a
+  TypeScript `.d.mts` taken for a video, is why `.mts` is no video extension); media searches take
+  5-8 ms and the Gallery's data 30-50 ms over a 3.77 M-entry index.
 
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette, then places, layout, parity, archives, disk and
@@ -145,6 +159,8 @@ see README); what else Explorer does that Kestrel does not is listed in
   (commands, the drive's own figures in `volume.rs`, the sampler in `history.rs`, and the
   `disk-changed` event while the hub is open); the samples live in `kestrel_db::disk`.
 - `crates/kestrel-ntfs`: NTFS journal, MFT record parsing and raw volume reads.
+- `crates/kestrel-media`: the media library's reading and its background pass (see Media library
+  below).
 - `apps/desktop/src-tauri/src`: the backend. `main.rs` registers every Tauri command in one
   `generate_handler!` list, wrapped in `preview::guard(...)`, and every custom protocol
   (`icon`, `thumb`, `preview`). `engine.rs` owns the index and the result sets the UI pages
@@ -285,6 +301,39 @@ see README); what else Explorer does that Kestrel does not is listed in
   tools instead of running them. Run a scan's rules one per index lock (`Scan`), never the whole
   scan under one. The panels are tabs of the disk usage hub (`TABS` in `DiskHub.tsx`), which
   gives them its root; `cleanup.ts` only holds the palette's ways in.
+- Media library: `crates/kestrel-media` does the reading and holds the pass (`pipeline.rs`, whose
+  module documentation explains it), finding media in the index (`scan.rs`), the default scopes
+  (`scopes.rs`), the property system (`props.rs`), WIC and Media Foundation (`decode.rs`), OCR
+  and the text stage (`ocr.rs`), full-screen and battery-saver checks (`conditions.rs`), media
+  clauses resolved to entries (`query.rs`, like `tag:`; `main.rs`'s `search` chains it after the
+  tags), and test files made from scratch (`fixtures.rs`: JPEG with hand-built EXIF, an H.264
+  video through the sink writer, text drawn by GDI). The tables are `kestrel_db::media` (items by
+  volume and file id, facts, one record per stage, FTS5 text by item id). The app's half is
+  `src-tauri/src/media/`: `Media` (the scopes, the thread that follows `Engine::revision` and
+  plans, events `media-progress` and `media-changed`), `thumbstage.rs` (JPEG thumbnails filed in
+  the app's thumbnail cache through `thumbs::ThumbStore`), `gallery.rs` (the Gallery's data as an
+  `Engine::show_entries` result set plus every item's date and shape, and the e2e fixtures).
+  The Gallery and the settings page are special locations (`mediaSetup.ts`); the Gallery reports
+  its focused item like Home does and steps Quick Look through `registerPageStepper`
+  (previewState.ts).
+- **Adding a stage to the media pass** (the embedding stage is meant to plug in this way): implement
+  `kestrel_media::pipeline::Stage` and register it with `app.state::<Arc<media::Media>>()
+  .pipeline().register(Arc::new(stage))` in `main.rs`'s `setup` (or right after `Media::new`).
+  A stage gives a `name()` that never changes (it is stored with each record), a `version()` (bump
+  to redo everything), `applies_to(kind)` (photos, videos or both), and `needs()`: `Needs { pixels:
+  N }` asks for the picture at least N pixels on its longer side (a photo decoded once by WIC and
+  turned upright by its EXIF orientation, or a video's frame a tenth of the way in, from Media
+  Foundation), shared with the other stages of that item; scale it down with `Bitmap::fit`.
+  `run(&Item, &Input)` gets the item (`id`, the library's stable id for the file, which is what
+  the stage keys its own tables by; `path`, `kind`, `size`, `mtime`) and `Input { facts,
+  picture }`; it returns `Err(reason)` in words for the settings page, after which it is not tried
+  again until the file changes. `run` is called from two worker threads at once, at background
+  priority, in a COM multithreaded apartment; per-thread state (a WinML session, say) goes in a
+  `thread_local!` (as `ocr::TextStage` keeps its recogniser). `forget(ids)` hears of items dropped
+  after a month gone. A new stage's work is queued at once over everything it applies to; the
+  settings page lists it by name (add a label to `STAGE_LABELS` in `media.ts`). Item ids, facts
+  and text are in `kestrel_db::media`; a stage's output belongs in tables of its own, in a module
+  of its own with `2026_10_20_<feature>_<what>` migrations.
 - Shortcuts: data in `kestrel_db::shortcuts` (pins and groups, frecency, saved searches, tags,
   workspaces), commands in `src-tauri/src/shortcuts/`, front end in `src/shortcuts.ts`,
   `lib/shortcutsApi.ts`, `shortcuts.css` and the `Pinned*`, `Shortcut*`, `GoToFolder`,
@@ -546,6 +595,37 @@ Git:
 - A dev slot is `tauri dev`: saving any file under `src-tauri` rebuilds and restarts the app (and
   Vite reloads the page for front-end files), so every suite running then fails. Finish editing
   before starting the suites, even for test-only code.
+- The media library never opens a file whose attributes (in the index, then in its directory
+  entry, read with `GetFileAttributesExW`, which opens nothing) carry `RECALL_ON_DATA_ACCESS`,
+  `RECALL_ON_OPEN` or `OFFLINE` (`kestrel_media::CLOUD_ONLY`): the property store, WIC and Media
+  Foundation all open the file. `RECALL_ON_OPEN` is also `FILE_ATTRIBUTE_EA` (see above), so a
+  few local media files are passed over as online only; telling them apart would mean opening them.
+- Windows' property system reports a photo's `System.Image.HorizontalSize`/`VerticalSize` as
+  shown, already turned by its EXIF orientation (checked with a JPEG of orientation 6); the pass
+  checks them against the decoded, upright picture anyway (`pipeline::agree`).
+- Test slots run with `KESTREL_MEDIA_SCOPES=none` (`e2e/dev.mjs`): no default media folders, so a
+  test instance never reads the owner's photos in the background while other suites run. The
+  media suite gives the library a scratch folder through `media_dev_sandbox`; a dev build of your
+  own with `KESTREL_MEDIA_SCOPES=default` reads the real folders.
+- `kind:photo` and `kind:video` are the media library's clauses now (items it holds); every other
+  `kind:` value is still a `type:` alias, and `type:photo` is still the image extensions.
+- `.ts` and `.mts` are not video extensions: on this machine they are TypeScript.
+- The thumbnail cache holds the shell's PNGs and the media pass's JPEGs under the same keys;
+  `thumbs.rs` says which by the first bytes. The shell gave only stand-in icons for the PNG
+  screenshots in the owner's OneDrive folders (in a test slot, inside the Claude app's container);
+  the pass's own thumbnails replace them once read, and the Gallery asks again (`&v=1` on the
+  address) for items the pass has read since. Items on screen that are still waiting are read
+  first (`media_hurry`, `Pipeline::hurry`). The cache is capped at about 1 GB (oldest written
+  first out), roughly 50,000 Gallery thumbnails; a larger library's oldest ones are rendered again
+  when scrolled to.
+- A test's thumbnail cache must not be inside the folder it gives the media library: its files are
+  pictures, and a rescan would take them for photos (the app leaves its own data folder out of
+  every scan for the same reason).
+- Typing a search right after Escape cleared the last one can lose it: the folder's listing, still
+  on its way, arrives after and takes the tab back to no search. `media.mjs` waits for the folder
+  (`clearSearch`) before typing again; `smoke.mjs` happens to have steps in between.
+- The media pass starts 20 s after the index is ready (`START_DELAY` in `media/mod.rs`), so
+  starting Kestrel is never slowed by it; `media_dev_sandbox` and `media_dev_wait` start it at once.
 - Windows' compression filter (WOF, `compact /exe`) hides its reparse point from user mode:
   attributes read 0x20 and `fsutil reparsepoint query` finds none. Only the file table (the
   broker's index) shows 0x620. Tests of such files set the attributes in the index.

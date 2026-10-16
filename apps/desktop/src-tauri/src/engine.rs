@@ -370,6 +370,18 @@ impl Engine {
         Listing { set, total, path: dir, max_size, took_us: started.elapsed().as_micros() as u64, archive: Some(archive) }
     }
 
+    /// Shows exactly these entries, in this order, as a result set paged, selected and acted on
+    /// as search results are: for a page that chooses entries itself, such as the Gallery
+    /// (`media/gallery.rs`). The ids must come from the current [`Engine::generation`].
+    pub fn show_entries(&self, ids: Vec<EntryId>) -> Listing {
+        let index = self.index.read();
+        let max_size = ids.iter().map(|&id| index.size(id)).max().unwrap_or(0);
+        drop(index);
+        let total = ids.len() as u32;
+        let set = self.store(ResultSet { rows: Rows::Indexed(ids), is_search: true, arranged: Arranged::default() });
+        Listing { set, total, path: String::new(), max_size, took_us: 0, archive: None }
+    }
+
     /// Runs a query, optionally restricted to the folder `scope`. Hidden items are included,
     /// as for [`Engine::list_dir`].
     #[allow(dead_code)]

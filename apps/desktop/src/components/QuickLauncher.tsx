@@ -8,6 +8,7 @@ import { filesProvider } from "../lib/paletteFiles";
 import { locationsProvider } from "../lib/paletteLocations";
 // This PC and the Recycle Bin, which the palette lists, are registered there.
 import "../placesSetup";
+import "../mediaSetup";
 import { setOption, showExtensions, showHidden } from "../lib/views";
 import { setPaneOpen } from "../previewState";
 import { CommandPalette } from "./CommandPalette";

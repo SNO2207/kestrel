@@ -3,8 +3,10 @@
 A fast file explorer for Windows 11. One in-memory index of every file on the drive powers
 instant search, instant folder listings with folder sizes, a command palette that reaches
 every folder and file, the projects on the drive with their git status, a folder tree in the
-sidebar, and a disk usage hub that shows what uses the disk, what could be cleaned up and which
-files are duplicates. Around it sits what File Explorer does: Home, This PC and the Recycle
+sidebar, a disk usage hub that shows what uses the disk, what could be cleaned up and which
+files are duplicates, and a media library that reads your photos and videos in the background
+for the Gallery and for searches by date taken, camera, place, size, length and the text in
+them. Around it sits what File Explorer does: Home, This PC and the Recycle
 Bin, tabs and a second pane, Group by, columns and a filter box, the command bar and details
 pane, archives that open like folders, and more windows (`docs/explorer-parity.md` lists
 Explorer's features one by one).
@@ -20,6 +22,7 @@ Explorer's features one by one).
 | `crates/kestrel-query` | Query language, parallel search, sorting |
 | `crates/kestrel-analyze` | Disk usage from the index: treemap layout, breakdowns by type and age, largest items, growth |
 | `crates/kestrel-cleanup` | Cleanup recommendations and the duplicate finder, over the index |
+| `crates/kestrel-media` | The media library: the background pass over photos and videos (facts, thumbnails, text), through Windows' own property system, WIC, Media Foundation and OCR |
 | `crates/kestrel-cli` | Command-line front end and benchmark harness |
 | `apps/desktop` | The app: Tauri 2 backend in `src-tauri`, SolidJS front end in `src` |
 | `apps/broker` | Optional Windows service that reads drives' file tables for the app |
@@ -105,6 +108,13 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | `in:C:\Projects` | only beneath this folder |
 | `regex:^a.*\d$` | regular expression on the name |
 | `tag:urgent`, `tag:"two words"` | carries this tag |
+| `kind:photo`, `kind:video` | a photo or video the media library holds (other kinds, such as `kind:image`, are types) |
+| `taken:2024-07`, `taken:>2025`, `taken:7d` | taken (or recorded) then, read as `dm:` reads dates |
+| `width:>1920`, `height:1080`, `width:1000..2000` | shown size in pixels |
+| `camera:pixel`, `camera:"canon eos"` | the camera's make or model contains this |
+| `duration:>1m`, `duration:30s..2m`, `duration:<10s` | a video's length (`s`, `m`, `h`; a plain number is seconds) |
+| `geo:yes`, `geo:no` | a GPS position is known, or not |
+| `text:costco`, `text:"order 42.17"` | these words are in the picture (the last may be a beginning) |
 
 ## Keyboard
 
@@ -670,6 +680,51 @@ searching again reads only what changed. Choose the copy to keep in each group (
 Oldest or "Copies in a folder" choose), tick the groups, and the other copies go to the Recycle
 Bin after a confirmation that lists them and the ones kept.
 
+## Gallery and the media library
+
+"Gallery" under Home in the sidebar (or `Gallery` in the address bar, Explorer's
+`shell:::{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}`, or the palette) shows every photo and video in
+the media library's folders, newest first, in justified rows under a heading per month: by the
+date a photo was taken or a video recorded, or else when the file last changed. Videos carry
+their length. All, Photos and Videos narrow it, and the folder button narrows it to one of the
+folders holding them. The timeline at the right names the years (and months, when there is
+room): hover to see a month, click or drag to go there. It is a place like Home: it works in
+either pane, a new tab or window, history and workspaces.
+
+Click selects (Ctrl and Shift as in a list), double-click or Enter opens, Space is Quick Look
+(the arrow keys step through the Gallery without closing it), the arrow keys, Page Up and Down,
+Home and End move, Ctrl+A selects everything, Del recycles, Alt+Enter shows the properties, and
+the menu (right-click or the Menu key) adds Open file location, Copy, Copy as path and the
+Windows menu (Shift+F10). The preview and details panes follow the selected item. Only the rows in
+view are drawn, so fifty thousand items lay out in a few milliseconds and scroll at the display's
+frame rate.
+
+The **media library** reads the photos and videos in its folders in the background, once per
+file: what Windows knows of each (dimensions, date taken, camera, GPS position, orientation, and a
+video's length, frame rate and codec), a thumbnail for the Gallery (in the same cache as every
+view's), and the text in every photo, read by Windows' own recogniser in the languages you have
+chosen in Windows that it can read. The details pane shows an image's text with a Copy button, the
+details view has Date taken, Dimensions and Duration columns (right-click the column headers; they
+do not sort), and the searches above find photos by all of it.
+
+By default the folders are Pictures, Videos, Desktop, Downloads, Documents and the camera roll
+folders, wherever Windows keeps them (OneDrive's included, and the profile's own folders when
+OneDrive has moved them). "Library settings" in the Gallery (or `Media library` in the address
+bar) lists them, takes others (Browse… or a typed path) and goes back to the defaults; it also
+shows how far the library has got, what each step has done, what was skipped and why, and the
+languages text is read in. Hidden files and anything in a hidden folder, a folder starting with a
+dot, or a dependency, build or cache folder (`node_modules`, `target`, `AppData`...) are left out.
+
+The library starts about twenty seconds after Kestrel, reads at background priority (processor,
+disk and memory), and pauses on request (Pause in the Gallery or the settings, kept between runs),
+while a game or another app runs full screen, and while battery saver is on. It follows the index:
+new and changed files are read, renamed and moved ones are recognised by their file id, size and
+time and never read again. Files kept online only (OneDrive's cloud files) are never opened, since
+opening one downloads it: they show in the Gallery with their icon and are counted as skipped.
+Nothing is downloaded: Windows' property system, WIC, Media Foundation and OCR do the reading.
+Formats Windows has no codec for (HEIC and camera raw without their Store extensions) are listed
+as skipped with the reason.
+
 ## Testing
 
 ```powershell
@@ -714,6 +769,7 @@ node e2e/archives.mjs       # compress, browse inside a zip, preview, Extract al
 node e2e/disk.mjs           # the disk usage hub on a scratch folder of known composition
 node e2e/cleanup.mjs        # cleanup recommendations and duplicates, in a scratch machine
 node e2e/navigation.mjs     # locations and archives in either pane, history, tabs, a window, the palette
+node e2e/media.mjs          # the media library, its searches and columns, the Gallery, pausing
 node e2e/dev.mjs stop
 ```
 
@@ -723,7 +779,7 @@ instead: it runs `tauri build` (no installer) with the slot's identity and start
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
 `shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`, `integration.mjs`,
 `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs`, `places.mjs`, `layout.mjs`,
-`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs` and `navigation.mjs` need a dev build,
+`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs`, `navigation.mjs` and `media.mjs` need a dev build,
 whose test hooks they use. A release build has the Windows menu's test hook only when started with
 `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
@@ -817,3 +873,21 @@ named `kestrel-test-e2e-disk-*` whose sixteen files it writes with known sizes a
 the treemap's tiles through a development hook, and sends one file of that folder to the
 Recycle Bin from the treemap's menu, then undoes it, checking that the Recycle Bin ends as it
 began. It opens the hub on the whole drive once, which is read only.
+
+`media.mjs` needs a dev build. Test slots start with no media folders (`e2e/dev.mjs` sets
+`KESTREL_MEDIA_SCOPES=none`, so a test instance never reads your photos; set it to `default` to
+try your own). The suite makes a scratch folder named `kestrel-test-e2e-media-*`, has a
+development hook write two photos with EXIF (camera, date taken, orientation, GPS), a receipt
+drawn as a PNG and a three-second H.264 video into it, makes it the library's only folder with
+another hook, and checks the searches, the details pane's text (Copy goes to a hook, never the
+clipboard), the details view's media columns, the Gallery by month, its filters, Quick Look, the
+keyboard and the menu (Open file location is followed; Copy and Delete are not clicked), pausing
+and resuming with a file added meanwhile, the settings page, and a made-up Gallery of fifty
+thousand items for layout time, frame times while scrolling and the timeline. Whether it passes
+or fails, it resumes the library, gives it back its own folders and puts the search columns back
+as they were. The unit tests in `crates/kestrel-media` make their own photos,
+video and text images too, and check the property readings, the decoders, text recognition, the
+pass's keys (a rename is not read again, a change is), that online-only files are never opened
+(held open with no sharing, so any attempt would fail and be recorded), pausing, waiting while a
+full-screen app runs (simulated), and that items on screen are read first. A real full-screen
+game, battery saver and Windows' folder picker ("Browse…") are manual checks.

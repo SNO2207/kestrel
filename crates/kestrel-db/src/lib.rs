@@ -19,6 +19,7 @@ pub mod archives;
 pub mod cleanup;
 pub mod disk;
 pub mod layout;
+pub mod media;
 pub mod palette;
 pub mod parity;
 pub mod places;
@@ -44,6 +45,7 @@ pub const MIGRATIONS: &[&[Migration]] = &[
     parity::MIGRATIONS,
     disk::MIGRATIONS,
     cleanup::MIGRATIONS,
+    media::MIGRATIONS,
 ];
 
 const SETTINGS: &[Migration] = &[Migration {

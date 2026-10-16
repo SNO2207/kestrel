@@ -18,6 +18,7 @@ mod instance;
 mod launcher;
 mod layout;
 mod lru;
+mod media;
 mod navigation;
 mod palette;
 mod parity;
@@ -100,7 +101,8 @@ fn list_dir(
     engine.list_dir_with(&path, sort, visibility)
 }
 
-/// Runs a search. `tag:` clauses are resolved to the items carrying the tag.
+/// Runs a search. `tag:` clauses are resolved to the items carrying the tag, and the media
+/// library's clauses (`width:`, `taken:`, `text:`...) to the items it knows them of.
 #[tauri::command(async)]
 fn search(
     engine: Shared,
@@ -113,7 +115,8 @@ fn search(
 ) -> Result<Listing, String> {
     let visibility = Visibility::from_request(show_hidden).with_protected(show_protected);
     engine.search_resolving(&query, scope.as_deref(), sort, visibility, |query, index| {
-        shortcuts::tags::resolve(&db, query, index)
+        shortcuts::tags::resolve(&db, query, index)?;
+        kestrel_media::query::resolve(&db, query, index)
     })
 }
 
@@ -378,6 +381,8 @@ fn main() {
     let icons = Arc::new(IconService::start());
     let thumbs = ThumbService::start(icons.clone());
     let database = open_database();
+    // The media library's background pass, which files the Gallery's thumbnails (media/).
+    let media = media::Media::new(engine.clone(), database.clone(), thumbs.store());
     let projects = projects::Projects::new(engine.clone(), database.clone());
     let disk = disk::Disk::new(engine.clone(), database.clone());
     let cleanup = cleanup::Cleanup::new(engine.clone(), database.clone(), projects.clone());
@@ -405,6 +410,7 @@ fn main() {
         .manage(projects.clone())
         .manage(disk.clone())
         .manage(cleanup)
+        .manage(media.clone())
         .manage(palette)
         // This PC's drives, each asked about on a thread of its own (thispc.rs).
         .manage(Arc::new(thispc::Drives::default()))
@@ -607,6 +613,17 @@ fn main() {
             cleanup::dupes_recycle,
             cleanup::cleanup_dev_sandbox,
             cleanup::cleanup_dev_take,
+            media::media_status,
+            media::media_set_paused,
+            media::media_set_scopes,
+            media::media_text,
+            media::media_facts,
+            media::gallery_open,
+            media::media_hurry,
+            media::media_pick_folder,
+            media::media_dev_sandbox,
+            media::media_dev_fixtures,
+            media::media_dev_wait,
         ]))
         .on_window_event(|window, event| {
             dragdrop::on_window_event(event);
@@ -628,6 +645,8 @@ fn main() {
             std::thread::Builder::new().name("kestrel-archive-tidy".into()).spawn(archive::tidy)?;
             // The disk usage hub's change announcements and its daily sample (disk/).
             disk.start(app.handle().clone());
+            // The media library follows the index and starts its pass once Kestrel has settled.
+            media.start(app.handle().clone());
             // The quick launcher, its shortcut and the tray icon; never fatal.
             launcher::setup(app.handle(), database.clone());
             // Launching Kestrel again shows this one, wherever it is hiding.

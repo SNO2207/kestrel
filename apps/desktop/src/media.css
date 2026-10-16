@@ -1,0 +1,748 @@
+/*
+ * The media library: the Gallery (Gallery.tsx), its settings page (MediaLibrary.tsx), the
+ * sidebar's Gallery entry, the details pane's recognised text (MediaText.tsx) and the details
+ * view's media columns. Loaded after styles.css, whose tokens it uses; no colours of its own.
+ */
+
+/* ---------- sidebar: Gallery ---------- */
+
+/* Drawn like a place, as Home is, but not one: nothing can be dropped on it. */
+.gallery-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  text-align: left;
+  color: var(--muted);
+}
+
+.gallery-entry span {
+  color: var(--text);
+}
+
+.gallery-entry:hover {
+  background: var(--raised);
+}
+
+.gallery-entry.current {
+  background: var(--select);
+  color: var(--accent);
+}
+
+/* ---------- the Gallery ---------- */
+
+.gallery {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.gallery-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 6px 14px 6px 18px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.gallery-title {
+  margin: 0 6px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.gallery-kinds {
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--chrome);
+}
+
+.gallery-kind {
+  height: 24px;
+  padding: 0 12px;
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+.gallery-kind:hover {
+  color: var(--text);
+}
+
+.gallery-kind.chosen {
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
+}
+
+.gallery-folder,
+.gallery-settings,
+.media-button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  max-width: 260px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  color: var(--text);
+}
+
+.gallery-folder span,
+.gallery-settings span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gallery-folder:hover,
+.gallery-settings:hover,
+.media-button:hover:not(:disabled) {
+  background: var(--raised);
+}
+
+.gallery-folder .icon:last-child {
+  color: var(--muted);
+}
+
+.gallery-bar-spacer {
+  flex: 1;
+}
+
+/* Where the media pass stands, with its Pause or Resume. */
+.media-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.media-status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.media-status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.media-status[data-state="running"] .media-status-dot {
+  background: var(--accent);
+  animation: media-pulse 1.4s ease-in-out infinite;
+}
+
+.media-status[data-state="waiting"] .media-status-dot,
+.media-status[data-state="paused"] .media-status-dot {
+  background: var(--weight-folder);
+}
+
+.media-status[data-state="idle"] .media-status-dot {
+  background: var(--weight);
+}
+
+@keyframes media-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media-status[data-state="running"] .media-status-dot {
+    animation: none;
+  }
+}
+
+.media-status-action {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+}
+
+.media-status-action:hover {
+  background: var(--raised);
+}
+
+.gallery-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.gallery-scroller {
+  position: absolute;
+  inset: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  outline: 0;
+  /* The timeline is the scrollbar, as in Explorer's Gallery. */
+  scrollbar-width: none;
+}
+
+/* The gutters are GUTTERS in Gallery.tsx: 18 px, and room for the timeline at the right. */
+.gallery-canvas {
+  position: relative;
+  margin: 0 54px 0 18px;
+}
+
+.gallery-month {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-top: 16px;
+}
+
+.gallery-month h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.gallery-month-count {
+  color: var(--faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gallery-tile {
+  position: absolute;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--raised);
+  cursor: default;
+}
+
+.gallery-tile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  -webkit-user-drag: none;
+  /* A hairline keeps pale pictures apart from a pale background. */
+  outline: 1px solid rgb(127 127 127 / 0.14);
+  outline-offset: -1px;
+}
+
+/* An item without a known shape (not read yet, or online only) shows its picture whole. */
+.gallery-tile.plain img {
+  object-fit: contain;
+}
+
+.gallery-tile.plain:has(img[src^="http://icon.localhost"]) img {
+  width: 48px;
+  height: 48px;
+  margin: auto;
+  position: absolute;
+  inset: 0;
+}
+
+.gallery-swatch {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, hsl(var(--hue) 35% 55%), hsl(calc(var(--hue) + 40) 40% 35%));
+  opacity: 0.55;
+}
+
+.gallery-tile:hover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgb(255 255 255 / 0.06);
+}
+
+.gallery-tile.selected::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 3px;
+  background: var(--select);
+  box-shadow: inset 0 0 0 3px var(--accent);
+}
+
+.gallery-scroller:focus-visible .gallery-tile.focused::before,
+.gallery-scroller:focus .gallery-tile.focused:not(.selected)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 2px var(--select-line);
+}
+
+.gallery-video-badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px 0 6px;
+  border-radius: 10px;
+  background: rgb(0 0 0 / 0.58);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.gallery-cloud-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0.5);
+  color: #fff;
+}
+
+/* The month at the top of the view, while its heading is scrolled away. */
+.gallery-current-month {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 2;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--raised);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.18);
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* The timeline: years and months down the right edge; drag or click to go there. */
+.gallery-timeline {
+  position: absolute;
+  top: 8px;
+  right: 0;
+  bottom: 8px;
+  z-index: 3;
+  width: 46px;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.gallery-timeline::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 14px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--line);
+}
+
+.gallery-timeline-thumb {
+  position: absolute;
+  right: 12px;
+  width: 6px;
+  border-radius: 3px;
+  background: var(--faint);
+  transition: background 120ms;
+}
+
+.gallery-timeline:hover .gallery-timeline-thumb {
+  background: var(--accent);
+}
+
+.gallery-timeline-mark {
+  position: absolute;
+  right: 22px;
+  transform: translateY(-50%);
+  color: var(--faint);
+  font-size: 10px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.gallery-timeline-mark.year {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.gallery:has(.gallery-timeline:hover) .gallery-timeline-mark {
+  opacity: 1;
+}
+
+.gallery-timeline-bubble {
+  position: absolute;
+  right: 50px;
+  transform: translateY(-50%);
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--raised);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.25);
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.gallery-empty {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  max-width: 420px;
+  margin: 80px auto 0;
+  padding: 0 20px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.gallery-empty p {
+  margin: 0;
+}
+
+.gallery-empty .media-button {
+  border: 1px solid var(--line);
+}
+
+.gallery-failure {
+  color: var(--danger);
+}
+
+/* ---------- the media library's settings page ---------- */
+
+.media-library {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 22px 28px 40px;
+  outline: 0;
+}
+
+.media-library-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  max-width: 860px;
+}
+
+.media-library-head h1 {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.media-library-head p {
+  max-width: 620px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.media-library-head .media-button {
+  flex: none;
+  border: 1px solid var(--line);
+}
+
+.media-section {
+  max-width: 860px;
+  margin-top: 26px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.media-section h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.media-section h3 {
+  margin: 18px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.media-muted {
+  margin: 0;
+  color: var(--muted);
+}
+
+.media-note {
+  margin: 10px 0 0;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.media-status.large {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.media-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0 0;
+}
+
+.media-counts div {
+  min-width: 112px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--chrome);
+}
+
+.media-counts dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.media-counts dd {
+  margin: 4px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.media-working {
+  margin-top: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.media-stages,
+.media-skipped,
+.media-scopes {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.media-stages li {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  background: var(--chrome);
+}
+
+.media-stages li .media-muted {
+  font-variant-numeric: tabular-nums;
+}
+
+.media-skipped li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 20px;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  background: var(--chrome);
+}
+
+.media-skip-count {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.media-skip-example {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-scopes {
+  margin-top: 10px;
+}
+
+.media-scopes li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+}
+
+.media-scopes li:hover {
+  background: var(--raised);
+}
+
+.media-scopes li > .icon {
+  color: var(--muted);
+}
+
+.media-scope-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.media-scope-path.missing {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+
+.media-link {
+  color: var(--accent);
+}
+
+.media-link:hover {
+  text-decoration: underline;
+}
+
+.media-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.media-input {
+  flex: 1;
+  min-width: 240px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--chrome);
+  outline: 0;
+}
+
+.media-input:focus {
+  border-color: var(--accent);
+}
+
+.media-add .media-button {
+  border: 1px solid var(--line);
+}
+
+.media-button:disabled {
+  color: var(--faint);
+}
+
+.media-clauses {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 18px;
+  margin: 10px 0 0;
+}
+
+.media-clauses div {
+  display: contents;
+}
+
+.media-clauses dd {
+  margin: 0;
+  color: var(--muted);
+}
+
+.media-clauses code {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--chrome);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  user-select: text;
+}
+
+/* ---------- the details pane: text in an image ---------- */
+
+.media-text {
+  width: 100%;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.media-text-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.media-text-copy {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  color: var(--text);
+}
+
+.media-text-copy:hover {
+  background: var(--raised);
+}
+
+.media-text-body {
+  max-height: 260px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--chrome);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* ---------- the details view's media columns ---------- */
+
+.cell.taken,
+.cell.dimensions,
+.cell.duration {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.cell.dimensions,
+.cell.duration {
+  text-align: right;
+}

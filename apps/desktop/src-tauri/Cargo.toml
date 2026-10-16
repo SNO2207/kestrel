@@ -27,6 +27,8 @@ kestrel-analyze = { workspace = true }
 kestrel-cleanup = { workspace = true }
 kestrel-db = { workspace = true }
 kestrel-index = { workspace = true }
+# The media library: the background pass over photos and videos, and the Gallery (media/).
+kestrel-media = { workspace = true }
 kestrel-query = { workspace = true }
 memchr = { workspace = true }
 # The command palette's fuzzy ranking (palette.rs).

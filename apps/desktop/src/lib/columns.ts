@@ -1,10 +1,13 @@
 /**
  * The details view's columns: which are shown, in what order and how wide, for folders and for
- * search results separately, as Explorer keeps them. Every column can be sorted by.
+ * search results separately, as Explorer keeps them. Every column can be sorted by except the
+ * media library's.
  *
  * The four Explorer shows by default come from the listing itself; the rest come from the index
  * at no extra cost (allocated size, attributes, extension) or from the row's path (folder path,
- * which search results show by default). The choice is kept in the app's database
+ * which search results show by default). Date taken, Dimensions and Duration come from the media
+ * library, for the photos and videos it has read (`lib/mediaFacts.ts`); the engine, which sorts,
+ * knows nothing of them, so they don't sort. The choice is kept in the app's database
  * (`kestrel_db::layout`), loaded once at start (`loadColumns`) and saved as it changes.
  */
 import { createSignal } from "solid-js";
@@ -12,13 +15,26 @@ import { createSignal } from "solid-js";
 import type { Row, SortKey } from "./api";
 import { layoutApi } from "./layoutApi";
 
-export type ColumnId = "name" | "modified" | "type" | "size" | "alloc" | "attributes" | "extension" | "location";
+export type ColumnId =
+  | "name"
+  | "modified"
+  | "type"
+  | "size"
+  | "alloc"
+  | "attributes"
+  | "extension"
+  | "location"
+  // The media library's facts (components/MediaCell.tsx), for photos and videos.
+  | "taken"
+  | "dimensions"
+  | "duration";
 export type ColumnKind = "folder" | "search";
 
 export interface ColumnInfo {
   id: ColumnId;
   label: string;
-  sort: SortKey;
+  /** What clicking the header sorts by; the media library's columns have none. */
+  sort?: SortKey;
   /** Numbers, aligned right. */
   numeric?: boolean;
   /** Width when first shown with a fixed width. */
@@ -36,10 +52,13 @@ export const COLUMNS: Record<ColumnId, ColumnInfo> = {
   attributes: { id: "attributes", label: "Attributes", sort: "attributes", width: 92, min: 64 },
   extension: { id: "extension", label: "Extension", sort: "extension", width: 96, min: 64 },
   location: { id: "location", label: "Folder path", sort: "path", width: 320, min: 140 },
+  taken: { id: "taken", label: "Date taken", width: 168, min: 140 },
+  dimensions: { id: "dimensions", label: "Dimensions", numeric: true, width: 112, min: 84 },
+  duration: { id: "duration", label: "Duration", numeric: true, width: 88, min: 64 },
 };
 
 /** The columns the header's menu offers, in its order. */
-export const CHOOSABLE: readonly ColumnId[] = ["name", "modified", "type", "size", "alloc", "attributes", "extension", "location"];
+export const CHOOSABLE: readonly ColumnId[] = ["name", "modified", "type", "size", "alloc", "attributes", "extension", "location", "taken", "dimensions", "duration"];
 
 export interface ColumnSet {
   /** The shown columns, in order. */

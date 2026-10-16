@@ -153,6 +153,9 @@ pub fn compile(query: &Query, index: &Index) -> Result<Compiled, ParseError> {
             ClauseKind::Tag(name) => {
                 return Err(ParseError(format!("Tags must be resolved before searching (tag:{name})")));
             }
+            ClauseKind::Media(_) => {
+                return Err(ParseError("The media library must answer width:, taken:, text: and the like before searching".into()));
+            }
             ClauseKind::Entries(ids) => {
                 if !clause.negate && candidates.as_ref().is_none_or(|known: &Vec<EntryId>| ids.len() < known.len()) {
                     candidates = Some(ids.clone());
