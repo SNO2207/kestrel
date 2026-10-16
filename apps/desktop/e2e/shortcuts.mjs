@@ -331,14 +331,21 @@ try {
     await open(VISITED[0]);
     await open(VISITED[1]);
     await open(VISITED[0]);
-    await shelf("Frequent", "Help").waitFor();
-    await shelf("Frequent", "Web").waitFor();
+    // The whole ranking, as the backend keeps it: the slot's database may hold folders that other
+    // suites visit on every run, which can keep a folder visited once out of the sidebar's six.
+    const frequent = await eventually(async () => {
+      const ranked = (await hook.call("frequent", 500)).map((folder) => folder.path.toLowerCase());
+      const [help, web] = VISITED.map((path) => ranked.indexOf(path.toLowerCase()));
+      assert(help >= 0 && web >= 0 && help < web, `visited twice ranks higher: ${ranked.join(", ")}`);
+      return ranked;
+    });
+    // The sidebar shows the first six of that ranking.
+    for (const path of VISITED) {
+      if (frequent.indexOf(path.toLowerCase()) < 6) await shelf("Frequent", basename(path)).waitFor();
+    }
     // The sandbox was visited several times, but it is in the temp folder.
     assert.equal(await hook.call("visit", at("Gamma")), false);
-    const frequent = (await hook.read("frequent")).map((folder) => folder.path.toLowerCase());
     assert(!frequent.some((path) => path.startsWith(sandbox.toLowerCase())), frequent.join(", "));
-    const [help, web] = VISITED.map((path) => frequent.indexOf(path.toLowerCase()));
-    assert(help >= 0 && web >= 0 && help < web, `visited twice ranks higher: ${frequent.join(", ")}`);
   });
 
   await step("Go to folder (Ctrl+G) offers frecent folders first, then any folder in the index", async () => {

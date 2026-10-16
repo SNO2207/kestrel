@@ -50,6 +50,8 @@ const invoke = (command, args = {}) =>
 const STORAGE_KEYS = ["kestrel.views", "kestrel.view-options", "search-scope", "preview-open", "preview-width"];
 const savedStorage = await page.evaluate((keys) => keys.map((key) => [key, localStorage.getItem(key)]), STORAGE_KEYS);
 const savedPanes = new Map(await invoke("layout_load")).get("panes") ?? "";
+/** Folders the Frequent list held before: any this suite adds (C:\, say) are forgotten after. */
+const visitedBefore = new Set((await invoke("frecency_top", { limit: 1000 })).map((folder) => folder.path.toLowerCase()));
 await page.evaluate((keys) => keys.forEach((key) => localStorage.removeItem(key)), STORAGE_KEYS);
 await page.reload();
 await page.locator(".tab-panel.active .row").first().waitFor();
@@ -306,6 +308,9 @@ try {
       }
     }, savedStorage)
     .catch(() => {});
+  for (const folder of await invoke("frecency_top", { limit: 1000 }).catch(() => [])) {
+    if (!visitedBefore.has(folder.path.toLowerCase())) await invoke("frecency_forget", { path: folder.path }).catch(() => {});
+  }
   await page.evaluate(() => window.__kestrelLayout?.flush()).catch(() => {});
   await invoke("layout_save", { name: "panes", value: savedPanes }).catch(() => {});
   await page.reload().catch(() => {});

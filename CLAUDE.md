@@ -508,3 +508,16 @@ Git:
 - A dialog that stays open must not hold a result set's rows: any refresh of the folder meanwhile
   releases the set (one did while the archive suite took its screenshots), and the command then
   fails with "stale". The archive dialogs keep paths.
+- A component inside a `<Show>` that should take the keyboard takes it in its own `onMount`
+  (as `AddressInput` does): a parent's effect that runs when the `Show` opens runs before the
+  child exists, so its `ref` is still unset or stale and the focus silently goes nowhere.
+- A tab at a special location keeps its file list mounted underneath the page, hidden, with no
+  listing. Whatever that list reports (focused row, selection) is ignored while a page shows
+  (`pageOf` in App.tsx); a page reports its own (`HomeView` sets the focused item).
+- Ctrl+Shift+D shows the second pane beside the first, which keeps the keyboard; suites give a
+  pane the keyboard by clicking its shown tab (`.pane-bar[data-pane="1"] .pane-tab.shown`).
+- The disk usage hub sends treemap positions rounded to hundredths of a pixel, so two tiles
+  that meet can seem to overlap by that much; `disk.mjs` treats such slivers as touching.
+- When branches each add crates, resolve a `Cargo.lock` conflict by taking one side and letting
+  `cargo check` add the rest (it keeps the versions already locked), then compare the new
+  crates' versions with the branch's own lock.

@@ -140,6 +140,9 @@ const binRow = (name) =>
 
 let ownersBefore = null;
 
+/** Folders the Frequent list held before: any this suite adds (Downloads, SendTo...) go after. */
+const visitedBefore = new Set((await invoke("frecency_top", { limit: 1000 })).map((folder) => folder.path.toLowerCase()));
+
 try {
   await step("This PC lists the drives, each with its usage bar", async () => {
     await panel.locator(".row").first().waitFor();
@@ -523,6 +526,10 @@ try {
   if (left.length > 0) await invoke("recycle_bin_restore", { ids: left.map((item) => item.id) }).catch(() => {});
   await go("C:\\").catch(() => {});
   await page.waitForTimeout(300);
+  // Visits the suite made to folders outside its scratch folder are forgotten again.
+  for (const folder of await invoke("frecency_top", { limit: 1000 }).catch(() => [])) {
+    if (!visitedBefore.has(folder.path.toLowerCase())) await invoke("frecency_forget", { path: folder.path }).catch(() => {});
+  }
   await browser.close();
   rmSync(sandbox, { recursive: true, force: true });
 }
