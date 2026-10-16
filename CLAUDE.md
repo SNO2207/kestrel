@@ -1057,3 +1057,8 @@ Git:
   reloaded document's first line): the app's commands and the keyboard's moves and shortcut keys,
   which a failing step prints. Keys a step sends while its page is still starting can be handled
   before scripts the suite sent earlier: read the keyboard record with that in mind.
+- Every e2e suite starts from the window's default settings: `connectToKestrel()` clears the
+  page's local storage and reloads on a process's first connection (not on slot 0, the owner's
+  app). Settings a suite changes therefore never reach the next one; a suite that restarts the
+  app and connects again keeps its own. Settings kept in the database (column sets, panes,
+  pins, tags) are not reset this way: suites that change them put them back themselves.
