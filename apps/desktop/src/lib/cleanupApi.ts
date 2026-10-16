@@ -123,6 +123,32 @@ export interface DupeReport {
   took_ms: number;
 }
 
+/** A photo among similar ones: it looks nearly the same as the others, without being a copy. */
+export interface SimilarFile {
+  path: string;
+  /** Milliseconds since the Unix epoch. */
+  modified: number;
+  size: number;
+  /** Bytes on disk. */
+  bytes: number;
+}
+
+/** Photos that look alike (AI search's vectors), never chosen for removal by Kestrel. */
+export interface SimilarGroup {
+  id: string;
+  /** How alike the least alike pair linked in the group is (cosine). */
+  score: number;
+  files: SimilarFile[];
+}
+
+export interface SimilarReport {
+  groups: SimilarGroup[];
+  /** The model compared with; `null` when none is in use. */
+  model: string | null;
+  compared: number;
+  threshold: number;
+}
+
 export type DupePhase = "checking" | "partial" | "full";
 
 export interface DupeProgress {
@@ -150,6 +176,9 @@ export const cleanupApi = {
   /** Resolves to `null` when the search was cancelled. */
   dupesScan: (roots: string[], exclude: string[], minSize: number) =>
     invoke<DupeReport | null>("dupes_scan", { request: { roots, exclude, min_size: minSize } }),
+  /** Similar photos where the duplicates were looked for; `null` when cancelled. */
+  dupesSimilar: (roots: string[], exclude: string[], minSize: number) =>
+    invoke<SimilarReport | null>("dupes_similar", { request: { roots, exclude, min_size: minSize } }),
   dupesCancel: () => invoke<void>("dupes_cancel"),
   dupesRecycle: (removals: { keep: string; remove: string[] }[], dryRun: boolean) =>
     invoke<RecycleReport>("dupes_recycle", { removals, dryRun }),

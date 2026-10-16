@@ -12,6 +12,9 @@
 //!   library read from photos (`media_text`) and their names, ranked and cut off where the
 //!   owner's slider says.
 //!
+//! - `similar.rs`: similar photos (near duplicates) by their vectors, for the disk usage hub's
+//!   Duplicates tab.
+//!
 //! The model in use loads on a background thread when Kestrel starts (when one is installed),
 //! or when a search first needs it, and stays loaded; while it is loaded the stage is ready and
 //! the library describes what it holds. Everything the page shows comes from `semantic_state`;
@@ -19,6 +22,7 @@
 
 pub mod models;
 pub mod search;
+pub mod similar;
 pub mod stage;
 
 use std::collections::{HashMap, VecDeque};

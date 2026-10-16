@@ -663,6 +663,7 @@ fn main() {
             cleanup::cleanup_open,
             cleanup::dupes_defaults,
             cleanup::dupes_scan,
+            cleanup::dupes_similar,
             cleanup::dupes_cancel,
             cleanup::dupes_recycle,
             cleanup::cleanup_dev_sandbox,

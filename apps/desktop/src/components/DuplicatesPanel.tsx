@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 
 import { api } from "../lib/api";
-import { cleanupApi, type DupeGroup, type DupeProgress, type DupeReport, type RecycleReport } from "../lib/cleanupApi";
+import { cleanupApi, type DupeProgress, type DupeReport, type RecycleReport, type SimilarReport } from "../lib/cleanupApi";
 import { baseName, formatCount, formatDate, formatSize, parentPath } from "../lib/format";
 import {
   CleanupDialog,
@@ -30,6 +30,10 @@ const within = (path: string, folder: string) => {
   return p === f || p.startsWith(`${f}\\`);
 };
 const copies = (n: number) => (n === 1 ? "1 copy" : `${formatCount(n)} copies`);
+const photos = (n: number) => (n === 1 ? "1 photo" : `${formatCount(n)} photos`);
+
+/** What choosing the copy to keep needs of a group, exact or similar. */
+type Choice = { id: string; files: { path: string; modified: number }[] };
 
 function describeProgress(progress: DupeProgress | null): { text: string; share: number } {
   if (!progress) return { text: "Finding files of the same size…", share: 0 };
@@ -51,6 +55,10 @@ type Dialog = { kind: "recycle" } | { kind: "dry-run"; report: RecycleReport } |
  * grouped with the space their extra copies take. Choose the copy to keep in each group (or
  * let "Keep newest", "Keep oldest" or "Keep copies in" choose), tick the groups to clean up,
  * and the other copies go to the Recycle Bin after a confirmation that lists them.
+ *
+ * Below them come similar photos (near duplicates: a burst, the same shot again, an edited or
+ * resized copy), found by comparing AI search's descriptions of the photos the media library
+ * has read. They are groups of their own, never ticked for the owner, not even by "Select all".
  */
 export function DuplicatesPanel(props: { root: string | null }) {
   const [roots, setRoots] = createSignal<string[]>([]);
@@ -60,6 +68,7 @@ export function DuplicatesPanel(props: { root: string | null }) {
   const [searching, setSearching] = createSignal(false);
   const [progress, setProgress] = createSignal<DupeProgress | null>(null);
   const [report, setReport] = createSignal<DupeReport | null>(null);
+  const [similar, setSimilar] = createSignal<SimilarReport | null>(null);
   const [cancelled, setCancelled] = createSignal(false);
   /** The copy kept in each group, by group id. */
   const [keep, setKeep] = createSignal<Map<string, string>>(new Map());
@@ -89,20 +98,29 @@ export function DuplicatesPanel(props: { root: string | null }) {
           setMinSize(defaults.min_size);
         });
         setReport(null);
+        setSimilar(null);
       },
     ),
   );
 
   const groups = () => report()?.groups ?? [];
-  const kept = (group: DupeGroup) => keep().get(group.id) ?? group.files[0].path;
-  const removing = (group: DupeGroup) => group.files.filter((file) => lower(file.path) !== lower(kept(group)));
+  const similarGroups = () => similar()?.groups ?? [];
+  const kept = (group: Choice) => keep().get(group.id) ?? group.files[0].path;
+  const removing = <F extends Choice["files"][number]>(group: { id: string; files: F[] }) =>
+    group.files.filter((file) => lower(file.path) !== lower(kept(group)));
   const chosen = createMemo(() => groups().filter((group) => included().has(group.id)));
-  const chosenFiles = () => chosen().flatMap((group) => removing(group).map((file) => ({ group, file })));
-  const chosenBytes = () => chosen().reduce((n, group) => n + group.bytes_each * removing(group).length, 0);
+  const chosenSimilar = createMemo(() => similarGroups().filter((group) => included().has(group.id)));
+  const chosenCount = () => chosen().length + chosenSimilar().length;
+  /** Every file to move, exact copies first, with its bytes on disk. */
+  const chosenFiles = () => [
+    ...chosen().flatMap((group) => removing(group).map((file) => ({ path: file.path, bytes: group.bytes_each }))),
+    ...chosenSimilar().flatMap((group) => removing(group).map((file) => ({ path: file.path, bytes: file.bytes }))),
+  ];
+  const chosenBytes = () => chosenFiles().reduce((n, file) => n + file.bytes, 0);
   /** Folders holding copies, most first, for "Keep copies in". */
   const folders = createMemo(() => {
     const counts = new Map<string, { folder: string; n: number }>();
-    for (const group of groups()) {
+    for (const group of [...groups(), ...similarGroups()]) {
       for (const file of group.files) {
         const folder = parentPath(file.path) ?? file.path;
         const entry = counts.get(lower(folder)) ?? { folder, n: 0 };
@@ -114,19 +132,19 @@ export function DuplicatesPanel(props: { root: string | null }) {
   });
 
   /** Chooses the copy each group keeps; groups `pick` has no answer for keep theirs. */
-  function keepBy(pick: (group: DupeGroup) => string | undefined) {
+  function keepBy(pick: (group: Choice) => string | undefined) {
     setKeep((current) => {
       const next = new Map(current);
-      for (const group of groups()) {
+      for (const group of [...groups(), ...similarGroups()]) {
         const path = pick(group);
         if (path) next.set(group.id, path);
       }
       return next;
     });
   }
-  const newest = (group: DupeGroup) => [...group.files].sort((a, b) => b.modified - a.modified)[0]?.path;
-  const oldest = (group: DupeGroup) => [...group.files].sort((a, b) => a.modified - b.modified)[0]?.path;
-  const inFolder = (folder: string) => (group: DupeGroup) => group.files.find((file) => within(file.path, folder))?.path;
+  const newest = (group: Choice) => [...group.files].sort((a, b) => b.modified - a.modified)[0]?.path;
+  const oldest = (group: Choice) => [...group.files].sort((a, b) => a.modified - b.modified)[0]?.path;
+  const inFolder = (folder: string) => (group: Choice) => group.files.find((file) => within(file.path, folder))?.path;
 
   /** Searches the roots; `keepOutcome` leaves the banner saying what the last action did. */
   async function search(keepOutcome = false) {
@@ -142,6 +160,10 @@ export function DuplicatesPanel(props: { root: string | null }) {
         return;
       }
       setReport(found);
+      // Then the photos that only look alike, from the vectors AI search already has: quick,
+      // and nothing is read from disk. Without a model there are none.
+      const alike = await cleanupApi.dupesSimilar(roots(), exclude(), minSize()).catch(() => null);
+      setSimilar(alike);
       setIncluded(new Set<string>());
       setKeep(new Map());
       keepBy(oldest);
@@ -152,7 +174,8 @@ export function DuplicatesPanel(props: { root: string | null }) {
     }
   }
 
-  const removals = () => chosen().map((group) => ({ keep: kept(group), remove: removing(group).map((file) => file.path) }));
+  const removals = () =>
+    [...chosen(), ...chosenSimilar()].map((group: Choice) => ({ keep: kept(group), remove: removing(group).map((file) => file.path) }));
 
   async function recycle() {
     setBusy(true);
@@ -169,6 +192,14 @@ export function DuplicatesPanel(props: { root: string | null }) {
           .map((group) => ({ ...group, wasted: group.bytes_each * (group.files.length - 1) }));
         return { ...current, groups: left, wasted: left.reduce((n, group) => n + group.wasted, 0) };
       });
+      setSimilar((current) =>
+        current && {
+          ...current,
+          groups: current.groups
+            .map((group) => ({ ...group, files: group.files.filter((file) => !gone.has(lower(file.path))) }))
+            .filter((group) => group.files.length >= 2),
+        },
+      );
       setIncluded(new Set<string>());
     } catch (error) {
       setOutcome({ message: String(error), skipped: [], undoable: false, tone: "error" });
@@ -213,14 +244,21 @@ export function DuplicatesPanel(props: { root: string | null }) {
     setAdding("");
   }
 
-  const toggleGroup = (group: DupeGroup, on: boolean) =>
+  const toggleGroup = (group: { id: string }, on: boolean) =>
     setIncluded((current) => {
       const next = new Set(current);
       if (on) next.add(group.id);
       else next.delete(group.id);
       return next;
     });
-  const allIncluded = () => groups().length > 0 && included().size === groups().length;
+  /** "Select all" is for exact duplicates only: similar photos are never chosen for the owner. */
+  const allIncluded = () => groups().length > 0 && groups().every((group) => included().has(group.id));
+  const selectAll = (on: boolean) =>
+    setIncluded((current) => {
+      const next = new Set([...current].filter((id) => !groups().some((group) => group.id === id)));
+      if (on) for (const group of groups()) next.add(group.id);
+      return next;
+    });
 
   return (
     <section class="dupes-panel" aria-label="Duplicate files" aria-busy={searching()}>
@@ -338,14 +376,14 @@ export function DuplicatesPanel(props: { root: string | null }) {
                   <Show when={found().placeholders > 0}>; {formatCount(found().placeholders)} online-only files left alone</Show>
                 </span>
               </div>
-              <Show when={groups().length > 0}>
+              <Show when={groups().length > 0 || similarGroups().length > 0}>
                 <div class="dupes-keep">
-                  <label class="dupes-all">
+                  <label class="dupes-all" classList={{ hidden: groups().length === 0 }}>
                     <input
                       type="checkbox"
                       class="cleanup-check"
                       checked={allIncluded()}
-                      onChange={(event) => setIncluded(event.currentTarget.checked ? new Set(groups().map((g) => g.id)) : new Set<string>())}
+                      onChange={(event) => selectAll(event.currentTarget.checked)}
                     />
                     <span>Select all</span>
                   </label>
@@ -420,21 +458,82 @@ export function DuplicatesPanel(props: { root: string | null }) {
                   )}
                 </For>
               </Show>
+              <Show when={similarGroups().length > 0}>
+                <section class="dupes-similar" aria-label="Similar photos">
+                  <h3 class="dupes-similar-title">Similar photos</h3>
+                  <p class="cleanup-muted dupes-similar-note">
+                    Photos that look nearly the same without being copies, such as a burst or an edited copy, found by AI search's{" "}
+                    {similar()?.model === "best" ? "Best" : "Fast"} model. None is ticked for you: tick a group to keep the chosen photo and move the
+                    others to the Recycle Bin.
+                  </p>
+                  <For each={similarGroups()}>
+                    {(group) => (
+                      <article class="similar-group" classList={{ ticked: included().has(group.id) }} data-group={group.id}>
+                        <header class="dupes-group-head">
+                          <input
+                            type="checkbox"
+                            class="cleanup-check dupes-group-check"
+                            checked={included().has(group.id)}
+                            aria-label={`Clean up the photos like ${baseName(group.files[0].path)}`}
+                            onChange={(event) => toggleGroup(group, event.currentTarget.checked)}
+                          />
+                          <span class="dupes-group-name">{baseName(kept(group))}</span>
+                          <span class="dupes-group-meta">
+                            {photos(group.files.length)} · {Math.round(group.score * 100)}% alike
+                          </span>
+                          <span class="cleanup-spacer" />
+                          <span class="dupes-group-wasted">
+                            {formatSize(removing(group).reduce((n, file) => n + file.bytes, 0))} in the others
+                          </span>
+                        </header>
+                        <ul class="dupes-files">
+                          <For each={group.files}>
+                            {(file) => {
+                              const isKept = () => lower(kept(group)) === lower(file.path);
+                              return (
+                                <li class="dupes-file" classList={{ kept: isKept() }} data-path={file.path}>
+                                  <label class="dupes-keep-choice" title="Keep this photo">
+                                    <input
+                                      type="radio"
+                                      name={`keep-${group.id}`}
+                                      checked={isKept()}
+                                      onChange={() => setKeep((current) => new Map(current).set(group.id, file.path))}
+                                    />
+                                  </label>
+                                  <PathLabel path={file.path} class="dupes-file-path" />
+                                  <span class="dupes-file-size">{formatSize(file.size)}</span>
+                                  <span class="dupes-file-date">{formatDate(file.modified)}</span>
+                                  <span class="dupes-file-fate">{isKept() ? "Keep" : included().has(group.id) ? "Recycle" : ""}</span>
+                                </li>
+                              );
+                            }}
+                          </For>
+                        </ul>
+                      </article>
+                    )}
+                  </For>
+                </section>
+              </Show>
+              <Show when={similar() && similar()?.model === null}>
+                <p class="cleanup-muted dupes-similar-none">
+                  Similar photos (a burst, an edited copy) are found too once AI search has a model: download one on the AI search page.
+                </p>
+              </Show>
             </>
           )}
         </Show>
       </div>
 
-      <Show when={groups().length > 0}>
+      <Show when={groups().length > 0 || similarGroups().length > 0}>
         <footer class="cleanup-footer">
           <span class="cleanup-selected">
-            {chosen().length === 0 ? "Tick the groups to clean up." : `${copies(chosenFiles().length)} selected · ${formatSize(chosenBytes())}`}
+            {chosenCount() === 0 ? "Tick the groups to clean up." : `${copies(chosenFiles().length)} selected · ${formatSize(chosenBytes())}`}
           </span>
           <span class="cleanup-spacer" />
-          <button class="cleanup-button cleanup-dry-run" disabled={chosen().length === 0 || busy()} onClick={() => void dryRun()}>
+          <button class="cleanup-button cleanup-dry-run" disabled={chosenCount() === 0 || busy()} onClick={() => void dryRun()}>
             Dry run
           </button>
-          <button class="cleanup-button primary cleanup-recycle" disabled={chosen().length === 0 || busy()} onClick={() => setDialog({ kind: "recycle" })}>
+          <button class="cleanup-button primary cleanup-recycle" disabled={chosenCount() === 0 || busy()} onClick={() => setDialog({ kind: "recycle" })}>
             Move copies to Recycle Bin…
           </button>
         </footer>
@@ -449,18 +548,19 @@ export function DuplicatesPanel(props: { root: string | null }) {
           onCancel={() => setDialog(null)}
         >
           <p class="cleanup-dialog-lead">
-            {toRecycleBin(chosenFiles().length, chosenBytes())} One copy of each file stays where it is.
+            {toRecycleBin(chosenFiles().length, chosenBytes())} One copy of each file stays where it is
+            {chosenSimilar().length > 0 ? ", and one photo of each group of similar photos (the others are not identical copies)." : "."}
           </p>
-          <PathList label="Copies to move" items={chosenFiles().map(({ group, file }) => ({ path: file.path, bytes: group.bytes_each }))} />
+          <PathList label="Copies to move" items={chosenFiles().map((file) => ({ path: file.path, bytes: file.bytes }))} />
           <h3 class="cleanup-dialog-heading">Kept</h3>
-          <PathList label="Copies kept" items={chosen().map((group) => ({ path: kept(group), note: "stays" }))} />
+          <PathList label="Copies kept" items={[...chosen(), ...chosenSimilar()].map((group) => ({ path: kept(group), note: "stays" }))} />
         </CleanupDialog>
       </Show>
       <Show when={dialog()?.kind === "dry-run" && (dialog() as { report: RecycleReport }).report}>
         {(dry) => (
           <DryRunDialog
             report={dry()}
-            sizes={new Map(chosenFiles().map(({ group, file }) => [lower(file.path), group.bytes_each] as const))}
+            sizes={new Map(chosenFiles().map((file) => [lower(file.path), file.bytes] as const))}
             onClose={() => setDialog(null)}
           />
         )}

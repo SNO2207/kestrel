@@ -43,6 +43,9 @@ pub struct Cutoffs {
     pub text: (f32, f32),
     /// Picture to picture ("Find similar").
     pub image: (f32, f32),
+    /// Two photos this alike (or more) are near duplicates: the same shot again, a burst, an
+    /// edit or a resized copy. The disk usage hub's Duplicates tab lists them as similar photos.
+    pub near_duplicate: f32,
 }
 
 /// A model Kestrel can download and run.
@@ -136,7 +139,7 @@ pub fn fast() -> ModelSpec {
         image: ImageSpec { size: 256, rescale, mean, std },
         dim: 768,
         text_length: 64,
-        cutoffs: Cutoffs { text: (0.15, 0.03), image: (0.85, 0.55) },
+        cutoffs: Cutoffs { text: (0.15, 0.03), image: (0.85, 0.55), near_duplicate: 0.92 },
     }
 }
 
@@ -170,7 +173,7 @@ pub fn best() -> ModelSpec {
         image: ImageSpec { size: 384, rescale, mean, std },
         dim: 1152,
         text_length: 64,
-        cutoffs: Cutoffs { text: (0.16, 0.04), image: (0.85, 0.55) },
+        cutoffs: Cutoffs { text: (0.16, 0.04), image: (0.85, 0.55), near_duplicate: 0.92 },
     }
 }
 

@@ -15,6 +15,9 @@
 //   blue means and the detail, which plain pictures lack); moves the relevance slider to fewer
 //   and more; finds the video at the moment that matched, with the preview starting there; and
 //   runs Find similar from a photo's menu;
+// - opens the disk usage hub's Duplicates tab on the folder: the two near-identical photos
+//   (khaki and olive) are a group of similar photos, ticked for nothing, apart from the exact
+//   duplicates (there are none);
 // - drives the Best model's Download button against a web server this suite starts on
 //   127.0.0.1 (serving the tiny model's files, slowly), cancels, resumes (a Range request),
 //   waits for the self-test, and deletes it again with the page's Delete.
@@ -44,7 +47,8 @@ mkdirSync(out, { recursive: true });
 const sandbox = join(tmpdir(), `kestrel-test-e2e-semantic-${process.pid}`);
 const served = join(tmpdir(), `kestrel-test-e2e-semantic-serve-${process.pid}`);
 
-/** Plain pictures, each a colour chosen so the tiny model ranks them clearly apart. */
+/** Plain pictures, each a colour chosen so the tiny model ranks them clearly apart (khaki and
+ * olive are near duplicates for it). */
 const COLOURS = {
   "red.png": [220, 20, 30],
   "orange.png": [240, 140, 20],
@@ -56,13 +60,16 @@ const COLOURS = {
 };
 const VIDEO = "walk.mp4";
 
+/** Pictures padded past the Duplicates tab's smallest "Skip files under" (100 KB). */
+const LARGE = ["khaki.png", "olive.png"];
+
 function makeFixture() {
   rmSync(sandbox, { recursive: true, force: true });
   mkdirSync(sandbox, { recursive: true });
   for (const [name, colour] of Object.entries(COLOURS)) {
-    // Padded after the picture's end (decoders stop there) past the 4 KB below which files are
-    // taken for icons and left out.
-    writeFileSync(join(sandbox, name), Buffer.concat([png(64, 64, () => colour), randomBytes(6000)]));
+    // Padded after the picture's end (decoders stop there), with different bytes each: no two
+    // files are copies of each other.
+    writeFileSync(join(sandbox, name), Buffer.concat([png(64, 64, () => colour), randomBytes(LARGE.includes(name) ? 120_000 : 6000)]));
   }
 }
 
@@ -397,6 +404,47 @@ try {
     // Find similar has no moments: none of its hits is a video's frame.
     await shotBoth("6-find-similar");
     await search.press("Escape");
+  });
+
+  await step("the Duplicates tab lists the photos that look alike as similar photos, ticked for nothing", async () => {
+    await goTo(sandbox);
+    await panel.locator(".row .label", { hasText: "red.png" }).waitFor();
+    await page.keyboard.press("Control+Shift+U");
+    const hub = page.locator(".disk-hub");
+    await hub.waitFor();
+    await hub.locator(".disk-tab[data-tab=duplicates]").click();
+    await hub.locator(".dupes-root-path", { hasText: sandbox }).waitFor();
+    await hub.locator(".dupes-min select").selectOption(String(100 * 1024));
+    await hub.locator(".dupes-search").click();
+    const group = hub.locator(".similar-group");
+    await group.waitFor({ timeout: 30_000 });
+    // Khaki and olive look all but the same to the tiny model; nothing else is that close.
+    const alike = dot(pictureVector(COLOURS["khaki.png"]), pictureVector(COLOURS["olive.png"]));
+    assert(alike > 0.99, `khaki and olive: ${alike}`);
+    assert.equal(await group.count(), 1);
+    const paths = await group.locator(".dupes-file").evaluateAll((files) => files.map((file) => file.getAttribute("data-path")));
+    assert.deepEqual(paths.map((path) => path.split("\\").pop()).sort(), ["khaki.png", "olive.png"]);
+    assert.equal(await hub.locator(".dupes-group").count(), 0, "no exact duplicates: every file has its own bytes");
+    await hub.locator(".dupes-summary-main", { hasText: "No duplicates found." }).waitFor();
+    assert.match(await group.locator(".dupes-group-meta").innerText(), /^2 photos · (99|100)% alike$/);
+    assert.equal(await group.locator(".dupes-group-check").isChecked(), false, "never ticked for the owner");
+    assert.equal(await hub.locator(".dupes-all").isVisible(), false, "no Select all without exact duplicates");
+    assert.equal(await group.locator(".dupes-file.kept").count(), 1, "one photo to keep, the oldest");
+    assert.equal(await hub.locator(".cleanup-recycle").isDisabled(), true, "nothing to move until a group is ticked");
+    // Ticked, a dry run moves only the photo not kept; nothing is changed.
+    await group.locator(".dupes-group-check").check();
+    await hub.locator(".cleanup-selected", { hasText: "1 copy selected" }).waitFor();
+    await shotBoth("7-similar-photos");
+    await hub.locator(".cleanup-dry-run").click();
+    const dry = page.locator(".cleanup-dialog");
+    await dry.waitFor();
+    assert.match(await dry.innerText(), /Nothing was changed\. 1 item \(/);
+    await dry.locator(".dialog-button", { hasText: "Close" }).click();
+    await group.locator(".dupes-group-check").uncheck();
+    assert(existsSync(join(sandbox, "khaki.png")) && existsSync(join(sandbox, "olive.png")));
+    await hub.locator("h1").click();
+    await page.keyboard.press("Escape");
+    await hub.waitFor({ state: "detached" });
   });
 
   await step("the Download button fetches from this computer with progress, cancel and resume, then tests; Delete removes it", async () => {

@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use kestrel_cleanup::dupes::{self, Group, Progress};
+
+use crate::semantic::similar::{self, SimilarGroup, SimilarReport};
 use kestrel_cleanup::inuse::blocker;
 use kestrel_cleanup::{Action, BinContents, Context, Guard, Locations, Project, Recommendation, Rule, Tier, Tools};
 use kestrel_db::Db;
@@ -78,6 +80,8 @@ struct Latest {
     guard: Option<Guard>,
     /// The latest duplicate search's groups.
     groups: Vec<Group>,
+    /// The latest search's similar photos (AI search's vectors, `semantic::similar`).
+    similar: Vec<SimilarGroup>,
 }
 
 pub struct Cleanup {
@@ -515,38 +519,77 @@ fn find_candidates(engine: &Engine, request: &dupes::Request) -> dupes::Candidat
     walk.finish()
 }
 
+/// Looks for similar photos (near duplicates: a burst, an edit, a resized copy) where the
+/// duplicate search looked, by comparing AI search's vectors of the photos the media library has
+/// described. Nothing is read from disk. Empty when no model is in use; `None` when cancelled.
+/// The Duplicates tab lists them apart from exact copies and never chooses any for the owner.
+#[tauri::command(async)]
+pub fn dupes_similar(cleanup: Shared, semantic: crate::semantic::Shared, request: DupeRequest) -> Result<Option<SimilarReport>, String> {
+    let _searching = cleanup.searching.try_lock().ok_or("A search for duplicates is already running.")?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    *cleanup.cancel.lock() = cancel.clone();
+    let within = similar::Within { roots: &request.roots, exclude: &request.exclude, min_size: request.min_size.max(1) };
+    let found = similar::find(&semantic, &cleanup.engine, &within, &cancel);
+    if let Some(report) = &found {
+        cleanup.latest.lock().similar = report.groups.clone();
+    }
+    Ok(found)
+}
+
 #[tauri::command]
 pub fn dupes_cancel(cleanup: Shared) {
     cleanup.cancel.lock().store(true, Ordering::Relaxed);
 }
 
-/// In one group of duplicates, the copy to keep and those to remove.
+/// In one group of duplicates (or of similar photos), the copy to keep and those to remove.
 #[derive(Deserialize)]
 pub struct Removal {
     keep: String,
     remove: Vec<String>,
 }
 
+/// A file of a group, as recycling needs it: what it was when found, and its size on disk.
+struct Copy {
+    path: String,
+    file_id: u64,
+    size: u64,
+    mtime: i64,
+    /// Other names of the same file, which go with it.
+    links: Vec<String>,
+    bytes: u64,
+}
+
+/// The files of the latest search's group holding `keep`: exact duplicates first, then similar
+/// photos.
+fn group_of(latest: &Latest, keep: &str) -> Option<Vec<Copy>> {
+    if let Some(group) = latest.groups.iter().find(|g| g.files.iter().any(|f| key(&f.path) == key(keep))) {
+        return Some(
+            group
+                .files
+                .iter()
+                .map(|f| Copy { path: f.path.clone(), file_id: f.file_id, size: f.size, mtime: f.mtime, links: f.links.clone(), bytes: group.bytes_each })
+                .collect(),
+        );
+    }
+    let group = latest.similar.iter().find(|g| g.files.iter().any(|f| key(&f.path) == key(keep)))?;
+    Some(group.files.iter().map(|f| Copy { path: f.path.clone(), file_id: f.file_id, size: f.size, mtime: f.mtime, links: Vec::new(), bytes: f.bytes }).collect())
+}
+
 /// Sends copies to the Recycle Bin, keeping one of each group, or with `dry_run` says what would
-/// happen. Each copy, and the one kept, must be as the search found it.
+/// happen. Each copy, and the one kept, must be as the search found it. Groups of similar photos
+/// are taken the same way, but only ever those the owner ticked.
 #[tauri::command(async)]
 pub fn dupes_recycle(window: Window, cleanup: Shared, journal: State<Journal>, removals: Vec<Removal>, dry_run: bool) -> Result<RecycleReport, String> {
-    let groups = cleanup.latest.lock().groups.clone();
-    let unchanged = |file: &dupes::DupeFile| {
-        walk::info(&file.path).is_some_and(|meta| meta.file_id == file.file_id && meta.size == file.size && meta.mtime == file.mtime)
-    };
+    let unchanged = |file: &Copy| walk::info(&file.path).is_some_and(|meta| meta.file_id == file.file_id && meta.size == file.size && meta.mtime == file.mtime);
     let mut items = Vec::new();
     let mut skipped = Vec::new();
     for removal in &removals {
-        let group = groups
-            .iter()
-            .find(|g| g.files.iter().any(|f| key(&f.path) == key(&removal.keep)))
-            .ok_or("Those duplicates are out of date. Search again.")?;
-        let keep = group.files.iter().find(|f| key(&f.path) == key(&removal.keep)).ok_or("Search again.")?;
-        let removing: Vec<&dupes::DupeFile> = removal
+        let files = group_of(&cleanup.latest.lock(), &removal.keep).ok_or("Those duplicates are out of date. Search again.")?;
+        let keep = files.iter().find(|f| key(&f.path) == key(&removal.keep)).ok_or("Search again.")?;
+        let removing: Vec<&Copy> = removal
             .remove
             .iter()
-            .map(|path| group.files.iter().find(|f| key(&f.path) == key(path)).ok_or_else(|| format!("{path} isn't a copy of {}.", removal.keep)))
+            .map(|path| files.iter().find(|f| key(&f.path) == key(path)).ok_or_else(|| format!("{path} isn't a copy of {}.", removal.keep)))
             .collect::<Result<_, _>>()?;
         if removing.iter().any(|f| key(&f.path) == key(&keep.path)) {
             return Err("The copy you keep can't also be removed.".into());
@@ -564,7 +607,7 @@ pub fn dupes_recycle(window: Window, cleanup: Shared, journal: State<Journal>, r
             }
             // Other names of the same file go with it, or its space wouldn't be freed; each only
             // while it still names that file.
-            items.push((file.path.clone(), group.bytes_each));
+            items.push((file.path.clone(), file.bytes));
             for link in &file.links {
                 if walk::info(link).is_some_and(|meta| meta.file_id == file.file_id) {
                     items.push((link.clone(), 0));
@@ -582,6 +625,10 @@ pub fn dupes_recycle(window: Window, cleanup: Shared, journal: State<Journal>, r
             group.files.retain(|f| !gone.contains(&key(&f.path)));
         }
         latest.groups.retain(|g| g.files.len() >= 2);
+        for group in &mut latest.similar {
+            group.files.retain(|f| !gone.contains(&key(&f.path)));
+        }
+        latest.similar.retain(|g| g.files.len() >= 2);
     }
     Ok(report)
 }
