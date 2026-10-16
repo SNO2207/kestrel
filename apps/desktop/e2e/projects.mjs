@@ -159,11 +159,7 @@ const detail = page.locator(".project-detail");
 const fact = (name) => detail.locator(`.fact[data-fact="${name}"] dd`);
 const panel = page.locator(".tab-panel.active");
 const item = (name) => panel.locator(".row, .view-item").filter({ has: page.locator(".label", { hasText: exactly(name) }) });
-const step = async (title, run) => {
-  const started = Date.now();
-  await run();
-  console.log(`ok  ${title} (${Date.now() - started} ms)`);
-};
+const step = (await import("./steps.mjs")).stepper("projects", () => page, { timed: true });
 
 /** Captured through the debugging protocol, in both themes. */
 async function shotBoth(name) {

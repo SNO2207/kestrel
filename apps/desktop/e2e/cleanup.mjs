@@ -82,11 +82,7 @@ const { browser, page } = await connectToKestrel();
 const session = await page.context().newCDPSession(page);
 const invoke = (command, args = {}) =>
   page.evaluate(([command, args]) => window.__TAURI_INTERNALS__.invoke(command, args), [command, args]);
-const step = async (title, run) => {
-  const started = Date.now();
-  await run();
-  console.log(`ok  ${title} (${Date.now() - started} ms)`);
-};
+const step = (await import("./steps.mjs")).stepper("cleanup", () => page, { timed: true });
 
 async function shotBoth(name) {
   for (const scheme of ["dark", "light"]) {

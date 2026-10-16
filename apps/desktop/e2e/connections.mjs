@@ -99,11 +99,7 @@ const searchBox = page.locator(".searchbox input");
 const hub = page.locator(".projects-hub");
 const palette = page.locator(".palette");
 const paletteItems = palette.locator(".palette-item");
-const step = async (title, run) => {
-  const started = Date.now();
-  await run();
-  console.log(`ok  ${title} (${Date.now() - started} ms)`);
-};
+const step = (await import("./steps.mjs")).stepper("connections", () => page, { timed: true });
 const until = async (check, what, timeout = 10_000) => {
   const deadline = Date.now() + timeout;
   for (;;) {

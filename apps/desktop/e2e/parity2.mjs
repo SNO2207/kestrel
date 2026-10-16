@@ -100,10 +100,7 @@ const exactly = (text) => new RegExp(`^${escape(text)}$`);
 const item = (name) => panel.locator(".row, .view-item").filter({ has: page.locator(".label", { hasText: exactly(name) }) });
 const menuItem = (label) => page.locator(".menu .menu-item").filter({ has: page.locator(".menu-label", { hasText: exactly(label) }) });
 const comparable = (path) => path.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("parity2", () => page);
 /** Calls a backend command, as the app's own code does. */
 const invoke = (command, args = {}, target = page) =>
   target.evaluate(([command, args]) => window.__TAURI_INTERNALS__.invoke(command, args), [command, args]);
@@ -448,9 +445,11 @@ try {
       input.dispatchEvent(new InputEvent("input", { bubbles: true }));
       return await new Promise((resolve) => {
         const check = () => {
-          // Results, which match both words: "file 00999.dat" comes first.
+          // Results, which match both words: "file 00999.dat" comes first. It may be another
+          // scratch folder's (another run of this suite's, searching everywhere), which this
+          // same search found too.
           const first = document.querySelector(".tab-panel.active .filelist.results .row[data-index='0']");
-          if (first?.getAttribute("data-path")?.toLowerCase() === `${big.toLowerCase()}\\file 00999.dat`) resolve(performance.now() - started);
+          if (first?.getAttribute("data-path")?.toLowerCase().endsWith("\\file 00999.dat")) resolve(performance.now() - started);
           else if (performance.now() - started > 15000) resolve(Infinity);
           else requestAnimationFrame(check);
         };

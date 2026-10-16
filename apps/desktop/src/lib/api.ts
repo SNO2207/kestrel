@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { afterClipboardWrite, writesClipboard } from "./clipboardOrder";
 import { showProtected } from "./folderOptions";
 import type { Hit } from "./searchApi";
 import { showHidden } from "./views";
@@ -216,10 +217,10 @@ export const api = {
   newFolder: (parent: string) => invoke<string>("new_folder", { parent }),
   /** Puts the rows on the clipboard as files; `cut` marks them to be moved on paste. */
   copyItems: (set: number, ranges: RowRange[], cut: boolean) =>
-    invoke<number>("copy_items", { set, ranges, cut }),
+    writesClipboard(() => invoke<number>("copy_items", { set, ranges, cut })),
   canPaste: () => invoke<boolean>("can_paste"),
-  /** Pastes the clipboard's files and resolves to the names pasted. */
-  pasteItems: (destination: string) => invoke<string[]>("paste_items", { destination }),
+  /** Pastes the clipboard's files, once any copy on its way is done, and resolves to the names pasted. */
+  pasteItems: (destination: string) => afterClipboardWrite(() => invoke<string[]>("paste_items", { destination })),
   showProperties: (path: string) => invoke<void>("show_properties", { path }),
   onDirChanged: (handler: (path: string) => void) =>
     listen<string>("dir-changed", (event) => handler(event.payload)),

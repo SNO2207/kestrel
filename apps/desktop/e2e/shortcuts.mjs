@@ -60,10 +60,7 @@ const menu = page.locator(".menu");
 const menuItem = (label) => menu.locator(".menu-item").filter({ has: page.locator(".menu-label", { hasText: exactly(label) }) });
 const dialog = page.locator(".shortcut-dialog");
 const crumb = () => page.locator(".crumb").last().innerText();
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("shortcuts", () => page);
 
 /** What the sidebar is built from, read through the dev build's hook. */
 const hook = {

@@ -30,6 +30,8 @@ const logFile = join(out, `slot${slot}.log`);
 const tauri = join(app, "node_modules", "@tauri-apps", "cli", "tauri.js");
 /** First builds of the Rust backend can take several minutes; a release build longer. */
 const START_TIMEOUT_MS = 20 * 60 * 1000;
+/** How long a stopped slot's processes may take to let go of its ports and end. */
+const STOP_TIMEOUT_MS = 30 * 1000;
 
 async function windowIsUp() {
   try {
@@ -61,6 +63,37 @@ function kill(pid) {
   }
 }
 
+/** PowerShell for the ids of the slot's own kestrel.exe processes, of either build. */
+function slotProcessesScript() {
+  const exes = ["debug", "release"].map((profile) => join(targetDir, profile, "kestrel.exe").toLowerCase().replace(/'/g, "''"));
+  return `@(Get-CimInstance Win32_Process -Filter "Name = 'kestrel.exe'" | Where-Object { $_.ExecutablePath -and @('${exes.join("','")}') -contains $_.ExecutablePath.ToLower() } | Select-Object -ExpandProperty ProcessId)`;
+}
+
+/**
+ * Waits until nothing listens on the slot's ports and none of its processes is left. A process
+ * killed with `taskkill /F` is reported terminated at once but can hold its listening socket for
+ * seconds more: the web view's kept the debugging port 4 to 9 s after it was killed, so a `start`
+ * straight after `stop` (as the suites that restart the app do) found the ports in use. One
+ * PowerShell asks again and again, since starting one takes a second or more.
+ */
+function gone() {
+  const script = [
+    `$deadline = (Get-Date).AddMilliseconds(${STOP_TIMEOUT_MS})`,
+    "do {",
+    `  $held = @(Get-NetTCPConnection -LocalPort ${vitePort},${cdpPort} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)`,
+    `  $left = ${slotProcessesScript()}`,
+    "  if ($held.Count -eq 0 -and $left.Count -eq 0) { exit 0 }",
+    "  Start-Sleep -Milliseconds 100",
+    "} while ((Get-Date) -lt $deadline)",
+    `"ports ${vitePort}/${cdpPort} held by $($held -join ', '), kestrel.exe left: $($left -join ', ')"`,
+    "exit 1",
+  ].join("\n");
+  const waited = spawnSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8" });
+  if (waited.status !== 0) {
+    throw new Error(`slot ${slot} is still not stopped ${STOP_TIMEOUT_MS / 1000} s after it was killed: ${waited.stdout.trim()}${waited.stderr.trim()}`);
+  }
+}
+
 async function stop() {
   if (existsSync(pidFile)) {
     kill(Number(readFileSync(pidFile, "utf8")));
@@ -69,12 +102,9 @@ async function stop() {
   // The app outlives its launcher if the launcher was killed first, so also stop whatever
   // still holds this slot's ports: the dev server and the web view (whose parent is the app).
   for (const pid of portOwners([vitePort, cdpPort])) kill(pid);
-  // Either build of the slot, whichever mode started it.
-  const exes = ["debug", "release"].map((profile) => join(targetDir, profile, "kestrel.exe").toLowerCase().replace(/'/g, "''"));
-  const script = `Get-CimInstance Win32_Process -Filter "Name = 'kestrel.exe'" | Where-Object { $_.ExecutablePath -and @('${exes.join("','")}') -contains $_.ExecutablePath.ToLower() } | Select-Object -ExpandProperty ProcessId`;
-  for (const pid of execFileSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8" }).split(/\s+/).filter(Boolean)) {
-    kill(Number(pid));
-  }
+  const left = execFileSync("powershell", ["-NoProfile", "-Command", slotProcessesScript()], { encoding: "utf8" });
+  for (const pid of left.split(/\s+/).filter(Boolean)) kill(Number(pid));
+  gone();
   console.log(`slot ${slot} stopped`);
 }
 

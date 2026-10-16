@@ -60,10 +60,7 @@ const viewIs = (mode) => panel.locator(`.filelist[data-view="${mode}"]`).waitFor
 const menu = page.locator(".menu");
 const menuLabels = () => menu.locator(".menu-label").allTextContents();
 const notice = (text) => page.locator(".notice span", { hasText: text }).waitFor({ timeout: 15_000 });
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("integration", () => page);
 
 /** Calls a backend command, as the app's own code does. */
 const invoke = (command, args = {}) =>

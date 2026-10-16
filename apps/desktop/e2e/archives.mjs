@@ -210,10 +210,7 @@ const row = (name) => panel.locator(".row").filter({ has: page.locator(".label",
 const selectedNames = () => panel.locator(".row.selected .label").allTextContents();
 const crumbs = () => page.locator(".crumb").allTextContents();
 const expectNotice = (text) => page.locator(".notice span", { hasText: text }).waitFor({ timeout: 20_000 });
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("archives", () => page);
 
 /** Captures the window through the debugging protocol, which leaves open menus open. */
 async function capture(name) {

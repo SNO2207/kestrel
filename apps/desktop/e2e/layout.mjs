@@ -101,18 +101,7 @@ const notice = (text) => page.locator(".notice span", { hasText: text }).waitFor
 /** The open menu; a function, since the page changes when the app restarts. */
 const menu = () => page.locator(".menu").first();
 const menuItem = (label, within = page) => within.locator(".menu-item").filter({ has: page.locator(".menu-label", { hasText: exactly(label) }) }).first();
-const step = async (title, run) => {
-  try {
-    await run();
-  } catch (error) {
-    // What the window looked like when the step failed, to see why.
-    const { data } = await session.send("Page.captureScreenshot", { format: "png" }).catch(() => ({ data: "" }));
-    if (data) writeFileSync(join(out, "failed-step.png"), Buffer.from(data, "base64"));
-    console.log(`FAILED  ${title}`);
-    throw error;
-  }
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("layout", () => page);
 
 const hook = {
   keys: (keys) => page.evaluate((keys) => window.__kestrelDragDrop.keys(keys ?? undefined), keys ?? null),

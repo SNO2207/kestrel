@@ -68,17 +68,7 @@ const menuItem = (label) => menu.locator(".menu-item").filter({ has: page.locato
 const notice = (text) => page.locator(".notice span", { hasText: text }).waitFor({ timeout: 15_000 });
 const comparable = (path) => path.toLowerCase().replace(/\\+$/, "");
 
-const step = async (title, run) => {
-  try {
-    await run();
-  } catch (error) {
-    const { data } = await session.send("Page.captureScreenshot", { format: "png" }).catch(() => ({ data: "" }));
-    if (data) writeFileSync(join(out, "failed-step.png"), Buffer.from(data, "base64"));
-    console.log(`FAILED  ${title}`);
-    throw error;
-  }
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("navigation", () => page);
 
 async function eventually(check, timeout = 15_000) {
   const deadline = Date.now() + timeout;

@@ -372,18 +372,7 @@ async function expectContent(scope, name) {
 }
 
 /** Runs one check. A check that hangs fails after a while, so the clean-up below still runs. */
-const step = async (title, run, limit = 240_000) => {
-  let timer;
-  const hung = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timed out: ${title}`)), limit);
-  });
-  try {
-    await Promise.race([run(), hung]);
-  } finally {
-    clearTimeout(timer);
-  }
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("preview", () => page, { limit: 240_000 });
 
 /** The order the list shows the sandbox in: folders first, then by name. */
 const ORDER = ["sub", "clip.webm", "data.json", "doc.pdf", "drawing.svg", "huge.png", "main.rs", "notes.txt", "page.html", "photo.png", "readme.md", "tone.wav"];

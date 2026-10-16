@@ -29,10 +29,7 @@ mkdirSync(sandbox);
 for (const name of ["one.txt", "two.txt", "three.txt"]) writeFileSync(join(sandbox, name), name);
 const onDisk = (name) => existsSync(join(sandbox, name));
 
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("undo-restart", () => page);
 
 let browser;
 let page;

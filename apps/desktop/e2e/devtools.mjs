@@ -70,11 +70,7 @@ const pane = page.locator(".terminal-pane:not([hidden])");
 const termTabs = page.locator(".terminal-tab");
 const tabs = () => page.evaluate(() => window.__kestrelTerminal.tabs());
 const text = (key) => page.evaluate((key) => window.__kestrelTerminal.text(key), key);
-const step = async (title, run) => {
-  const started = Date.now();
-  await run();
-  console.log(`ok  ${title} (${Date.now() - started} ms)`);
-};
+const step = (await import("./steps.mjs")).stepper("devtools", () => page, { timed: true });
 
 async function shotBoth(name) {
   for (const scheme of ["dark", "light"]) {
@@ -286,22 +282,29 @@ try {
     await page.keyboard.type(`echo '${needle}'`);
     await page.keyboard.press("Enter");
     await waitForText(first, needle, 2);
-    // The printed line (not the command line, which quotes it): where xterm drew it.
-    const point = await page.evaluate((path) => {
-      const rows = [...document.querySelectorAll(".terminal-host.shown .xterm-rows > div")];
-      const line = rows.filter((row) => row.textContent.trim() === path).at(-1);
-      if (!line) return null;
-      const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
-      const range = document.createRange();
-      let node = walker.nextNode();
-      while (node && !node.textContent.includes("needle")) node = walker.nextNode();
-      if (!node) return null;
-      const at = node.textContent.indexOf("needle");
-      range.setStart(node, at);
-      range.setEnd(node, at + 1);
-      const box = range.getBoundingClientRect();
-      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
-    }, needle);
+    // The printed line (not the command line, which quotes it): where xterm drew it. The text is
+    // in the terminal's buffer before xterm draws it, on a later frame, so this waits for the row.
+    const point = await (
+      await page.waitForFunction(
+        (path) => {
+          const rows = [...document.querySelectorAll(".terminal-host.shown .xterm-rows > div")];
+          const line = rows.filter((row) => row.textContent.trim() === path).at(-1);
+          if (!line) return null;
+          const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+          const range = document.createRange();
+          let node = walker.nextNode();
+          while (node && !node.textContent.includes("needle")) node = walker.nextNode();
+          if (!node) return null;
+          const at = node.textContent.indexOf("needle");
+          range.setStart(node, at);
+          range.setEnd(node, at + 1);
+          const box = range.getBoundingClientRect();
+          return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+        },
+        needle,
+        { timeout: 10_000 },
+      )
+    ).jsonValue();
     assert(point, "the printed path is on screen");
     // Hovering makes it a link once the backend has said the file is there (the terminal's box
     // then says what a click does); the pointer is nudged until it has.

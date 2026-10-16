@@ -154,11 +154,7 @@ const state = () => invoke("semantic_state");
 const panel = page.locator(".tab-panel.active");
 const names = () => panel.locator(".row .label").allTextContents();
 const search = page.locator(".searchbox input");
-const step = async (title, run) => {
-  const started = Date.now();
-  await run();
-  console.log(`ok  ${title} (${Date.now() - started} ms)`);
-};
+const step = (await import("./steps.mjs")).stepper("semantic", () => page, { timed: true });
 
 /** Captured through the debugging protocol, in both themes. */
 async function shotBoth(name) {

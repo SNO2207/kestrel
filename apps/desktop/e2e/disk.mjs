@@ -104,11 +104,7 @@ const hub = page.locator(".disk-hub");
 const panel = page.locator(".tab-panel.active");
 const bigNumber = hub.locator(".disk-totals .disk-big-number");
 const currentCrumb = hub.locator(".disk-crumb[aria-current]");
-const step = async (title, run) => {
-  const started = Date.now();
-  await run();
-  console.log(`ok  ${title} (${Date.now() - started} ms)`);
-};
+const step = (await import("./steps.mjs")).stepper("disk", () => page, { timed: true });
 
 /** Captured through the debugging protocol, in both themes. */
 async function shotBoth(name, prepare = async () => {}) {

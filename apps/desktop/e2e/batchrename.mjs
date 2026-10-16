@@ -37,10 +37,7 @@ const field = (label) => dialog.locator(".dialog-field", { hasText: label }).loc
 const summary = dialog.locator(".rename-summary");
 const renameButton = dialog.locator(".dialog-button.primary");
 const newNames = () => dialog.locator(".rename-new-name").allTextContents();
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("batchrename", () => page);
 
 /** Waits until the preview's new names are exactly `names`. */
 async function expectPreview(names) {

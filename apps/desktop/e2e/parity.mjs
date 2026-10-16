@@ -68,10 +68,7 @@ const menuItem = (label) => menu.locator(".menu-item").filter({ has: page.locato
 const command = (label) => page.locator(`.commandbar .command[aria-label="${label}"]`);
 const selectedCount = () => page.evaluate(() => document.querySelectorAll(".tab-panel.active .row.selected").length);
 const onDisk = (...parts) => existsSync(join(sandbox, ...parts));
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("parity", () => page);
 
 /** Calls a backend command, as the app's own code does. */
 const invoke = (command, args = {}, target = page) =>
@@ -523,7 +520,13 @@ try {
   await step("a search result's menu has Open file location", async () => {
     await page.keyboard.press("Control+f");
     await page.keyboard.type(`alpha in:${sandbox}`);
-    await panel.locator(".row .label", { hasText: exactly("alpha.txt") }).waitFor();
+    // Each key runs a search and the list shows each in turn: "alpha" alone finds alpha.txt in
+    // any other scratch folder too. The rows are read once they are the whole query's, all here.
+    await page.waitForFunction((folder) => {
+      const rows = [...document.querySelectorAll(".tab-panel.active .filelist.results .row")];
+      const inside = rows.every((row) => row.getAttribute("data-path")?.toLowerCase().startsWith(folder));
+      return inside && rows.some((row) => row.querySelector(".label")?.textContent === "alpha.txt");
+    }, `${sandbox.toLowerCase()}\\`);
     await row("alpha.txt").click({ button: "right" });
     await menuItem("Open file location").click();
     await page.locator(".crumb", { hasText: exactly(basename(sandbox)) }).waitFor();

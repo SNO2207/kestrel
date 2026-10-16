@@ -148,11 +148,7 @@ await page.reload();
 
 const panel = page.locator(".tab-panel.active");
 const searchBox = page.locator(".searchbox input");
-const step = async (title, run) => {
-  const started = Date.now();
-  await run();
-  console.log(`ok  ${title} (${Date.now() - started} ms)`);
-};
+const step = (await import("./steps.mjs")).stepper("search", () => page, { timed: true });
 
 /** Captured through the debugging protocol, in both themes. */
 async function shotBoth(name, prepare = async () => {}) {
@@ -371,7 +367,9 @@ try {
     assert.equal(await page.locator(".search-inside").getAttribute("aria-pressed"), "true");
     // Settings reach local storage when they change; a reload stands in for a restart.
     await page.reload();
-    await page.locator(".search-inside").waitFor();
+    // The toolbar is there at once, the first tab a moment later: until then the window's keys
+    // (the next step's Ctrl+L) have no tab to act on and are dropped.
+    await panel.locator(".row").first().waitFor();
     assert.equal(await page.locator(".search-inside").getAttribute("aria-pressed"), "false");
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("kestrel.search-options") ?? "{}"));
     assert.equal(stored.inside, false, "the mode itself is not remembered");

@@ -8,11 +8,13 @@
 // Start the app as described in smoke.mjs, then run: node e2e/fileops.mjs
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connectToKestrel } from "./connect.mjs";
+import { release } from "./slot.mjs";
 
 const out = join(dirname(fileURLToPath(import.meta.url)), "out");
 mkdirSync(out, { recursive: true });
@@ -31,10 +33,7 @@ const panel = page.locator(".tab-panel.active");
 const list = panel.locator(".list-viewport");
 const row = (name) => panel.locator(".row").filter({ has: page.locator(".label", { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }) });
 const selectedNames = () => panel.locator(".row.selected .label").allTextContents();
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("fileops", () => page);
 
 try {
   await step("the scratch folder opens", async () => {
@@ -180,6 +179,84 @@ try {
     assert(onDisk("beta - Copy.txt") && onDisk("beta.txt"));
     assert.deepEqual(await selectedNames(), ["beta - Copy.txt"]);
   });
+
+  if (!release) {
+    await step("Ctrl+V while the copy before it is still on its way pastes what was copied", async () => {
+      // Commands run on a pool of threads, so a paste could be handled before the copy sent just
+      // before it had put its files on the clipboard, and paste what was there before. Here the
+      // copy is held on its way (`__kestrelClipboard.hold`, development builds), so the paste
+      // always comes while it is.
+      const clip = join(sandbox, "Clip");
+      mkdirSync(clip);
+      writeFileSync(join(clip, "earlier.txt"), "earlier");
+      writeFileSync(join(clip, "later.txt"), "later");
+      await row("Clip").dblclick();
+      await page.locator(".crumb").last().filter({ hasText: /^Clip$/ }).waitFor();
+      await row("later.txt").waitFor();
+      // What the clipboard holds before: earlier.txt.
+      await row("earlier.txt").click();
+      await page.keyboard.press("Control+c");
+      await page.waitForFunction(() => window.__kestrelClipboard.writing() === 0);
+      await page.evaluate(() => window.__kestrelClipboard.hold(true));
+      try {
+        await row("later.txt").click();
+        await page.keyboard.press("Control+c");
+        await page.waitForFunction(() => window.__kestrelClipboard.writing() === 1);
+        await page.keyboard.press("Control+v");
+        // Either the paste waits for the copy, or it has gone ahead and pasted earlier.txt.
+        await page.waitForFunction(
+          () =>
+            window.__kestrelClipboard.waiting() === 1 ||
+            [...document.querySelectorAll(".tab-panel.active .row .label")].some((label) => label.textContent === "earlier - Copy.txt"),
+        );
+      } finally {
+        await page.evaluate(() => window.__kestrelClipboard.hold(false));
+      }
+      await panel.locator(".row .label", { hasText: / - Copy\.txt$/ }).first().waitFor();
+      assert.deepEqual(readdirSync(clip).sort(), ["earlier.txt", "later - Copy.txt", "later.txt"], "the paste brings what was copied last");
+      await row("later - Copy.txt").waitFor();
+      assert.deepEqual(await selectedNames(), ["later - Copy.txt"]);
+      await page.keyboard.press("Alt+ArrowUp");
+      await row("Clip").waitFor();
+      await row("gamma.txt").waitFor();
+    });
+
+    await step("a paste that ends while the tab is on its way elsewhere doesn't take the tab back", async () => {
+      // An operation refreshes its tab when it ends. One that ended while the tab was on its way
+      // to another folder (Up pressed just after a paste, in a full run) listed the folder being
+      // left again, and the tab went back into it. Here the way elsewhere is held: into a
+      // compressed tar, whose reading the backend holds (`archive_dev_hold`), while the paste,
+      // held behind its copy, is let go.
+      const invoke = (command, args) => page.evaluate(([name, values]) => window.__TAURI_INTERNALS__.invoke(name, values), [command, args]);
+      const tar = join(sandbox, "held.tar.gz");
+      execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe"), ["-czf", tar, "-C", sandbox, "during.txt"]);
+      await row("held.tar.gz").waitFor();
+      const pastedBefore = await page.evaluate(() => window.__kestrelClipboard.pasted());
+      await invoke("archive_dev_hold", { path: tar, hold: true });
+      await page.evaluate(() => window.__kestrelClipboard.hold(true));
+      try {
+        await row("during.txt").click();
+        await page.keyboard.press("Control+c");
+        await page.keyboard.press("Control+v");
+        await page.waitForFunction(() => window.__kestrelClipboard.waiting() === 1);
+        // On its way into the archive, which waits for its turn to be read.
+        await row("held.tar.gz").dblclick();
+        await page.evaluate(() => window.__kestrelClipboard.hold(false));
+        await page.waitForFunction((before) => window.__kestrelClipboard.pasted() > before, pastedBefore);
+        assert(onDisk("during - Copy.txt"), "the paste was made");
+      } finally {
+        await page.evaluate(() => window.__kestrelClipboard.hold(false));
+        await invoke("archive_dev_hold", { path: tar, hold: false });
+      }
+      await page.locator(".crumb").last().filter({ hasText: /^held\.tar\.gz$/ }).waitFor({ timeout: 10_000 });
+      await row("during.txt").waitFor();
+      await page.keyboard.press("Alt+ArrowUp");
+      await row("held.tar.gz").waitFor();
+      await row("during - Copy.txt").waitFor();
+    });
+  } else {
+    console.log("--  Ctrl+V while a copy is on its way, and a paste ending on the way elsewhere, skipped (a release build can't hold them)");
+  }
 
   await step("cut and paste moves a file into a folder", async () => {
     await row("gamma.txt").click();

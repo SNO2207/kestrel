@@ -39,10 +39,7 @@ const search = page.locator(".searchbox input");
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const row = (name) => panel.locator(".row").filter({ has: page.locator(".label", { hasText: new RegExp(`^${escape(name)}$`) }) });
 const message = "Your account can't open this folder";
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("locked", () => page);
 
 /** Searches for the probe file, again and again until the index has caught up with it. */
 async function findProbe(timeout = 20_000) {

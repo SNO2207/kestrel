@@ -336,13 +336,23 @@ function showLocation(tabId: number, address: string, mode: NavigateMode) {
   if (previousBase !== undefined && previousBase !== previous) void api.releaseSet(previousBase);
 }
 
+/**
+ * Where each tab is on its way to, from a navigation until it is shown (or fails): what a refresh
+ * meanwhile lists. The tab's path is still the folder it is leaving until then.
+ */
+const heading = new Map<number, string>();
+
 /** Shows `path` in the tab. `push` records it in the tab's history; `keep` leaves history alone. */
 export function navigate(tabId: number, path: string, mode: NavigateMode = "push") {
   // A listing still running for somewhere else is no longer wanted.
   cancelListing(tabId, path);
+  heading.set(tabId, path);
+  const arrived = () => {
+    if (heading.get(tabId) === path) heading.delete(tabId);
+  };
   // The search text as it was asked to leave; text typed while the folder is listed is kept.
   const leaving = find(tabId)?.query;
-  enqueue(tabId, async () => {
+  const job = async () => {
     const tab = find(tabId);
     if (!tab) return;
     const location = resolveLocation(path);
@@ -383,7 +393,8 @@ export function navigate(tabId: number, path: string, mode: NavigateMode = "push
         tab.failed = samePath(path, tab.path) ? null : path;
       });
     }
-  });
+  };
+  enqueue(tabId, () => job().finally(arrived));
 }
 
 /**
@@ -462,8 +473,13 @@ export function openSearch(tabId: number, query: string, scope: string | null) {
 export function refresh(tabId: number) {
   const tab = find(tabId);
   if (!tab) return;
+  // A job still waiting to start lists the tab afresh anyway, and a refresh put in its place
+  // would drop it (the queue keeps one): a navigation elsewhere, say, and its history.
+  if (queues.get(tabId)?.next) return;
   if (tab.query.trim() !== "") runSearch(tabId, true);
-  else navigate(tabId, tab.path, "keep");
+  // A navigation on its way elsewhere is listed again, not the folder it is leaving: a paste that
+  // finished just after Up was pressed took the tab back down into the folder.
+  else navigate(tabId, (queues.get(tabId)?.running && heading.get(tabId)) || tab.path, "keep");
 }
 
 export function setEverywhere(value: boolean) {
@@ -865,6 +881,7 @@ function forget(tabId: number) {
   setTabs((all) => all.filter((each) => each.id !== tabId));
   cancelListing(tabId);
   queues.delete(tabId);
+  heading.delete(tabId);
   selections.delete(tabId);
   retiring.delete(tabId);
   for (const set of new Set(sets)) if (set !== undefined) void api.releaseSet(set);

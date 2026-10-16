@@ -48,11 +48,7 @@ const exactly = (text) => new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\
 const row = (name) => panel.locator(".row").filter({ has: page.locator(".label", { hasText: exactly(name) }) });
 const menuItem = (label) => menu.locator(".menu-item").filter({ has: page.locator(".menu-label", { hasText: exactly(label) }) });
 const names = async () => (await panel.locator(".row .label").allTextContents()).sort();
-const step = async (title, run) => {
-  const started = Date.now();
-  await run();
-  console.log(`ok  ${title} (${Date.now() - started} ms)`);
-};
+const step = (await import("./steps.mjs")).stepper("media", () => page, { timed: true });
 
 /** Calls a backend command, as the app's own code does. */
 const invoke = (command, args = {}) => page.evaluate(([command, args]) => window.__TAURI_INTERNALS__.invoke(command, args), [command, args]);

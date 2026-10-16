@@ -59,10 +59,7 @@ const row = (name) => panel.locator(".row").filter({ has: page.locator(".label",
 const crumbs = () => page.locator(".crumb").allTextContents();
 const lastCrumb = async () => (await crumbs()).at(-1);
 const tabTitle = () => page.locator(".tab.active .tab-title").textContent();
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("places", () => page);
 const invoke = (command, args = {}) =>
   page.evaluate(([command, args]) => window.__TAURI_INTERNALS__.invoke(command, args), [command, args]);
 const hook = {
