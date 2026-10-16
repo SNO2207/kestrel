@@ -1107,6 +1107,7 @@ extracts a zip through the archive feature's dialog (restoring its "Show extract
 preference), and records Open in Terminal's launch through the projects feature's hook instead
 of starting it. "Choose a folder…" (Windows' folder picker) and a real WSL distribution (its
 `\\wsl.localhost` share, Linux permissions over it, and its shell) are manual checks.
+
 `devtools.mjs` runs the default shell in a scratch folder (echo, "cd to this folder", a printed
 path clicked open, a second tab running `ping 127.0.0.1`, a tab from a folder's menu, a terminal
 in a second window that it closes), and checks through Windows that no process any terminal
