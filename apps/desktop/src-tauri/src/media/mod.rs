@@ -132,6 +132,17 @@ impl Media {
         inner.defaults.get_or_insert_with(default_scopes).clone()
     }
 
+    /// Whether the library reads the folder at `path`: it is one of the scopes or beneath one.
+    /// Searches limited to a folder it doesn't read can't ask it about `taken:`, so they read
+    /// the photos instead (search/).
+    pub fn covers(&self, path: &str) -> bool {
+        let path = kestrel_index::fold(path.trim_end_matches('\\'));
+        self.scopes().iter().any(|scope| {
+            let scope = kestrel_index::fold(scope.trim_end_matches('\\'));
+            path == scope || path.strip_prefix(scope.as_str()).is_some_and(|rest| rest.starts_with('\\'))
+        })
+    }
+
     fn kick(&self) {
         self.inner.lock().kicks += 1;
         self.wake.notify_all();

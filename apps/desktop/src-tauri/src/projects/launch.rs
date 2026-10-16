@@ -89,6 +89,11 @@ fn terminal() -> Option<PathBuf> {
     alias.filter(|p| p.exists()).or_else(|| on_path("wt"))
 }
 
+/// Windows Terminal, when installed, for other features' launches (WSL's shell, `wsl.rs`).
+pub(crate) fn terminal_path() -> Option<PathBuf> {
+    terminal()
+}
+
 /// VS Code's own executable (not its `code.cmd` wrapper, which would flash a console).
 fn vscode() -> Option<PathBuf> {
     let mut candidates = Vec::new();

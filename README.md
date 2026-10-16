@@ -10,7 +10,9 @@ them. AI search finds photos and videos by describing them ("dog on a sofa"), on
 card, once you download a model. Around it sits what File Explorer does: Home, This PC and the Recycle
 Bin, tabs and a second pane, Group by, columns and a filter box, the command bar and details
 pane, archives that open like folders, and more windows (`docs/explorer-parity.md` lists
-Explorer's features one by one).
+Explorer's features one by one). Searches also look inside files, read plain phrases ("videos
+from last month over 1 GB"), and a page sorts out what arrived in Downloads; WSL's Linux
+distributions browse like drives.
 
 *Kestrel is a working name.*
 
@@ -20,7 +22,8 @@ Explorer's features one by one).
 |---|---|
 | `crates/kestrel-index` | The index: struct-of-arrays store, crawler, MFT builder, journal follower, snapshots |
 | `crates/kestrel-ntfs` | NTFS access: change journal reader, MFT record parser, raw volume reader |
-| `crates/kestrel-query` | Query language, parallel search, sorting |
+| `crates/kestrel-query` | Query language, parallel search, sorting, and phrases read into clauses (`natural.rs`) |
+| `crates/kestrel-content` | Search inside files with ripgrep's crates: encodings, binary files, `.gitignore`, cancellation |
 | `crates/kestrel-analyze` | Disk usage from the index: treemap layout, breakdowns by type and age, largest items, growth |
 | `crates/kestrel-cleanup` | Cleanup recommendations and the duplicate finder, over the index |
 | `crates/kestrel-media` | The media library: the background pass over photos and videos (facts, thumbnails, text), through Windows' own property system, WIC, Media Foundation and OCR |
@@ -121,6 +124,38 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | `~a dog on a sofa` | photos and videos that look like it: the whole query is a description (AI search) |
 | `like:"a dog on a sofa"` | the same, as a clause that combines with others (`like:receipt dm:2025`) |
 | `like:"C:\Photos\dog.jpg"` | photos and videos that look like this picture (what Find similar searches for) |
+| `content:TODO`, `content:"fn main"` | the file contains this text (read from the files; see below) |
+
+### Phrases
+
+Plain phrases are read into clauses, without any model: "videos from last month over 1 GB" is
+`type:video dm:lastmonth size:>1gb`, "photos taken in 2023" `type:image taken:2023`, "pdfs
+modified this week" `ext:pdf dm:thisweek`, "large files in downloads" `size:>100mb type:file
+in:"…\Downloads"`, "screenshots from yesterday" `type:image screenshot dm:yesterday` and "code
+changed today in kestrel" `type:code dm:today in:"…\Kestrel"` (projects by name, known folders
+by theirs). Kinds ("pdfs", "word documents", "rust files"), dates after a verb or preposition
+("since march", "3 days ago", "in the past 2 weeks", "on monday", "older than 90 days"), sizes
+("under 10 mb", "between 1 and 2 gb", "huge videos"), places and contents ("containing invoice")
+are understood; other words stay words of the name. A kind word alone ("videos") is searched as
+a name. Above the results, chips show what the text was read as: click one to edit its clause,
+× to remove it, or "Search the words as typed" to take the text literally. Typed clauses get
+chips too.
+
+### Inside files
+
+The page button in the search box (or `content:` in any search) looks inside files: what is
+typed is the text to find, and any filter clauses choose the files (`TODO ext:rs`). With no
+other clause it reads every file in the folder on screen, walked from disk; with clauses, the
+files those clauses find (the results a name search would show), in this folder or everywhere as
+the scope button says. Matches arrive in the results list as they are found, each file with its
+first matching line, the match marked, and how many more lines match, in every view; a click on
+the line opens the preview pane there, the line and match marked. The options button sets a
+regular expression, Match case, Whole words, "Skip what .gitignore ignores" (on by default; only
+inside repositories) and the largest file read (50 MB by default). Every keystroke starts the
+search again; Stop keeps what was found. UTF-8 and UTF-16 with a byte-order mark are read;
+binary files (a NUL byte, or a type that never holds text) are skipped; files only in the cloud
+(OneDrive's online-only files) are never opened, so nothing is downloaded. The line under the
+chips says how many files were read and what was skipped.
 
 ## Keyboard
 
@@ -781,6 +816,33 @@ out. A renamed or moved photo is known by its file id and not read again; an edi
 **Pause** stops it. The vectors are kept per model in the data folder's `semantic` folder, a
 memory-mapped file searched in a few milliseconds (200,000 vectors: 5 ms for Fast's 768
 dimensions, 7 ms for Best's 1,152, `kestrel-cli vector-bench`).
+## New downloads
+
+"New downloads" at the top of the sidebar (or `New downloads` in the address bar or the palette)
+is a page of what arrived in the Downloads folder since you last looked, grouped as installers,
+archives, documents, images, videos and other, newest first; the sidebar's entry counts it with a
+badge, and the count follows the folder as files arrive. Partial downloads (`.crdownload`,
+`.part`...) and hidden files are left out. Each item offers Open, Extract… for archives (the
+archive feature's own dialog), Move to a suggested folder, Other places… (more suggestions, or
+"Choose a folder…") and Recycle; tick several to move or recycle them at once. Suggestions come
+first from where you moved similar files before (by extension, the first word of the name, and
+kind), then the folder for the kind (Documents, Pictures, Videos, Music), then the projects you
+open most. Moves and recycling go through the shell's copy engine into the undo history, so
+Ctrl+Z puts them back; nothing happens until you click. Looking at the page clears the badge;
+the page keeps showing what was new when you opened it, and "Everything" lists the whole folder.
+Where things went is kept in `kestrel.db`.
+
+## WSL
+
+When WSL is installed, This PC and the sidebar list its Linux distributions (read from the
+registry, which starts nothing), each opening `\\wsl.localhost\<distro>` (`\\wsl$` on Windows
+before build 21354). Their folders are listed by Kestrel's own crawler (the index doesn't hold
+them), the Linux way: names starting with a dot are hidden unless "Show hidden items" is on,
+names holding characters Windows forbids show as Linux spells them, and the Attributes column
+shows Linux permissions (`-rw-r--r--`) where WSL's share gives them. Up from a distribution goes
+to This PC, whose crumb leads its address. Open in Terminal there opens the distribution's shell
+(`wsl.exe -d <distro> --cd <folder>`, in Windows Terminal when installed). Without WSL nothing
+about it shows.
 
 ## Testing
 
@@ -829,6 +891,7 @@ node e2e/cleanup.mjs        # cleanup recommendations and duplicates, in a scrat
 node e2e/navigation.mjs     # locations and archives in either pane, history, tabs, a window, the palette
 node e2e/media.mjs          # the media library, its searches and columns, the Gallery, pausing
 node e2e/semantic.mjs       # AI search on a tiny model: the page, Describe, the slider, video moments, Find similar, downloads
+node e2e/search.mjs         # inside files, phrases and chips, New downloads, WSL, in a scratch folder
 node e2e/dev.mjs stop
 ```
 
@@ -838,7 +901,7 @@ instead: it runs `tauri build` (no installer) with the slot's identity and start
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
 `shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`, `integration.mjs`,
 `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs`, `places.mjs`, `layout.mjs`,
-`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs`, `navigation.mjs`, `media.mjs` and `semantic.mjs` need a dev build,
+`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs`, `navigation.mjs`, `media.mjs`, `semantic.mjs` and `search.mjs` need a dev build,
 whose test hooks they use. A release build has the Windows menu's test hook only when started with
 `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
@@ -950,6 +1013,7 @@ pass's keys (a rename is not read again, a change is), that online-only files ar
 (held open with no sharing, so any attempt would fail and be recorded), pausing, waiting while a
 full-screen app runs (simulated), and that items on screen are read first. A real full-screen
 game, battery saver and Windows' folder picker ("Browse…") are manual checks.
+
 `semantic.mjs` never downloads a real model and never contacts Hugging Face. A development hook
 installs a tiny test model, written by `kestrel_embed::onnx` with SigLIP 2's input and output names
 and shapes, as the Fast model "as if downloaded"; another points the describing at a scratch folder
@@ -961,3 +1025,17 @@ and drives the Download button against a web server it starts on 127.0.0.1 (canc
 the folders, the slider and the window's settings back at the end. A test instance (one with its own
 data folder, as every slot but 0 has) downloads only from this computer, whatever it is told. The
 real models' golden checks (their self-test) therefore run only when the owner first downloads one.
+
+`search.mjs` needs a dev build and works in a scratch folder named `kestrel-test-e2e-search-*`:
+files to search inside (UTF-8, UTF-16 with a byte-order mark, a binary file, a repository whose
+`.gitignore` leaves a folder out), a small project named through a development hook, two photos
+whose dates taken Windows PowerShell's System.Drawing writes, folders standing in for Downloads,
+Documents, Pictures, Videos and Music (`search_dev_places`), and one standing in for a WSL
+distribution (`wsl_dev_distros`); no distribution is ever started, and the owner's own Downloads
+is never read. A hook slows each file a little (`search_dev_slow`) so results can be seen
+arriving and Stop pressed part way. It moves a download to the Documents stand-in and back with
+Undo, passes two small files named `kestrel-test-*` through the Recycle Bin and back with Undo,
+extracts a zip through the archive feature's dialog (restoring its "Show extracted files"
+preference), and records Open in Terminal's launch through the projects feature's hook instead
+of starting it. "Choose a folder…" (Windows' folder picker) and a real WSL distribution (its
+`\\wsl.localhost` share, Linux permissions over it, and its shell) are manual checks.

@@ -9,6 +9,7 @@ import { createSignal } from "solid-js";
 
 import type { Listing, Row, SortSpec } from "./api";
 import type { GroupSpec } from "./layoutApi";
+import { linuxName } from "./linuxNames";
 
 export type ViewMode = "xl" | "large" | "medium" | "small" | "list" | "details" | "tiles" | "content";
 
@@ -175,7 +176,9 @@ export function setOption(name: keyof Options, value: boolean) {
 
 /** A row's name as displayed: without its extension when extensions are hidden. */
 export function displayName(row: Pick<Row, "name" | "dir">, withExtension: boolean): string {
-  if (withExtension || row.dir) return row.name;
-  const dot = row.name.lastIndexOf(".");
-  return dot > 0 ? row.name.slice(0, dot) : row.name;
+  // Names from WSL's Linux distributions as Linux spells them (lib/linuxNames.ts).
+  const name = linuxName(row.name);
+  if (withExtension || row.dir) return name;
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(0, dot) : name;
 }

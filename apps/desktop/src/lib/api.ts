@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { showProtected } from "./folderOptions";
+import type { Hit } from "./searchApi";
 import { showHidden } from "./views";
 
 /** The last four sort by the details view's extra columns (lib/columns.ts). */
@@ -48,6 +49,8 @@ export interface Row {
   alloc: number;
   /** Windows file attribute bits: the Attributes column, and a cloud file's sync state (`lib/syncStatus.ts`). */
   attrs: number;
+  /** For a result of a search inside files, its first matching line (`lib/searchApi.ts`). */
+  hit?: Hit;
 }
 
 export interface IndexStatus {

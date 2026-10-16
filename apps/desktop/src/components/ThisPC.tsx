@@ -30,7 +30,9 @@ import {
   usedShare,
 } from "../places";
 import { isDropPlace } from "../dragdrop";
+import { openInTerminal } from "../parity";
 import { pinPaths } from "../shortcuts";
+import { wslDistros } from "../wsl";
 import { notify } from "../state";
 import type { MenuEntry } from "./ContextMenu";
 import { Icon, hasIcon, type IconName } from "./Icon";
@@ -88,7 +90,11 @@ export function ThisPcPage(props: LocationPageProps) {
       .drives.filter((drive) => drive.kind === "network")
       .map((drive) => ({ kind: "drive", drive, path: drive.path, name: drive.name })),
   );
-  const tiles = createMemo(() => [...folders(), ...local(), ...network()]);
+  // WSL's Linux distributions, when installed (wsl.ts).
+  const linux = createMemo<Tile[]>(() =>
+    wslDistros().map((distro) => ({ kind: "folder", folder: { name: distro.name, kind: "linux", path: distro.path }, path: distro.path, name: distro.name })),
+  );
+  const tiles = createMemo(() => [...folders(), ...local(), ...network(), ...linux()]);
 
   // Read again whenever the page is shown or refreshed.
   createEffect(on(() => props.revision, () => void loadThisPc()));
@@ -140,6 +146,9 @@ export function ThisPcPage(props: LocationPageProps) {
       if (canAnalyse() || canEject(drive)) entries.push("separator");
       if (canAnalyse()) entries.push({ label: "Show disk usage", run: () => analyseDiskUsage(drive.path) });
       if (canEject(drive)) entries.push({ label: "Eject", run: () => void ejectDrive(drive) });
+    } else if (tile.folder.kind === "linux") {
+      // A distribution's shell opens in its root.
+      entries.push("separator", { label: "Open in Terminal", run: () => openInTerminal(tile.path) }, { label: "Pin to sidebar", run: () => void pinPaths([tile.path]) });
     } else {
       entries.push("separator", { label: "Pin to sidebar", run: () => void pinPaths([tile.path]) });
     }
@@ -304,6 +313,7 @@ export function ThisPcPage(props: LocationPageProps) {
       <Group title="Folders" label="Folders" tiles={folders()} />
       <Group title="Devices and drives" label="Devices and drives" tiles={local()} />
       <Group title="Network locations" label="Network locations" tiles={network()} />
+      <Group title="Linux" label="Linux" tiles={linux()} />
       <Show when={thisPcLoaded() && tiles().length === 0}>
         <p class="pc-empty">No drives found.</p>
       </Show>

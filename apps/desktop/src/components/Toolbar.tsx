@@ -24,6 +24,7 @@ import { PreviewToggle } from "./PreviewPane";
 import { SaveSearchButton } from "./SaveSearchButton";
 import { DescribeToggle } from "./DescribeToggle";
 import { boxText, describing, queryFor } from "../semantic";
+import { SearchOptionsButtons, searchPlaceholder } from "./SearchOptions";
 
 /** Lets the app's keyboard shortcuts focus the address and search fields. */
 export const focusTargets: { address?: () => void; search?: () => void } = {};
@@ -117,11 +118,7 @@ export function Toolbar(props: { focusList: () => void }) {
           ref={searchInput}
           aria-label="Search"
           placeholder={
-            describing()
-              ? "Describe a photo or video"
-              : everywhere() || locationOf(tab()?.path ?? "")
-                ? "Search everywhere"
-                : "Search this folder"
+            describing() ? "Describe a photo or video" : searchPlaceholder(everywhere() || !!locationOf(tab()?.path ?? ""))
           }
           spellcheck={false}
           // Describe mode (semantic.ts) sends what is typed as a description, `~` first.
@@ -138,6 +135,7 @@ export function Toolbar(props: { focusList: () => void }) {
             }
           }}
         />
+        <SearchOptionsButtons />
         <SaveSearchButton />
         <DescribeToggle focusSearch={() => searchInput?.focus()} />
         <button

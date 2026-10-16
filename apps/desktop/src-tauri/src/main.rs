@@ -29,14 +29,17 @@ mod projects;
 mod recycle;
 mod recyclebin;
 mod remote;
+mod search;
 mod semantic;
 mod shellmenu;
 mod shortcuts;
 mod thispc;
 mod thumbs;
+mod triage;
 mod undo;
 mod visibility;
 mod watch;
+mod wsl;
 
 use std::ptr::null;
 use std::sync::Arc;
@@ -99,13 +102,18 @@ fn list_dir(
             let _ = app.emit("dir-changed", changed);
         });
     }
+    // A folder in a WSL distribution is listed as Linux would show it (wsl.rs).
+    if let Some(listing) = wsl::list(&engine, &path, sort, visibility) {
+        return listing;
+    }
     engine.list_dir_with(&path, sort, visibility)
 }
 
 /// Runs a search. `tag:` clauses are resolved to the items carrying the tag, the media
 /// library's clauses (`width:`, `taken:`, `text:`...) to the items it knows them of, and
 /// descriptions (`like:`, or a query starting with `~`) to the photos and videos that look like
-/// them, which then come best first (semantic/search.rs).
+/// them, which then come best first (semantic/search.rs). The search box's searches take the
+/// same way through `search_run` (search/resolve.rs).
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 fn search(
@@ -119,15 +127,7 @@ fn search(
     show_protected: Option<bool>,
 ) -> Result<Listing, String> {
     let visibility = Visibility::from_request(show_hidden).with_protected(show_protected);
-    // The model runs before the index is held.
-    let mut described = semantic::search::prepare(&semantic, &query)?;
-    let listing = engine.search_ranked(&query, scope.as_deref(), sort, visibility, |query, index| {
-        shortcuts::tags::resolve(&db, query, index)?;
-        kestrel_media::query::resolve(&db, query, index)?;
-        described.resolve(query, index)
-    })?;
-    semantic.remember_moments(listing.set, described.take_moments());
-    Ok(listing)
+    search::resolve::index_search(&engine, &db, &semantic, &query, scope.as_deref(), sort, visibility)
 }
 
 /// Maps a selection from one result set to another showing the same files.
@@ -427,6 +427,8 @@ fn main() {
         .manage(palette)
         // This PC's drives, each asked about on a thread of its own (thispc.rs).
         .manage(Arc::new(thispc::Drives::default()))
+        // Searches inside files, one per tab (search/).
+        .manage(search::Searches::default())
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
             thumbs.handle(&request, responder)
@@ -652,6 +654,20 @@ fn main() {
             semantic::models::semantic_dev_install_tiny,
             semantic::models::semantic_dev_write_video,
             semantic::models::semantic_dev_downloads,
+            search::search_run,
+            search::search_cancel,
+            search::search_dev_places,
+            search::search_dev_slow,
+            triage::triage_list,
+            triage::triage_count,
+            triage::triage_mark_seen,
+            triage::triage_move,
+            triage::triage_recycle,
+            triage::triage_dev_seen,
+            triage::triage_dev_forget,
+            wsl::wsl_distros,
+            wsl::wsl_modes,
+            wsl::wsl_dev_distros,
         ]))
         .on_window_event(|window, event| {
             dragdrop::on_window_event(event);
@@ -693,6 +709,8 @@ fn main() {
                 let _ = late.emit("drive-details", drive);
             });
             foldertree::watch(app.handle().clone(), app.state::<Arc<Engine>>().inner().clone());
+            // The sidebar's count of new downloads follows the Downloads folder (triage.rs).
+            triage::watch(app.handle());
             let handle = app.handle().clone();
             let engine = app.state::<Arc<Engine>>().inner().clone();
             std::thread::Builder::new()

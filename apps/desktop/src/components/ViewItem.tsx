@@ -8,6 +8,7 @@ import { LOCKED_MESSAGE } from "../lib/access";
 import { displayName, type ViewMode } from "../lib/views";
 import type { GitBadge } from "../lib/projectsApi";
 import { GitGlyph } from "./GitGlyph";
+import { HitSnippet } from "./HitSnippet";
 import { LockGlyph } from "./LockGlyph";
 import { SyncGlyph } from "./SyncGlyph";
 import { TagDots } from "./TagDots";
@@ -73,7 +74,7 @@ export function ViewItem(props: {
       data-index={props.index}
       data-path={props.row?.path}
       data-folder={props.row?.dir ? "" : undefined}
-      title={props.row && !props.renaming ? (props.locked ? `${props.row.name}\n${LOCKED_MESSAGE}` : props.row.name) : undefined}
+      title={props.row && !props.renaming ? (props.locked ? `${props.row.name}\n${LOCKED_MESSAGE}` : hitTitle(props.row)) : undefined}
       onMouseDown={(event) => props.onMouseDown(event)}
       onDblClick={(event) => props.onDblClick(event)}
       onContextMenu={(event) => props.onContextMenu(event)}
@@ -128,6 +129,8 @@ export function ViewItem(props: {
               <Show when={props.mode === "content"}>
                 <span class="view-item-detail">{typeLabel(row())}</span>
               </Show>
+              {/* A search inside files' match, where the view has room for a line of it. */}
+              <Show when={SNIPPET_VIEWS.has(props.mode) && row().hit}>{(hit) => <HitSnippet hit={hit()} />}</Show>
             </span>
             <Show when={props.mode === "content"}>
               <ContentDetails row={row()} load={props.loadThumbs} />
@@ -174,6 +177,12 @@ function ContentDetails(props: { row: Row; load: boolean }) {
 }
 
 const typeLabel = (row: Row) => (row.dir ? "Folder" : row.ext ? `${row.ext.toUpperCase()} file` : "File");
+
+/** The views with room for a match's line under the name; the icon views show it on hover. */
+const SNIPPET_VIEWS = new Set<ViewMode>(["list", "tiles", "content"]);
+
+/** An item's tooltip: its name, and a search inside files' match. */
+const hitTitle = (row: Row) => (row.hit ? `${row.name}\nLine ${row.hit.line}: ${row.hit.text}` : row.name);
 
 /** The box a name is edited in. It always edits the full name, extension included. */
 function RenameField(props: { name: string; dir: boolean; onDone: (name: string | null) => void }) {

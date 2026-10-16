@@ -17,12 +17,16 @@
 //! | `tag:urgent` | carries this tag (resolved by the caller with [`resolve_tags`]) |
 //! | `width:>1920`, `height:1080`, `taken:2024`, `camera:pixel`, `duration:>1m`, `kind:photo`, `kind:video`, `geo:yes`, `text:costco` | facts the media library holds (resolved by the caller with [`resolve_media`]) |
 //! | `like:"a dog on a sofa"`, `~a dog on a sofa` | photos and videos that look like it (resolved by the caller with [`resolve_likes`]) |
+//! | `content:"fn main"` | the file contains this text (searched by the app, not the index) |
 //! | `!clause` | negates any clause |
+//!
+//! [`natural::understand`] turns phrases ("videos from last month over 1 GB") into clauses.
 
 mod exec;
 mod filter;
 mod glob;
 pub mod group;
+pub mod natural;
 mod parse;
 mod sort;
 mod time;
@@ -31,8 +35,8 @@ pub use exec::{Compiled, compile, search};
 pub use filter::NameFilter;
 pub use group::{DateEdges, Group, GroupBy, Grouping};
 pub use parse::{
-    Clause, ClauseKind, MediaClause, MediaKind, ParseError, Query, has_media, likes, parse, resolve_likes, resolve_media,
-    resolve_tags,
+    Clause, ClauseKind, FILTER_KEYS, MediaClause, MediaKind, ParseError, Query, has_media, is_filter, likes, parse,
+    resolve_likes, resolve_media, resolve_tags,
 };
 pub use sort::{Sort, SortKey, sort};
 pub use time::Clock;

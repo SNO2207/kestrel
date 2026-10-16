@@ -26,6 +26,7 @@ pub mod places;
 pub mod projects;
 pub mod semantic;
 pub mod shortcuts;
+pub mod triage;
 pub mod undo;
 
 /// One schema change.
@@ -48,6 +49,7 @@ pub const MIGRATIONS: &[&[Migration]] = &[
     cleanup::MIGRATIONS,
     media::MIGRATIONS,
     semantic::MIGRATIONS,
+    triage::MIGRATIONS,
 ];
 
 const SETTINGS: &[Migration] = &[Migration {

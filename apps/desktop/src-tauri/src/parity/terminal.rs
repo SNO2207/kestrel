@@ -10,6 +10,10 @@ use crate::projects::launch;
 /// Opens Windows Terminal in `folder`.
 #[tauri::command(async)]
 pub fn open_in_terminal(folder: String) -> Result<(), String> {
+    // In a WSL distribution, the distribution's own shell (wsl.rs).
+    if let Some(shell) = crate::wsl::terminal(&folder) {
+        return launch::start(shell);
+    }
     if !Path::new(&folder).is_dir() {
         return Err(format!("{folder} is not a folder"));
     }

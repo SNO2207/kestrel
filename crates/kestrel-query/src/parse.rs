@@ -51,6 +51,11 @@ pub enum ClauseKind {
     /// Only the caller's models can tell, so it resolves this to [`ClauseKind::Entries`] with
     /// [`resolve_likes`] before compiling, as it does tags.
     Like(String),
+    /// Text inside the file, as typed: `content:"fn main"`. The index holds no contents, so
+    /// the app's content search reads the files (`kestrel-content`); [`compile`] refuses it.
+    ///
+    /// [`compile`]: crate::compile
+    Content(String),
 }
 
 /// What a media clause asks of the media library.
@@ -129,6 +134,19 @@ pub fn likes(query: &Query) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// The keys of filter clauses (`ext:`, `dm:`...). Anything else before a colon, such as the
+/// drive letter in `C:\Users`, is ordinary text.
+pub const FILTER_KEYS: &[&str] = &[
+    "ext", "type", "kind", "size", "dm", "modified", "date", "in", "folder", "regex", "path", "name", "tag", "content",
+    "taken", "dt", "width", "height", "camera", "duration", "length", "geo", "text", "like",
+];
+
+/// Whether `token` (as typed, possibly negated with `!`) is a filter clause such as `ext:pdf`.
+pub fn is_filter(token: &str) -> bool {
+    let token = token.strip_prefix('!').unwrap_or(token);
+    token.split_once(':').is_some_and(|(key, _)| FILTER_KEYS.contains(&key.to_ascii_lowercase().as_str()))
 }
 
 /// Replaces every `tag:` clause with the entries `resolve` finds for its tag name, sorted.
@@ -220,7 +238,7 @@ fn literal(text: &str) -> Option<ClauseKind> {
 }
 
 /// The media library's keys, whose values are read only once typed.
-const MEDIA_KEYS: &[&str] = &["width", "height", "taken", "camera", "duration", "length", "geo", "text"];
+const MEDIA_KEYS: &[&str] = &["width", "height", "taken", "dt", "camera", "duration", "length", "geo", "text"];
 
 fn clause(text: &str, clock: Clock) -> Result<Option<ClauseKind>, ParseError> {
     if let Some((key, value)) = text.split_once(':') {
@@ -240,7 +258,7 @@ fn clause(text: &str, clock: Clock) -> Result<Option<ClauseKind>, ParseError> {
                 let (min, max) = pixels(value)?;
                 Some(ClauseKind::Media(MediaClause::Height(min, max)))
             }
-            "taken" => Some(ClauseKind::Media(taken(value, clock)?)),
+            "taken" | "dt" => Some(ClauseKind::Media(taken(value, clock)?)),
             "camera" => Some(ClauseKind::Media(MediaClause::Camera(value.to_owned()))),
             "duration" | "length" => Some(ClauseKind::Media(duration(value)?)),
             "geo" => Some(ClauseKind::Media(MediaClause::Geo(yes_or_no(value)?))),
@@ -253,6 +271,7 @@ fn clause(text: &str, clock: Clock) -> Result<Option<ClauseKind>, ParseError> {
             "name" => Some(ClauseKind::Name(fold(value))),
             "tag" => Some(ClauseKind::Tag(value.to_owned())),
             "like" => Some(ClauseKind::Like(value.trim().to_owned())),
+            "content" => Some(ClauseKind::Content(value.to_owned())),
             // Anything else, such as the drive letter in `C:\Users`, is ordinary text.
             _ => None,
         };
@@ -547,7 +566,7 @@ fn yes_or_no(value: &str) -> Result<bool, ParseError> {
 }
 
 /// 1 January of the year containing `day`.
-fn year_start(day: i64) -> i64 {
+pub(crate) fn year_start(day: i64) -> i64 {
     days_from_civil(civil_from_days(day).0, 1, 1)
 }
 
@@ -765,5 +784,43 @@ mod tests {
         )]);
         assert!(parse("dm:2026-13", CLOCK).is_err());
         assert!(parse("dm:soon", CLOCK).is_err());
+    }
+
+    #[test]
+    fn content_and_date_taken_clauses() {
+        // Contents keep their case and spaces: the content search decides how to match them.
+        assert_eq!(kinds(r#"content:"Fn Main" ext:rs"#), [
+            ClauseKind::Content("Fn Main".into()),
+            ClauseKind::Ext(vec!["rs".into()])
+        ]);
+        // `taken:` (and its short form `dt:`) is the media library's.
+        assert_eq!(kinds("taken:2023"), [ClauseKind::Media(MediaClause::Taken(
+            local_midnight(2023, 1, 1),
+            local_midnight(2024, 1, 1)
+        ))]);
+        assert_eq!(kinds("dt:lastmonth"), [ClauseKind::Media(MediaClause::Taken(
+            local_midnight(2026, 9, 1),
+            local_midnight(2026, 10, 1)
+        ))]);
+        // Still being typed: ignored, as other filters are.
+        assert!(kinds("content: taken:").is_empty());
+        assert!(parse("taken:someday", CLOCK).is_err());
+        // The index can't answer either; the content search takes them out first.
+        let index = kestrel_index::IndexBuilder::new().finish();
+        assert!(crate::compile(&parse("content:x", CLOCK).unwrap(), &index).is_err());
+        assert!(crate::compile(&parse("taken:2023", CLOCK).unwrap(), &index).is_err());
+    }
+
+    #[test]
+    fn filter_tokens_are_recognised_by_key() {
+        for key in FILTER_KEYS {
+            let token = format!("{key}:x");
+            assert!(is_filter(&token), "{token}");
+            assert!(is_filter(&format!("!{token}")));
+        }
+        assert!(is_filter("EXT:pdf"));
+        for plain in ["report", r"C:\Users", "a:b", "*.rs", "\"ext:pdf\"", "content"] {
+            assert!(!is_filter(plain), "{plain}");
+        }
     }
 }

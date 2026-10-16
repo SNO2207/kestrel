@@ -25,6 +25,8 @@ zip = { version = "9.0.3", default-features = false, features = ["aes-crypto", "
 kestrel-analyze = { workspace = true }
 # Cleanup recommendations and the duplicate finder (cleanup/).
 kestrel-cleanup = { workspace = true }
+# Search inside files (search/), with ripgrep's crates.
+kestrel-content = { workspace = true }
 kestrel-db = { workspace = true }
 # AI search (semantic/): SigLIP 2 through Windows ML, and the vectors' memory-mapped store.
 kestrel-embed = { workspace = true }

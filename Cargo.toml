@@ -11,6 +11,7 @@ publish = false
 [workspace.dependencies]
 kestrel-analyze = { path = "crates/kestrel-analyze" }
 kestrel-cleanup = { path = "crates/kestrel-cleanup" }
+kestrel-content = { path = "crates/kestrel-content" }
 kestrel-db = { path = "crates/kestrel-db" }
 kestrel-embed = { path = "crates/kestrel-embed" }
 kestrel-index = { path = "crates/kestrel-index" }

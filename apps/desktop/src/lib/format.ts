@@ -44,8 +44,18 @@ export function parentPath(path: string): string | null {
   return parent.endsWith(":") ? `${parent}\\` : parent;
 }
 
-/** Splits `C:\Users\me` into crumbs, each with the path it navigates to. */
+/**
+ * Splits `C:\Users\me` into crumbs, each with the path it navigates to. A share's path starts
+ * with one crumb for the share, named after it: `\\server\share\docs` is `share`, `docs`.
+ */
 export function breadcrumbs(path: string): { label: string; path: string }[] {
+  if (path.startsWith("\\\\") && !path.startsWith("\\\\?\\")) {
+    const [server, share, ...rest] = path.slice(2).split("\\").filter(Boolean);
+    if (!server) return [];
+    if (!share) return [{ label: server, path: `\\\\${server}` }];
+    const root = `\\\\${server}\\${share}`;
+    return [{ label: share, path: root }, ...rest.map((label, i) => ({ label, path: [root, ...rest.slice(0, i + 1)].join("\\") }))];
+  }
   const parts = path.split("\\").filter(Boolean);
   return parts.map((label, i) => {
     const joined = parts.slice(0, i + 1).join("\\");

@@ -1,0 +1,554 @@
+/*
+ * Searching (search.ts): the search box's buttons for searching inside files, the chips a
+ * phrase is read into, a search inside files' progress and its matches in every view, and the
+ * preview opened at a match. Then the Downloads triage page (TriagePage.tsx) and its sidebar
+ * entry, and WSL's places. Colours are the tokens of styles.css.
+ */
+
+/* ---------- the search box ---------- */
+
+.toolbar .searchbox {
+  width: 340px;
+}
+
+.search-inside,
+.search-options-button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 3px;
+  color: var(--muted);
+}
+
+.search-inside:hover,
+.search-options-button:hover {
+  background: var(--raised);
+}
+
+.search-inside.on {
+  color: var(--accent);
+  background: var(--select);
+}
+
+/* ---------- how a search was read ---------- */
+
+.search-banner {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 14px 8px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.search-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.search-banner-lead {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.search-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  height: 24px;
+  padding-left: 2px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+}
+
+/* A word of the name, rather than a filter. */
+.search-chip[data-kind="name"] {
+  background: transparent;
+  border-style: dashed;
+}
+
+.search-chip[data-kind="content"] {
+  border-color: var(--select-line);
+}
+
+.search-chip-label {
+  min-width: 0;
+  max-width: 320px;
+  height: 100%;
+  padding: 0 4px 0 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 12px 0 0 12px;
+}
+
+.search-chip-label:hover {
+  color: var(--accent);
+}
+
+.search-chip-input {
+  height: 20px;
+  margin-left: 4px;
+  padding: 0 6px;
+  background: var(--chrome);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  outline: 0;
+  font: 12px "Cascadia Mono", Consolas, monospace;
+  user-select: text;
+}
+
+.search-chip-remove {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 11px;
+  color: var(--faint);
+}
+
+.search-chip-remove:hover {
+  color: var(--text);
+  background: var(--line);
+}
+
+.search-banner-link {
+  padding: 2px 4px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.search-banner-link:hover {
+  background: var(--raised);
+}
+
+.search-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.search-progress .icon {
+  color: var(--muted);
+}
+
+.search-progress.running .icon {
+  color: var(--accent);
+  animation: search-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes search-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.search-progress-main {
+  color: var(--text);
+}
+
+.search-progress-skipped {
+  color: var(--faint);
+}
+
+/* ---------- a match, in every view ---------- */
+
+.hit-snippet {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  font: 12px/1.4 "Cascadia Mono", Consolas, monospace;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.hit-line {
+  flex: none;
+  min-width: 2ch;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--raised);
+  color: var(--faint);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.hit-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hit-mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: rgb(240 180 41 / 0.32);
+  color: var(--text);
+}
+
+.hit-more {
+  flex: none;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color: var(--faint);
+}
+
+/* In a details row the match follows the name and takes the room left. */
+.cell.name .hit-snippet {
+  flex: 1 1 0;
+  margin-left: 6px;
+}
+
+.cell.name .label {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* Under the name in the list, tile and content views. */
+.view-item-text .hit-snippet {
+  margin-top: 2px;
+}
+
+.filelist[data-view="list"] .view-item-text .hit-snippet {
+  margin-top: 0;
+  font-size: 11px;
+}
+
+/* ---------- the preview, at a match ---------- */
+
+.preview-code {
+  position: relative;
+}
+
+/* Marks the line a search inside files found, across the text view (its height is the line's). */
+.preview-hit-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1lh;
+  background: var(--select);
+  box-shadow: inset 2px 0 0 var(--accent);
+  pointer-events: none;
+}
+
+/* The matches within that line (lib/previewHit.ts). */
+::highlight(kestrel-hit) {
+  background-color: rgb(240 180 41 / 0.42);
+}
+
+/* ---------- Downloads triage: the sidebar's entry ---------- */
+
+/* Drawn like Home and the projects entry: a page, not a place; nothing is dropped on it. */
+.triage-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  text-align: left;
+  color: var(--muted);
+}
+
+.triage-entry span {
+  color: var(--text);
+}
+
+.triage-entry:hover {
+  background: var(--raised);
+}
+
+.triage-entry.current {
+  background: var(--select);
+  color: var(--accent);
+}
+
+.triage-entry .triage-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Downloads triage: the page ---------- */
+
+.triage-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  outline: 0;
+}
+
+.triage-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 24px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.triage-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.triage-title h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.triage-sub {
+  margin: 3px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.triage-switch {
+  display: flex;
+  flex: none;
+  padding: 2px;
+  background: var(--chrome);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.triage-switch button {
+  height: 24px;
+  padding: 0 12px;
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+.triage-switch button.on {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.triage-bulk {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 42px;
+  padding: 0 18px;
+  background: var(--select);
+  border-bottom: 1px solid var(--line);
+}
+
+.triage-bulk-count {
+  margin-right: 8px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.triage-groups {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 18px 28px;
+}
+
+.triage-group {
+  margin-top: 14px;
+}
+
+.triage-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  padding: 0 6px 6px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.triage-group-title .icon {
+  color: var(--muted);
+}
+
+.triage-group-count {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.triage-select-group {
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.triage-select-group:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.triage-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 4px 6px;
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 0 1px transparent;
+}
+
+.triage-row:hover {
+  background: var(--raised);
+}
+
+.triage-row.selected {
+  background: var(--select);
+}
+
+.triage-page:focus .triage-row.focused,
+.triage-page:focus-within .triage-row.focused {
+  box-shadow: inset 0 0 0 1px var(--select-line);
+}
+
+.triage-check {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0 2px;
+  accent-color: var(--accent);
+}
+
+.triage-row img {
+  flex: none;
+}
+
+.triage-name {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.triage-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.triage-meta {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.triage-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.triage-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.triage-action:hover:not(:disabled) {
+  background: var(--raised);
+  border-color: var(--line);
+}
+
+.triage-row:hover .triage-action:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.triage-action:disabled {
+  color: var(--faint);
+}
+
+.triage-action.suggested {
+  max-width: 260px;
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.triage-action.suggested span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.triage-action.suggested .icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.triage-action.danger:not(:disabled) {
+  color: var(--danger);
+}
+
+.triage-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 64px;
+  color: var(--muted);
+}
+
+.triage-empty p {
+  margin: 0;
+}
+
+/* ---------- WSL ---------- */
+
+.wsl-place .icon {
+  color: var(--muted);
+}
+
+.wsl-place.current .icon {
+  color: var(--accent);
+}

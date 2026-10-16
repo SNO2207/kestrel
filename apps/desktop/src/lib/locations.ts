@@ -131,9 +131,11 @@ export const titleOf = (path: string): string => locationTitle(path) ?? rootTitl
 export function parentOf(path: string): string | null {
   const location = locationOf(path);
   if (location) return location.parent?.(path) ?? null;
-  const parent = parentPath(path);
-  if (parent !== null) return parent;
-  return locations().find((candidate) => candidate.adopts?.(path))?.address ?? null;
+  // A root a location adopts goes there, even one with a path above it (a WSL distribution's
+  // `\\wsl.localhost\Ubuntu` would otherwise go to `\\wsl.localhost`).
+  const adopter = adopterOf(path);
+  if (adopter) return adopter.address;
+  return parentPath(path);
 }
 
 /** The breadcrumb for a path or a location's address. */
