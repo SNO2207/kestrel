@@ -26,10 +26,7 @@ const rows = panel.locator(".row");
 const names = () => panel.locator(".row .label").allTextContents();
 const status = () => page.locator(".statusbar").innerText();
 const shot = (name) => page.screenshot({ path: join(out, `${name}.png`) });
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("smoke", () => page);
 
 await step("the home folder is listed", async () => {
   await rows.first().waitFor();

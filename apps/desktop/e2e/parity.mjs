@@ -68,10 +68,7 @@ const menuItem = (label) => menu.locator(".menu-item").filter({ has: page.locato
 const command = (label) => page.locator(`.commandbar .command[aria-label="${label}"]`);
 const selectedCount = () => page.evaluate(() => document.querySelectorAll(".tab-panel.active .row.selected").length);
 const onDisk = (...parts) => existsSync(join(sandbox, ...parts));
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("parity", () => page);
 
 /** Calls a backend command, as the app's own code does. */
 const invoke = (command, args = {}, target = page) =>

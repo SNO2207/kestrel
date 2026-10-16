@@ -36,10 +36,7 @@ const menu = page.locator(".menu");
 const menuItem = (label) => menu.locator(".menu-item", { hasText: new RegExp(`^${label}`) });
 const menuLabels = () => menu.locator(".menu-item > span:first-child").allTextContents();
 const row = (name) => panel.locator(".row").filter({ has: page.locator(".label", { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }) });
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("shellmenu", () => page);
 
 /** Calls a backend command, as the app's own code does. */
 const invoke = (command, args = {}) =>

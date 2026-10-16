@@ -549,6 +549,11 @@ Testing (every change ships with tests, and you run them):
   `connectToKestrel()` from `e2e/connect.mjs` (it refuses any window not titled Kestrel),
   confine file changes to a fresh folder under `%TEMP%`, and save screenshots to `e2e/out`.
   Look at your screenshots; a passing test with a broken-looking screen is not done.
+- Every suite makes its `step(title, run)` with `stepper` from `e2e/steps.mjs`. A failing step
+  saves `e2e/out/failures/<suite>-<step>.png` and prints the focused element, open menus,
+  dialogs and notices, the active tab's address, the rows drawn and how many still have no
+  `data-path`, and the page's last 40 console messages, before the suite's `finally` blocks
+  change the window. Read that before guessing why a step failed.
 - `fileops.mjs` uses the system clipboard; do not run it while other agents may be running
   tests. Whoever integrates branches runs every suite, one after another.
 - Things a script cannot do (a real mouse drag between apps, a native dialog) are listed as

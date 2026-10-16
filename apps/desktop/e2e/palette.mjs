@@ -104,11 +104,7 @@ const shotBoth = async (target, name) => {
   await target.emulateMedia({ colorScheme: null });
 };
 
-const step = async (title, run) => {
-  const started = Date.now();
-  await run();
-  console.log(`ok  ${title} (${Date.now() - started} ms)`);
-};
+const step = (await import("./steps.mjs")).stepper("palette", () => page, { timed: true });
 
 // ---------- the palette, in either window ----------
 

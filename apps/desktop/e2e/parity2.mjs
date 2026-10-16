@@ -99,10 +99,7 @@ const exactly = (text) => new RegExp(`^${escape(text)}$`);
 const item = (name) => panel.locator(".row, .view-item").filter({ has: page.locator(".label", { hasText: exactly(name) }) });
 const menuItem = (label) => page.locator(".menu .menu-item").filter({ has: page.locator(".menu-label", { hasText: exactly(label) }) });
 const comparable = (path) => path.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("parity2", () => page);
 /** Calls a backend command, as the app's own code does. */
 const invoke = (command, args = {}, target = page) =>
   target.evaluate(([command, args]) => window.__TAURI_INTERNALS__.invoke(command, args), [command, args]);

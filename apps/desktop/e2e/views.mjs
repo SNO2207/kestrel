@@ -156,10 +156,7 @@ const thumbnailsLoaded = (names) =>
     { timeout: 30_000 },
   );
 
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("views", () => page);
 
 try {
   await step("the scratch folder opens in details, without its hidden file", async () => {

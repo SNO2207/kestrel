@@ -47,10 +47,7 @@ const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const row = (name) => panel.locator(".row").filter({ has: page.locator(".label", { hasText: new RegExp(`^${escape(name)}$`) }) });
 const selectedNames = () => panel.locator(".row.selected .label").allTextContents();
 const hint = page.locator(".drop-hint");
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("dragdrop", () => page);
 
 /** The centre of an element, in the page's CSS pixels. */
 async function centre(locator) {

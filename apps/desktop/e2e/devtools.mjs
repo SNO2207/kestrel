@@ -70,11 +70,7 @@ const pane = page.locator(".terminal-pane:not([hidden])");
 const termTabs = page.locator(".terminal-tab");
 const tabs = () => page.evaluate(() => window.__kestrelTerminal.tabs());
 const text = (key) => page.evaluate((key) => window.__kestrelTerminal.text(key), key);
-const step = async (title, run) => {
-  const started = Date.now();
-  await run();
-  console.log(`ok  ${title} (${Date.now() - started} ms)`);
-};
+const step = (await import("./steps.mjs")).stepper("devtools", () => page, { timed: true });
 
 async function shotBoth(name) {
   for (const scheme of ["dark", "light"]) {

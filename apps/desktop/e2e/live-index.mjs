@@ -22,11 +22,7 @@ await page.reload();
 
 const panel = page.locator(".tab-panel.active");
 const search = page.locator(".searchbox input");
-const step = async (title, run) => {
-  const started = Date.now();
-  await run();
-  console.log(`ok  ${title} (${Date.now() - started} ms)`);
-};
+const step = (await import("./steps.mjs")).stepper("live-index", () => page, { timed: true });
 
 /**
  * Re-runs the search until `names` is exactly what it finds, or fails after `timeout`. No

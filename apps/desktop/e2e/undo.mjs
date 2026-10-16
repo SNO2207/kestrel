@@ -36,10 +36,7 @@ const row = (name) => panel.locator(".row").filter({ has: page.locator(".label",
 const selectedNames = () => panel.locator(".row.selected .label").allTextContents();
 const notice = page.locator(".notice span");
 const menu = page.locator(".menu");
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("undo", () => page);
 
 /** Captures the window through the debugging protocol: Playwright's own screenshot briefly
  * resizes the viewport, which closes an open menu. */

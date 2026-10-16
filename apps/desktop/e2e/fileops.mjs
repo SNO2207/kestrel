@@ -31,10 +31,7 @@ const panel = page.locator(".tab-panel.active");
 const list = panel.locator(".list-viewport");
 const row = (name) => panel.locator(".row").filter({ has: page.locator(".label", { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }) });
 const selectedNames = () => panel.locator(".row.selected .label").allTextContents();
-const step = async (title, run) => {
-  await run();
-  console.log(`ok  ${title}`);
-};
+const step = (await import("./steps.mjs")).stepper("fileops", () => page);
 
 try {
   await step("the scratch folder opens", async () => {
