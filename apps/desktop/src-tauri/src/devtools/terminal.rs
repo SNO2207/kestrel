@@ -153,7 +153,9 @@ pub fn terminal_shells(db: State<Arc<Db>>) -> ShellList {
 }
 
 /// Opens a terminal in `cwd` (the user folder if that is no folder) with `shell` (the default
-/// if unset), or, given `script`, runs one of a project's own scripts in Command Prompt there.
+/// if unset), or, given `script`, runs one of a project's own scripts in Command Prompt there. A
+/// library's address opens in its save folder, and a folder inside a WSL distribution in that
+/// distribution's own shell unless another was asked for.
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub fn terminal_open(
@@ -185,7 +187,13 @@ pub fn terminal_open(
             (shells::run_in_cmd(&found.command, &root), found.command)
         }
         None => {
-            let folder = start_folder(cwd.as_deref());
+            let asked = cwd.as_deref().map(crate::parity2::libraries::folder_for);
+            if shell.is_none()
+                && let Some(own) = asked.as_deref().and_then(|folder| shells::for_wsl_folder(&installed, folder))
+            {
+                picked = own.clone();
+            }
+            let folder = start_folder(asked.as_deref());
             (shells::launch(&picked, &folder), picked.name.clone())
         }
     };
@@ -268,6 +276,7 @@ pub fn terminal_reset(window: Window, terminals: Shared) {
 /// Types the command that takes the terminal's shell to `folder`.
 #[tauri::command(async)]
 pub fn terminal_cd(window: Window, terminals: Shared, id: u32, folder: String) -> Result<(), String> {
+    let folder = crate::parity2::libraries::folder_for(&folder);
     if !Path::new(&folder).is_dir() {
         return Err(format!("{folder} is not a folder"));
     }

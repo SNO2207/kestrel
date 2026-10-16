@@ -88,22 +88,45 @@ pub fn pick<'a>(shells: &'a [Shell], id: Option<&str>) -> Option<&'a Shell> {
     id.and_then(|id| shells.iter().find(|shell| shell.id.eq_ignore_ascii_case(id))).or_else(|| shells.first())
 }
 
-/// The command that starts `shell` in `cwd`.
+/// Whether `folder` is on WSL's own share (`\\wsl.localhost\Ubuntu\...`, `\\wsl$\...`).
+pub fn on_wsl_share(folder: &str) -> bool {
+    let lower = folder.to_ascii_lowercase();
+    lower.starts_with(r"\\wsl.localhost\") || lower.starts_with(r"\\wsl$\")
+}
+
+/// The command that starts `shell` in `cwd`. A distribution's shell is taken to a folder of its
+/// own by its Linux path (and started from the user folder: a share is no place to start a
+/// process in), and to a Windows folder as Windows names it, which `wsl.exe` maps whatever the
+/// distribution's mount root is.
 pub fn launch(shell: &Shell, cwd: &Path) -> Command {
+    let mut start = cwd.to_path_buf();
     let args = match shell.kind {
         Kind::PowerShell => vec![Arg::Quoted("-NoLogo".into())],
         Kind::Cmd => Vec::new(),
         Kind::Wsl => {
             let distribution = shell.id.strip_prefix("wsl:").unwrap_or_default().to_owned();
-            vec![
-                Arg::Quoted("-d".into()),
-                Arg::Quoted(distribution),
-                Arg::Quoted("--cd".into()),
-                Arg::Quoted(cwd.display().to_string()),
-            ]
+            let folder = cwd.display().to_string();
+            let at = if on_wsl_share(&folder) {
+                start = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(system_root);
+                wsl_path(&folder, Some(&distribution)).unwrap_or_else(|| "~".into())
+            } else {
+                folder
+            };
+            vec![Arg::Quoted("-d".into()), Arg::Quoted(distribution), Arg::Quoted("--cd".into()), Arg::Quoted(at)]
         }
     };
-    Command { program: shell.program.clone(), args, cwd: cwd.to_path_buf(), env: Vec::new() }
+    Command { program: shell.program.clone(), args, cwd: start, env: Vec::new() }
+}
+
+/// The shell of the distribution whose folder `folder` is, if it is installed.
+pub fn for_wsl_folder<'a>(shells: &'a [Shell], folder: &str) -> Option<&'a Shell> {
+    if !on_wsl_share(folder) {
+        return None;
+    }
+    let lower = folder.to_ascii_lowercase();
+    let rest = [r"\\wsl.localhost\", r"\\wsl$\"].iter().find_map(|prefix| lower.strip_prefix(prefix))?;
+    let name = rest.split('\\').next()?;
+    shells.iter().find(|shell| shell.kind == Kind::Wsl && shell.id.strip_prefix("wsl:").is_some_and(|id| id.eq_ignore_ascii_case(name)))
 }
 
 /// Runs `command` in Command Prompt in `cwd`, which stays open afterwards, as the projects
@@ -272,6 +295,14 @@ mod tests {
         assert_eq!(launch(&shell, Path::new(r"C:\a b")).command_line(), r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoLogo");
         let wsl = Shell { id: "wsl:Ubuntu-24.04".into(), name: "Ubuntu-24.04 (WSL)".into(), kind: Kind::Wsl, program: r"C:\Windows\System32\wsl.exe".into() };
         assert_eq!(launch(&wsl, Path::new(r"C:\My Code")).command_line(), r#"C:\Windows\System32\wsl.exe -d Ubuntu-24.04 --cd "C:\My Code""#);
+        // A folder of the distribution itself: by its Linux path, started from the user folder.
+        let inside = launch(&wsl, Path::new(r"\\wsl.localhost\Ubuntu-24.04\home\me\src"));
+        assert_eq!(inside.command_line(), r#"C:\Windows\System32\wsl.exe -d Ubuntu-24.04 --cd /home/me/src"#);
+        assert!(!inside.cwd.display().to_string().starts_with(r"\\"), "{}", inside.cwd.display());
+        let shells = [wsl.clone()];
+        assert_eq!(for_wsl_folder(&shells, r"\\wsl$\ubuntu-24.04\etc").map(|s| s.id.as_str()), Some("wsl:Ubuntu-24.04"));
+        assert!(for_wsl_folder(&shells, r"\\wsl.localhost\Debian\etc").is_none(), "not installed");
+        assert!(for_wsl_folder(&shells, r"C:\Users").is_none());
         let run = run_in_cmd("pnpm run dev", Path::new(r"C:\x"));
         assert!(run.command_line().ends_with(r"cmd.exe /k set NoDefaultCurrentDirectoryInExePath=1& pnpm run dev& set NoDefaultCurrentDirectoryInExePath="), "{}", run.command_line());
     }

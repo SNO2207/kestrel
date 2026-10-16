@@ -31,6 +31,7 @@ import {
 } from "../places";
 import { isDropPlace } from "../dragdrop";
 import { openInTerminal } from "../parity";
+import { terminalHere } from "../devtools";
 import { parity2Api, type NetworkPlace } from "../lib/parity2Api";
 import { disconnectEntry, networkEntries, shownDrives } from "../parity2";
 import { pinPaths } from "../shortcuts";
@@ -164,7 +165,13 @@ export function ThisPcPage(props: LocationPageProps) {
       if (drive.kind === "network") entries.push("separator", disconnectEntry(drive));
     } else if (tile.folder.kind === "linux") {
       // A distribution's shell opens in its root.
-      entries.push("separator", { label: "Open in Terminal", run: () => openInTerminal(tile.path) }, { label: "Pin to sidebar", run: () => void pinPaths([tile.path]) });
+      entries.push(
+        "separator",
+        { label: "Open in Terminal", run: () => openInTerminal(tile.path) },
+        // The pane at the bottom of the window, in the distribution's own shell (devtools/terminal.rs).
+        { label: "Open terminal here", run: () => terminalHere(tile.path) },
+        { label: "Pin to sidebar", run: () => void pinPaths([tile.path]) },
+      );
     } else {
       entries.push("separator", { label: "Pin to sidebar", run: () => void pinPaths([tile.path]) });
     }
