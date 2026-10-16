@@ -12,9 +12,11 @@ publish = false
 kestrel-analyze = { path = "crates/kestrel-analyze" }
 kestrel-cleanup = { path = "crates/kestrel-cleanup" }
 kestrel-db = { path = "crates/kestrel-db" }
+kestrel-embed = { path = "crates/kestrel-embed" }
 kestrel-index = { path = "crates/kestrel-index" }
 kestrel-ntfs = { path = "crates/kestrel-ntfs" }
 kestrel-query = { path = "crates/kestrel-query" }
+kestrel-vector = { path = "crates/kestrel-vector" }
 
 anyhow = "1"
 bytemuck = "1.25"

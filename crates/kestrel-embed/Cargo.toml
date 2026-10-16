@@ -1,0 +1,52 @@
+[package]
+name = "kestrel-embed"
+description = "Image and text embeddings on the GPU through Windows ML, for describing photos and videos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+half = { version = "2.4", features = ["std"] }
+parking_lot = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# SHA-256 of downloaded model files.
+sha2 = "0.10"
+# Hugging Face's own tokenizer library reads the model's tokenizer.json exactly as the model's
+# authors do. `fancy-regex` instead of the default Oniguruma: no C library to build.
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
+# Windows ML (the documented ONNX Runtime with DirectML that ships with Windows), WIC for
+# images, Media Foundation for video frames, Windows.Media.Ocr; the WinRT collections their
+# results come in.
+windows = { version = "0.62", features = [
+    "AI_MachineLearning",
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+    "Graphics",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_System_WinRT",
+] }
+windows-collections = "0.3"
+windows-core = "0.62"
+windows-future = "0.3"
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinHttp",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }

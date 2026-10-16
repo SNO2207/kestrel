@@ -34,6 +34,9 @@ import { inverted, type SelectControl } from "../lib/selectionOps";
 import { activeId } from "../state";
 import { newEntries, openInTerminal, openNewWindow, revealInFolder } from "../parity";
 import { SyncGlyph } from "./SyncGlyph";
+import { DescribeBar } from "./DescribeBar";
+import { MomentBadge } from "./MomentBadge";
+import { isDescribeQuery } from "../semantic";
 
 const PAGE_SIZE = 128;
 /** Pixels rendered beyond each edge of the view, so short scrolls never show a gap. */
@@ -103,8 +106,11 @@ interface Props {
   /** How many rows the listing had before the filter narrowed it. */
   unfilteredTotal?: number | null;
   onFilter?: (text: string | null) => void;
-  /** More entries for the item and folder menus, such as "Copy to other pane" and "Group by". */
-  menuExtras?: { items?: () => MenuEntry[]; folder?: () => MenuEntry[] };
+  /**
+   * More entries for the item and folder menus, such as "Copy to other pane" and "Group by";
+   * the item menu's are given the item when a single one is selected.
+   */
+  menuExtras?: { items?: (sole?: Row) => MenuEntry[]; folder?: () => MenuEntry[] };
   onSort: (key: SortKey) => void;
   onOpen: (row: Row, inNewTab: boolean) => void;
   onStale: () => void;
@@ -166,6 +172,19 @@ export function FileList(props: Props) {
 
   const total = () => props.listing?.total ?? 0;
   const isSearch = () => props.listing?.path === "";
+  /**
+   * A description's results come best match first (semantic/search.rs), in no column's order,
+   * until a column is clicked, which sorts that set in place, or the filter box narrows them
+   * (into the column's order): then the arrow shows again.
+   */
+  const [resorted, setResorted] = createSignal<number | null>(null);
+  const ranked = () =>
+    isDescribeQuery(props.query) && props.listing !== null && props.listing.set !== resorted() && !props.filter?.trim();
+  const headerSort = (): SortSpec => (ranked() ? { key: "relevance" as SortKey, desc: false } : props.sort);
+  const sortBy = (key: SortKey) => {
+    setResorted(props.listing?.set ?? null);
+    props.onSort(key);
+  };
   const columnKind = (): ColumnKind => (isSearch() ? "search" : "folder");
   const columnOrder = () => columnSet(columnKind()).order;
   /** The view mode remembered for the folder, or the search, on screen. */
@@ -678,7 +697,7 @@ export function FileList(props: Props) {
         run: () => props.onShellMenu(x, y, onItems, false),
       },
     ];
-    const extraItems = props.menuExtras?.items?.() ?? [];
+    const extraItems = props.menuExtras?.items?.(sole) ?? [];
     const extraFolder = props.menuExtras?.folder?.() ?? [];
     // Inside an archive the menus are its own read-only ones; elsewhere extract and compress
     // entries join the item menu (archives.ts).
@@ -1069,6 +1088,7 @@ export function FileList(props: Props) {
             <Show when={badgeOf(data())?.change}>{(change) => <GitGlyph change={change()} dir={data().dir} />}</Show>
             <SyncGlyph row={data()} />
             <TagDots path={data().path} />
+            <MomentBadge path={data().path} />
           </div>
         );
       case "location":
@@ -1123,7 +1143,11 @@ export function FileList(props: Props) {
           onDone={() => viewport.focus()}
         />
       </Show>
-      <ColumnHeaders kind={columnKind()} sort={props.sort} shift={shift()} onSort={props.onSort} measure={measure} />
+      {/* AI search: what a description looked for, and the relevance slider (semantic.ts). */}
+      <Show when={isDescribeQuery(props.query)}>
+        <DescribeBar query={props.query} set={props.listing?.set ?? null} total={total()} onRefresh={() => props.onStale()} />
+      </Show>
+      <ColumnHeaders kind={columnKind()} sort={headerSort()} shift={shift()} onSort={sortBy} measure={measure} />
 
       <Show when={props.error}>
         <div class="list-error" role="alert">{props.error}</div>

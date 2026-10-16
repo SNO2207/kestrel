@@ -398,6 +398,20 @@ impl Engine {
         visibility: Visibility,
         resolve: impl FnOnce(&mut Query, &Index) -> Result<(), String>,
     ) -> Result<Listing, String> {
+        self.search_ranked(text, scope, spec, visibility, |query, index| resolve(query, index).map(|()| None))
+    }
+
+    /// [`Engine::search_resolving`], where `resolve` may also rank the results (AI search ranks
+    /// photos by how well they match a description, `semantic/search.rs`): then they come best
+    /// first, ties by name, instead of in `spec`'s order, until they are sorted by a column.
+    pub fn search_ranked(
+        &self,
+        text: &str,
+        scope: Option<&str>,
+        spec: SortSpec,
+        visibility: Visibility,
+        resolve: impl FnOnce(&mut Query, &Index) -> Result<Option<HashMap<EntryId, f32>>, String>,
+    ) -> Result<Listing, String> {
         let started = Instant::now();
         let mut query = parse(text, Clock::local()).map_err(|e| e.to_string())?;
         if let Some(scope) = scope {
@@ -408,19 +422,30 @@ impl Engine {
         std::mem::replace(&mut *self.cancel.lock(), cancel.clone()).store(true, Atomic::Relaxed);
 
         let index = self.index.read();
-        resolve(&mut query, &index)?;
+        let ranking = resolve(&mut query, &index)?;
         let compiled = compile(&query, &index).map_err(|e| e.to_string())?;
         let mut ids = search(&index, &compiled, &cancel).ok_or("Superseded by a newer search")?;
         if visibility != Visibility::ALL {
             ids.retain(|&id| visibility.shows(index.attrs(id)));
         }
-        sort(&index, &mut ids, spec.resolve(false));
+        let arranged = match &ranking {
+            Some(scores) => {
+                let score = |id: &EntryId| scores.get(id).copied().unwrap_or(f32::NEG_INFINITY);
+                ids.sort_by(|a, b| score(b).total_cmp(&score(a)).then_with(|| index.cmp_name(*a, *b)));
+                // In no column's order: sorting by any column sorts them again.
+                Arranged::default()
+            }
+            None => {
+                sort(&index, &mut ids, spec.resolve(false));
+                Arranged::sorted(spec.resolve(false))
+            }
+        };
         let max_size = ids.iter().map(|&id| index.size(id)).max().unwrap_or(0);
         let rows = Rows::Indexed(ids);
         drop(index);
 
         let total = rows.len();
-        let set = self.store(ResultSet { rows, is_search: true, arranged: Arranged::sorted(spec.resolve(false)) });
+        let set = self.store(ResultSet { rows, is_search: true, arranged });
         Ok(Listing { set, total, path: String::new(), max_size, took_us: started.elapsed().as_micros() as u64, archive: None })
     }
 

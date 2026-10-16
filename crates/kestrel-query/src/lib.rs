@@ -15,6 +15,7 @@
 //! | `in:C:\Projects` | only beneath this folder |
 //! | `regex:^a.*\d$` | regular expression on the name |
 //! | `tag:urgent` | carries this tag (resolved by the caller with [`resolve_tags`]) |
+//! | `like:"a dog on a sofa"`, `~a dog on a sofa` | photos and videos that look like it (resolved by the caller with [`resolve_likes`]) |
 //! | `!clause` | negates any clause |
 
 mod exec;
@@ -28,6 +29,6 @@ mod time;
 pub use exec::{Compiled, compile, search};
 pub use filter::NameFilter;
 pub use group::{DateEdges, Group, GroupBy, Grouping};
-pub use parse::{Clause, ClauseKind, ParseError, Query, parse, resolve_tags};
+pub use parse::{Clause, ClauseKind, ParseError, Query, likes, parse, resolve_likes, resolve_tags};
 pub use sort::{Sort, SortKey, sort};
 pub use time::Clock;

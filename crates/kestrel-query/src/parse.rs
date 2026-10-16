@@ -42,6 +42,40 @@ pub enum ClauseKind {
     Tag(String),
     /// Exactly these entries, in ascending id order: a tag, once resolved.
     Entries(Vec<EntryId>),
+    /// Photos and videos that look like this description (`like:"a dog on a sofa"`, or the
+    /// whole query after a leading `~`), or like the picture at this path ("Find similar").
+    /// Only the caller's models can tell, so it resolves this to [`ClauseKind::Entries`] with
+    /// [`resolve_likes`] before compiling, as it does tags.
+    Like(String),
+}
+
+/// Replaces every `like:` clause with the entries `resolve` finds for its description, sorted.
+pub fn resolve_likes(
+    query: &mut Query,
+    mut resolve: impl FnMut(&str) -> Result<Vec<EntryId>, ParseError>,
+) -> Result<(), ParseError> {
+    for clause in &mut query.clauses {
+        if let ClauseKind::Like(description) = &clause.kind {
+            let mut entries = resolve(description)?;
+            entries.sort_unstable();
+            entries.dedup();
+            clause.kind = ClauseKind::Entries(entries);
+        }
+    }
+    Ok(())
+}
+
+/// The descriptions a query asks to look like, in order.
+pub fn likes(query: &Query) -> Vec<String> {
+    query
+        .clauses
+        .iter()
+        .filter(|clause| !clause.negate)
+        .filter_map(|clause| match &clause.kind {
+            ClauseKind::Like(description) => Some(description.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Replaces every `tag:` clause with the entries `resolve` finds for its tag name, sorted.
@@ -101,8 +135,17 @@ fn tokenize(input: &str) -> Vec<Token> {
 }
 
 /// Parses query text. Filters with an empty value (`ext:`) are ignored so that a query stays
-/// valid while it is being typed; malformed values are reported.
+/// valid while it is being typed; malformed values are reported. A query that starts with `~`
+/// is a description as a whole (`~sunset at the beach`), the same as one `like:` clause.
 pub fn parse(input: &str, clock: Clock) -> Result<Query, ParseError> {
+    if let Some(description) = input.trim_start().strip_prefix('~') {
+        let description = description.trim();
+        let clauses = (!description.is_empty())
+            .then(|| Clause { negate: false, kind: ClauseKind::Like(description.to_owned()) })
+            .into_iter()
+            .collect();
+        return Ok(Query { clauses });
+    }
     let mut clauses = Vec::new();
     for token in tokenize(input) {
         let (negate, text) = match token.text.strip_prefix('!') {
@@ -135,6 +178,7 @@ fn clause(text: &str, clock: Clock) -> Result<Option<ClauseKind>, ParseError> {
             "path" => Some(ClauseKind::Path(fold(value).replace('/', "\\"))),
             "name" => Some(ClauseKind::Name(fold(value))),
             "tag" => Some(ClauseKind::Tag(value.to_owned())),
+            "like" => Some(ClauseKind::Like(value.trim().to_owned())),
             // Anything else, such as the drive letter in `C:\Users`, is ordinary text.
             _ => None,
         };
@@ -421,6 +465,35 @@ mod tests {
         ]);
         let mut unknown = parse("tag:nope", CLOCK).unwrap();
         assert!(resolve_tags(&mut unknown, |_| Err(ParseError("No tag is named \"nope\"".into()))).is_err());
+    }
+
+    #[test]
+    fn descriptions_parse_and_resolve_to_entries() {
+        assert_eq!(kinds(r#"like:"a dog on a sofa" ext:jpg like:"#), [
+            ClauseKind::Like("a dog on a sofa".into()),
+            ClauseKind::Ext(vec!["jpg".into()])
+        ]);
+        // A leading ~ makes the whole query one description, filters and all.
+        assert_eq!(kinds("  ~ sunset at the beach ext:png"), [ClauseKind::Like("sunset at the beach ext:png".into())]);
+        assert_eq!(kinds("~"), []);
+        assert_eq!(kinds("~dog"), [ClauseKind::Like("dog".into())]);
+        // A tilde elsewhere is ordinary text, as in an 8.3 name.
+        assert_eq!(kinds("PROGRA~1"), [ClauseKind::Name("progra~1".into())]);
+        assert_eq!(kinds(r#"like:"C:\Photos\dog.jpg""#), [ClauseKind::Like(r"C:\Photos\dog.jpg".into())]);
+
+        let mut query = parse(r#"like:dog !like:cat report"#, CLOCK).unwrap();
+        assert_eq!(likes(&query), ["dog"], "a negated description is not one to rank by");
+        resolve_likes(&mut query, |description| match description {
+            "dog" => Ok(vec![8, 2, 8]),
+            _ => Ok(vec![5]),
+        })
+        .unwrap();
+        let resolved: Vec<_> = query.clauses.iter().map(|c| (c.negate, c.kind.clone())).collect();
+        assert_eq!(resolved, [
+            (false, ClauseKind::Entries(vec![2, 8])),
+            (true, ClauseKind::Entries(vec![5])),
+            (false, ClauseKind::Name("report".into())),
+        ]);
     }
 
     #[test]

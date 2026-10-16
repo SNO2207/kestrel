@@ -23,6 +23,7 @@ pub mod palette;
 pub mod parity;
 pub mod places;
 pub mod projects;
+pub mod semantic;
 pub mod shortcuts;
 pub mod undo;
 
@@ -44,6 +45,7 @@ pub const MIGRATIONS: &[&[Migration]] = &[
     parity::MIGRATIONS,
     disk::MIGRATIONS,
     cleanup::MIGRATIONS,
+    semantic::MIGRATIONS,
 ];
 
 const SETTINGS: &[Migration] = &[Migration {

@@ -13,6 +13,7 @@
 import { createSignal } from "solid-js";
 
 import { api, type SurfacePlacement } from "./api";
+import { momentOf } from "./moments";
 import { previewUrl } from "./preview";
 
 /**
@@ -66,6 +67,9 @@ export function surfaceUrl(kind: SurfaceKind, path: string, version: number, dow
     `chrome=${colour("--chrome")}`,
   ];
   if (download) parts.push("download=1");
+  // A video an AI search found starts at the moment that matched (lib/moments.ts).
+  const at = kind === "video" ? momentOf(path) : null;
+  if (at !== null) parts.push(`t=${(at / 1000).toFixed(3)}`);
   return `http://preview.localhost/view?${parts.join("&")}`;
 }
 
