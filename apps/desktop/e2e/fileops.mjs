@@ -185,6 +185,13 @@ try {
     assert.deepEqual(await selectedNames(), ["beta.txt"]);
     await panel.locator(".column-header.name").click();
     await page.waitForFunction(() => document.querySelector(".tab-panel.active .column-header.name")?.getAttribute("aria-sort") === "ascending");
+    // The rows follow the header a moment later; the next step clicks by position.
+    await page.waitForFunction(() => {
+      const labels = [...document.querySelectorAll(".tab-panel.active .row .label")].map((label) => label.textContent);
+      const first = labels.indexOf("aaa-first.txt");
+      const later = labels.indexOf("renamed.txt");
+      return first >= 0 && later > first;
+    });
   });
 
   await step("right-click opens a menu for the item, and Escape closes it", async () => {
