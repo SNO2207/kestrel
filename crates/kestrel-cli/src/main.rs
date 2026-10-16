@@ -1,3 +1,5 @@
+mod disk;
+
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
@@ -73,6 +75,17 @@ enum Command {
         #[arg(long, default_value_t = 25)]
         runs: usize,
     },
+    /// Time the disk usage analysis over the saved index: treemap layouts, the overview's
+    /// breakdowns and lists, and a growth sample.
+    DiskBench {
+        /// Folders to analyse; every root of the index when none are given.
+        roots: Vec<String>,
+        /// Runs per measurement.
+        #[arg(long, default_value_t = 10)]
+        runs: usize,
+    },
+    /// What the disk usage hub would show for a folder: its totals, types and ages.
+    Usage { path: String },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -234,6 +247,8 @@ fn main() -> Result<()> {
             }
         }
         Command::Bench { runs } => bench(&snapshot_path, runs.max(1))?,
+        Command::DiskBench { roots, runs } => disk::bench(&load(&snapshot_path)?, &roots, runs.max(1))?,
+        Command::Usage { path } => disk::usage(&load(&snapshot_path)?, &path)?,
     }
     Ok(())
 }

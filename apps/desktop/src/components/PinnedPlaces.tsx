@@ -12,6 +12,7 @@ import {
   showInFolder,
 } from "../shortcuts";
 import { projectsOpen } from "../projects";
+import { diskOpen } from "../disk";
 import { activeTab } from "../state";
 import { askName, editPin, showMenu } from "./ShortcutDialogs";
 import { ShortcutIcon } from "./ShortcutIcon";
@@ -43,7 +44,7 @@ export function PinnedPlaces() {
   /** A reorder just ended, so the click that follows the release is not an open. */
   let justDragged = false;
   // While the projects hub covers the list, no place is the current one.
-  const current = () => (projectsOpen() ? "" : (activeTab()?.path ?? ""));
+  const current = () => (projectsOpen() || diskOpen() ? "" : (activeTab()?.path ?? ""));
 
   /** Where the dragged item would land with the pointer at `x`, `y`. */
   const spotAt = (x: number, y: number, item: Dragged): Spot | null => {

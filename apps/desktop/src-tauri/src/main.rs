@@ -6,6 +6,7 @@ mod address;
 mod archive;
 mod batchrename;
 mod clipboard;
+mod disk;
 mod dragdrop;
 mod engine;
 mod fileops;
@@ -371,6 +372,7 @@ fn main() {
     let thumbs = ThumbService::start(icons.clone());
     let database = open_database();
     let projects = projects::Projects::new(engine.clone(), database.clone());
+    let disk = disk::Disk::new(engine.clone(), database.clone());
     // The command palette's providers; other features register theirs in `setup` (palette.rs).
     let palette = Arc::new(palette::Palette::new(database.clone()));
     palette.register(Arc::new(palette::files::FilesProvider::new(engine.clone())));
@@ -393,6 +395,7 @@ fn main() {
         .manage(Journal::with_store(database.clone()))
         .manage(database.clone())
         .manage(projects.clone())
+        .manage(disk.clone())
         .manage(palette)
         // This PC's drives, each asked about on a thread of its own (thispc.rs).
         .manage(Arc::new(thispc::Drives::default()))
@@ -500,6 +503,12 @@ fn main() {
             projects::git_badges,
             projects::projects_probe,
             projects::projects_probe_take,
+            disk::disk_overview,
+            disk::disk_treemap,
+            disk::disk_growth,
+            disk::disk_watch,
+            disk::disk_recycle,
+            disk::disk_history_probe,
             palette::palette_query,
             palette::palette_record,
             palette::palette_forget,
@@ -583,6 +592,8 @@ fn main() {
             projects.start(app.handle().clone());
             // Copies taken out of archives on earlier days (previews, drags) are cleared away.
             std::thread::Builder::new().name("kestrel-archive-tidy".into()).spawn(archive::tidy)?;
+            // The disk usage hub's change announcements and its daily sample (disk/).
+            disk.start(app.handle().clone());
             // The quick launcher, its shortcut and the tray icon; never fatal.
             launcher::setup(app.handle(), database.clone());
             // Launching Kestrel again shows this one, wherever it is hiding.

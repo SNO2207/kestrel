@@ -2042,6 +2042,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kestrel-analyze"
+version = "0.1.0"
+dependencies = [
+ "kestrel-index",
+ "rayon",
+ "serde",
+]
+
+[[package]]
 name = "kestrel-broker"
 version = "0.1.0"
 dependencies = [
@@ -2057,6 +2066,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "kestrel-analyze",
  "kestrel-index",
  "kestrel-query",
  "parking_lot",
@@ -2078,6 +2088,7 @@ version = "0.1.0"
 dependencies = [
  "bzip2",
  "flate2",
+ "kestrel-analyze",
  "kestrel-db",
  "kestrel-index",
  "kestrel-query",

@@ -82,6 +82,7 @@ export type ListCommand =
   | "redo"
   | "batch-rename"
   | "open-with"
+  | "disk-usage"
   | ShortcutCommand
   | ArchiveCommand;
 
@@ -716,6 +717,7 @@ export function FileList(props: Props) {
       },
       { label: "Paste", hint: "Ctrl+V", disabled: !canPaste, run: command("paste") },
       { label: "Pin this folder", hint: "Ctrl+D", disabled: !browsing, run: command("pin-folder") },
+      { label: "Show disk usage", hint: "Ctrl+Shift+U", disabled: !browsing, run: command("disk-usage") },
       "separator",
       undo,
       ...redo,

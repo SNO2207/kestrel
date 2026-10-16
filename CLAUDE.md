@@ -104,6 +104,12 @@ Done and verified:
   7z, tar.gz), with progress, cancel, undo, and the zip-slip, link, device-name, bomb, Mark of the
   Web and password rules, each unit tested (`archive/tests.rs`) and end to end
   (`e2e/archives.mjs`).
+- **Disk usage** (`crates/kestrel-analyze`, `src-tauri/src/disk/`, `kestrel_db::disk`, `disk.ts`,
+  `lib/diskApi.ts`, `DiskHub.tsx`, `DiskOverview.tsx`, `DiskTreemap.tsx`, `disk.css`): the hub
+  (sidebar, Ctrl+Shift+U for the folder on screen, the palette, the folder's menu), from the
+  index only. Measured on the owner's index (3.47 M entries): treemap layout 1–2 ms, overview
+  ~92 ms, daily growth sample ~7 ms (`kestrel-cli disk-bench`). Hub tabs are the `TABS` list in
+  `DiskHub.tsx`; `openDiskUsage(path)` opens it anywhere.
 
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette. Every unit test and all 16 e2e suites pass there
@@ -122,6 +128,12 @@ does that Kestrel does not is listed in `docs/explorer-parity.md`.
   MFT build (`mft.rs`), folder reconciliation (`sync.rs`), journal following (`live.rs`) and
   the broker client (`broker.rs`).
 - `crates/kestrel-query`: query parsing, parallel search and sorting over an index.
+- `crates/kestrel-analyze`: disk usage from an index, no I/O: `treemap.rs` (squarified layout of
+  only what is visible), `category.rs` (types by extension and location), `overview.rs` (totals,
+  types, ages, largest items, recent changes, one walk split across threads), `growth.rs` (the
+  daily sample, its retention and the comparison). The app's half is `src-tauri/src/disk/`
+  (commands, the drive's own figures in `volume.rs`, the sampler in `history.rs`, and the
+  `disk-changed` event while the hub is open); the samples live in `kestrel_db::disk`.
 - `crates/kestrel-ntfs`: NTFS journal, MFT record parsing and raw volume reads.
 - `apps/desktop/src-tauri/src`: the backend. `main.rs` registers every Tauri command in one
   `generate_handler!` list, wrapped in `preview::guard(...)`, and every custom protocol
@@ -427,6 +439,15 @@ Git:
   (`live.rs`), so a folder opened meanwhile may add the same files first: `Sync::finish`
   updates an entry of the same name instead of adding a second (files made in quick succession
   were once listed twice).
+- `FILE_ATTRIBUTE_RECALL_ON_OPEN` (0x40000) is also `FILE_ATTRIBUTE_EA`, which thousands of
+  ordinary `System32` files carry (0x40020): it is no sign of a cloud file. OneDrive's online-only
+  files carry `RECALL_ON_DATA_ACCESS` and `OFFLINE` (0x401620), in listings and in the file table
+  alike (`kestrel_analyze::is_cloud_only`). Never open one: that downloads it.
+- "Nothing allocated" is no sign of a cloud file either. In an index read from the drive's file
+  table (the broker), a hard link's allocation is charged to one name only, files small enough
+  to live in the table have none, and files Windows compresses into a stream of their own (WOF:
+  Edge, Chrome and Brave under Program Files, 0x620) show none, since the index records the main
+  stream's. A crawled index (or a folder re-listed since) charges every name of a hard link.
 - Undo checks before acting that each item is still what the operation left: `undo_entries`
   stores a mark (file id, and for deletions a content fingerprint) per step. A file replaced by
   another program in the meantime is left alone rather than recycled.

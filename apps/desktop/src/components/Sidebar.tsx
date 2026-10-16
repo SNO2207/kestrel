@@ -6,6 +6,8 @@ import { baseName } from "../lib/format";
 import { RECYCLE_BIN, collapsedSections, samePlace, setSectionCollapsed } from "../places";
 import { activeTab, navigate, openTab, places } from "../state";
 import { closeProjects, projectsOpen, toggleProjects } from "../projects";
+import { closeDiskUsage, diskOpen } from "../disk";
+import { DiskEntry } from "./DiskEntry";
 import { FolderTree } from "./FolderTree";
 import { HomeEntry } from "./HomeEntry";
 import { Icon, hasIcon } from "./Icon";
@@ -23,10 +25,11 @@ import { SidebarResizer } from "./SidebarResizer";
  */
 export function Sidebar() {
   let shelves!: HTMLDivElement;
-  // While the projects hub covers the list, no place is the current one.
-  const current = () => (projectsOpen() ? "" : (activeTab()?.path.toLowerCase() ?? ""));
+  // While the projects or disk usage hub covers the list, no place is the current one.
+  const current = () => (projectsOpen() || diskOpen() ? "" : (activeTab()?.path.toLowerCase() ?? ""));
   const open = (path: string, event: MouseEvent) => {
     closeProjects();
+    closeDiskUsage();
     const tab = activeTab();
     // Ctrl-click and middle-click open a new tab, as they do for links.
     if (event.ctrlKey || event.button === 1 || !tab) openTab(path);
@@ -50,6 +53,7 @@ export function Sidebar() {
             <ProjectIcon name="projects" />
             <span>Projects</span>
           </button>
+          <DiskEntry />
         </section>
         <PinnedPlaces />
 

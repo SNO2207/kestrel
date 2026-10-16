@@ -10,6 +10,7 @@ import { openGoto } from "../components/GoToFolder";
 import { askName } from "../components/ShortcutDialogs";
 import { focusTargets } from "../components/Toolbar";
 import { projectsOpen, toggleProjects } from "../projects";
+import { diskOpen, driveOf, openDiskUsage, toggleDiskUsage } from "../disk";
 import { saveSearch, saveWorkspace } from "../shortcuts";
 import { paneOpen, setQuickLookOpen, focusedItem, togglePane } from "../previewState";
 import {
@@ -146,6 +147,21 @@ function actions(): Action[] {
       icon: "project:projects",
       keywords: "projects repositories git code hub",
       run: toggleProjects,
+    },
+    {
+      id: "disk-usage",
+      title: diskOpen() ? "Close disk usage" : "Show disk usage of this folder",
+      hint: "Ctrl+Shift+U",
+      icon: "drive",
+      keywords: "disk usage space storage size treemap map largest biggest files folders free analyse analyze what grew",
+      run: toggleDiskUsage,
+    },
+    {
+      id: "disk-usage-drive",
+      title: "Show disk usage of this drive",
+      icon: "drive",
+      keywords: "disk usage space storage size treemap free full drive analyse analyze",
+      run: () => openDiskUsage(driveOf(activeTab()?.path ?? "C:\\")),
     },
     { id: "search", title: "Search", hint: "Ctrl+F", icon: "search", keywords: "find", run: () => focusTargets.search?.() },
     {

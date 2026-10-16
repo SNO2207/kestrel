@@ -14,6 +14,8 @@ import { ParityLayer } from "./components/ParityLayer";
 import { registerSelector } from "./lib/selectionOps";
 import { copyFromArchive, isArchiveFile, openEntry, runArchiveCommand, tabInArchive } from "./archives";
 import { ArchiveDialogs, ArchiveJobs } from "./components/ArchiveDialogs";
+import { DiskHub } from "./components/DiskHub";
+import { analysableFolder, openDiskUsage } from "./disk";
 import { isDropFolder, listenForDrops } from "./dragdrop";
 import { DropHint } from "./components/DropHint";
 import { FileList, type ListCommand } from "./components/FileList";
@@ -141,6 +143,8 @@ export function App() {
       case "compress-zip":
       case "compress-to":
         return runArchiveCommand(tabId, command);
+      case "disk-usage":
+        return openDiskUsage(analysableFolder(tabs.find((tab) => tab.id === tabId)) ?? undefined);
     }
   };
 
@@ -270,6 +274,7 @@ export function App() {
         <PreviewPane />
         <DetailsPane />
         <ProjectsHub />
+        <DiskHub />
         <DropHint />
         <ArchiveJobs />
         <Show when={notice()}>

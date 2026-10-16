@@ -1,0 +1,12 @@
+[package]
+name = "kestrel-analyze"
+description = "What uses the disk, from the index: treemap layout, breakdowns by type and age, largest items, growth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+kestrel-index = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }

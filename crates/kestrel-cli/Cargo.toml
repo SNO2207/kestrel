@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+kestrel-analyze = { workspace = true }
 kestrel-index = { workspace = true }
 kestrel-query = { workspace = true }
 parking_lot = { workspace = true }

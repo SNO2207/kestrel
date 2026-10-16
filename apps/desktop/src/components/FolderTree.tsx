@@ -34,6 +34,7 @@ import {
   setExpandToOpen,
   thisPc,
 } from "../places";
+import { closeDiskUsage, diskOpen } from "../disk";
 import { closeProjects, projectsOpen } from "../projects";
 import { pinPaths } from "../shortcuts";
 import { activeTab, isSearch, notify } from "../state";
@@ -338,7 +339,7 @@ export function FolderTree() {
 
   /** The folder the active tab shows, or This PC when it shows that; null otherwise. */
   const currentPath = createMemo(() => {
-    if (projectsOpen()) return null;
+    if (projectsOpen() || diskOpen()) return null;
     const tab = activeTab();
     if (!tab) return null;
     if (samePlace(tab.path, THIS_PC)) return THIS_PC;
@@ -499,6 +500,7 @@ export function FolderTree() {
   const open = (node: TreeNode, inNewTab = false) => {
     clearTimeout(followTimer);
     closeProjects();
+    closeDiskUsage();
     openLocation(pathOf(node), inNewTab);
   };
 

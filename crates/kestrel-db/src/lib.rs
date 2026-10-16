@@ -16,6 +16,7 @@ use serde::de::DeserializeOwned;
 pub use rusqlite;
 
 pub mod archives;
+pub mod disk;
 pub mod layout;
 pub mod palette;
 pub mod parity;
@@ -40,6 +41,7 @@ pub const MIGRATIONS: &[&[Migration]] = &[
     places::MIGRATIONS,
     layout::MIGRATIONS,
     parity::MIGRATIONS,
+    disk::MIGRATIONS,
 ];
 
 const SETTINGS: &[Migration] = &[Migration {

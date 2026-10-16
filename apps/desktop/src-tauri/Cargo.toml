@@ -22,6 +22,7 @@ lzma-rust2 = { version = "0.16", default-features = false, features = ["std", "x
 sevenz-rust2 = { version = "0.20.2", default-features = false, features = ["aes256", "bzip2", "compress", "deflate", "ppmd", "util"] }
 tar = { version = "0.4.46", default-features = false }
 zip = { version = "9.0.3", default-features = false, features = ["aes-crypto", "bzip2", "deflate-flate2-zlib-rs", "deflate64", "lzma", "ppmd", "xz"] }
+kestrel-analyze = { workspace = true }
 kestrel-db = { workspace = true }
 kestrel-index = { workspace = true }
 kestrel-query = { workspace = true }
@@ -76,6 +77,8 @@ windows-sys = { workspace = true, features = [
     # No "insert a disk" error box while an empty card reader or disc drive is asked about (thispc.rs).
     "Win32_System_Diagnostics_Debug",
     "Win32_System_IO",
+    # The size of NTFS's own file table, for the disk usage hub's totals (disk/volume.rs).
+    "Win32_System_Ioctl",
     "Win32_System_Memory",
     "Win32_System_Ole",
     # The optional "start with Windows" entry under HKCU\...\Run (launcher.rs).
