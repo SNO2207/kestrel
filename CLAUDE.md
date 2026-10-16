@@ -204,6 +204,15 @@ development hook in a release build too (the list is in the README's Testing sec
 new tabs and windows, the palette, the tree and the hub); `places.mjs` opens the disk usage hub
 from This PC and `cleanup.mjs` drives the hub's tabs and the Recycle Bin page.
 
+The stability branches (`stability/places`, `stability/shortcuts`, `stability/harness`) were
+merged on 2026-10-16: palette queries that arrive out of order, a press that decides what its
+release does, paste after copy, a refresh that follows where the tab is going, `dev.mjs stop`
+that waits for the ports, settled waits in the suites, and the shared failure diagnostics
+(`e2e/steps.mjs`). After that merge `cargo test --workspace` passed and three full passes of all
+28 suites on slot 6 (each on a freshly started app, `undo.mjs` with `KESTREL_E2E_RECYCLE=1`)
+passed 28 of 28 each, on an idle machine. Under heavy machine load some failures remain that
+nobody has fixed (see "Known flakes under load" in the testing notes below).
+
 Not done yet: an installer (bundling is off; the helper would then need a Tauri sidecar entry,
 see README); what else Explorer does that Kestrel does not is listed in
 `docs/explorer-parity.md`.
@@ -559,6 +568,23 @@ Testing (every change ships with tests, and you run them):
   guessing why a step failed.
 - `fileops.mjs` uses the system clipboard; do not run it while other agents may be running
   tests. Whoever integrates branches runs every suite, one after another.
+- Run the suites on an idle machine: no `cargo test --workspace`, build or other slot's suites
+  at the same time. Known flakes under load, which no one has fixed (three agents saw them, none
+  on an idle machine):
+  - A suite's first step ("the scratch folder opens", in places, views, shellmenu, parity,
+    fileops) sends Ctrl+L right after its `page.reload()` and first `.row`, and sometimes the
+    address input never appears. The failure's keyboard record (`follow.mjs`) shows the startup
+    focus move and then no keydown at all in the new document: the key is lost before the page
+    (the web view or native focus under load), not in the app's handling. Probes on an idle
+    machine never reproduced it. Don't paper over it with longer timeouts or retries.
+  - Waits that only a longer timeout would fix: the media and semantic background passes,
+    palette's 10 s wait for an opened file's app, cleanup's restored duplicate, a layout restart
+    whose saved panes were not restored once, places' "a tree folder takes a drop" once, and the
+    three timing tests in `kestrel-media` (`files_tests`) under `cargo test` with every core busy.
+- Suites' own `open(path, name)` helpers (crumb plus item) can pass on search results still
+  drawn after a search is left, which keep the folder's crumb; `shortcuts.mjs`'s `open` waits for
+  `.filelist:not(.results)` with the item's `data-path`. The other suites' helpers have not been
+  audited for that early read: if one flakes right after a search step, start there.
 - Things a script cannot do (a real mouse drag between apps, a native dialog) are listed as
   manual checks in your report rather than claimed as tested.
 
@@ -947,6 +973,17 @@ Git:
   The terminal keeps one `terminal_write` (and one `terminal_resize`) in flight at a time and sends
   what was typed meanwhile with the next. Anything else whose invokes must arrive in order does
   the same.
+- Palette queries (`palette_query`, async) say which of their page's queries they are
+  (`palette::Sent { page, number }`, sent by `askPalette` in `lib/palette.ts`: the page is
+  `performance.timeOrigin` plus a random part, so a reload counts afresh). `Palette::begin`
+  refuses a query older than one its page has already started (the error `SUPERSEDED`) instead of
+  letting it cancel the newer one: under load "this p" once arrived after "this pc", cancelled it,
+  and the palette, whose latest query had failed, kept the list it opened with. Queries without
+  `sent` (unit tests, direct invokes in `connections.mjs`) still go by arrival. The dev hook
+  `palette_dev_late` (`palette/late.rs`) holds the next query for a text until another has
+  started (`palette.mjs`). Still open: every app window's palette shares session `main`, so one
+  window's query can cancel another's in flight, and `CommandPalette.tsx` treats a failed latest
+  query as answered and keeps the previous hits.
 - The query service reads the index in place: it never stores a result set (the engine keeps 64
   for the windows and would drop theirs) and never uses `Engine::search_resolving`, whose cancel
   flag is shared with the window's own search box. Anything added to it follows `query.rs`.
