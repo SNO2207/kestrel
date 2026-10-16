@@ -12,12 +12,13 @@
 // menus and panes and go back to folders), describes the window as the step left it:
 //   - a screenshot, e2e/out/failures/<suite>-<step>.png, taken through the debugging protocol
 //     (Playwright's own screenshot resizes the viewport for an instant, which closes menus);
-//   - the element that has the keyboard, and the open menus, dialogs and notices, and any
-//     window of the app's own process the page can't show (a shell dialog waiting for an answer);
+//   - the element that has the keyboard, and the open menus, dialogs and notices, any window of
+//     the app's own process the page can't show (a shell dialog waiting for an answer), the
+//     windows lying over the app's, and how many frames the page draws;
 //   - the active tab's address, and how many rows each list on screen draws and how many of them
 //     have no `data-path` yet (their page of rows is still on its way);
 //   - the app's commands the page still waits for, and those answered last, and the last moves of
-//     the keyboard and shortcut keys (both followed from the suite's first step);
+//     the keyboard and shortcut keys (both followed from the moment the suite connects, follow.mjs);
 //   - the page's last 40 console messages (a message repeated back to back counts once), over the
 //     page's whole life rather than since the suite connected: a new debugging session hears again
 //     everything the page has logged.
@@ -28,6 +29,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { commandLines, focusLines, follow } from "./follow.mjs";
 import { otherWindows } from "./windows.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -45,7 +47,12 @@ const PART_LIMIT_MS = 8000;
 export function stepper(suite, pageOf, { timed = false, limit = 0 } = {}) {
   return async (title, run) => {
     const started = Date.now();
-    watchCommands(pageOf);
+    // A page the suite connected to again (after a restart) is followed from its first step.
+    try {
+      void follow(pageOf());
+    } catch {
+      // No page yet.
+    }
     try {
       await (limit ? withinLimit(run(), limit, `timed out: ${title}`) : run());
     } catch (error) {
@@ -57,100 +64,21 @@ export function stepper(suite, pageOf, { timed = false, limit = 0 } = {}) {
   };
 }
 
-/** How many of the commands answered last a failure prints. */
-const ANSWERED_TAIL = 12;
-/** The app's commands (Tauri's `ipc.localhost` requests) each page has sent, from the first step on. */
-const commandsOf = new WeakMap();
-
-/**
- * Starts following the commands the page sends the app, if it isn't followed yet: a step that hangs
- * is often waiting for one that never comes back.
- */
-function watchCommands(pageOf) {
-  let page;
-  try {
-    page = pageOf();
-  } catch {
-    return;
-  }
-  if (!page || commandsOf.has(page)) return;
-  const commands = { waiting: new Map(), answered: [] };
-  commandsOf.set(page, commands);
-  // And where the keyboard goes, from now and after every reload.
-  const followFocus = () => page.evaluate(followFocusInPage).catch(() => {});
-  page.on("load", followFocus);
-  void followFocus();
-  const nameOf = (request) => {
-    const match = /^https?:\/\/ipc\.localhost\/([^?#]+)/.exec(request.url());
-    return match ? decodeURIComponent(match[1]) : null;
-  };
-  page.on("request", (request) => {
-    const name = nameOf(request);
-    if (name) commands.waiting.set(request, { name, at: Date.now() });
+/** Runs in the page: how many animation frames it draws in half a second, and whether it is hidden. */
+function framesInPage() {
+  return new Promise((resolve) => {
+    let count = 0;
+    const started = performance.now();
+    const report = () => resolve(`${count} in ${Math.round(performance.now() - started)} ms, the page ${document.visibilityState}`);
+    const tick = () => {
+      count++;
+      if (performance.now() - started < 500) requestAnimationFrame(tick);
+      else report();
+    };
+    requestAnimationFrame(tick);
+    // A page that draws nothing still answers.
+    setTimeout(report, 3000);
   });
-  const done = (outcome) => (request) => {
-    const sent = commands.waiting.get(request);
-    if (!sent) return;
-    commands.waiting.delete(request);
-    commands.answered.push(`${sent.name} ${outcome} after ${Date.now() - sent.at} ms`);
-    if (commands.answered.length > ANSWERED_TAIL) commands.answered.shift();
-  };
-  page.on("requestfinished", done("answered"));
-  page.on("requestfailed", done("failed"));
-}
-
-/**
- * Runs in the page: keeps the last 30 moves of the keyboard (the element it went to, or that it
- * left for nothing, and the window losing or getting it) and shortcut keys (with Ctrl or Alt, or
- * named keys such as F2 and Escape; never typed text), for a failure to print.
- */
-function followFocusInPage() {
-  if (window.__e2eFocusLog) return;
-  const log = (window.__e2eFocusLog = []);
-  const add = (text) => {
-    log.push([Date.now(), text]);
-    if (log.length > 30) log.shift();
-  };
-  const describe = (element) => {
-    if (!element || !element.tagName) return "nothing";
-    let name = element.tagName.toLowerCase();
-    if (typeof element.className === "string" && element.className.trim()) name += `.${element.className.trim().split(/\s+/).join(".")}`;
-    const label = element.getAttribute?.("aria-label");
-    return label ? `${name}[aria-label="${label}"]` : name;
-  };
-  document.addEventListener("focusin", (event) => add(`keyboard to ${describe(event.target)}`), true);
-  document.addEventListener("focusout", (event) => event.relatedTarget === null && add(`keyboard left ${describe(event.target)} for nothing`), true);
-  window.addEventListener("blur", (event) => event.target === window && add("the window lost the keyboard"));
-  window.addEventListener("focus", (event) => event.target === window && add("the window got the keyboard"));
-  window.addEventListener(
-    "keydown",
-    (event) => {
-      if (!event.ctrlKey && !event.altKey && event.key.length === 1) return;
-      const key = `${event.ctrlKey ? "Ctrl+" : ""}${event.altKey ? "Alt+" : ""}${event.shiftKey && event.key.length > 1 ? "Shift+" : ""}${event.key}`;
-      add(`key ${key} on ${describe(event.target)}`);
-    },
-    true,
-  );
-}
-
-/** The page's record of where the keyboard went, as lines, latest last. */
-async function focusLines(page) {
-  const log = await page.evaluate(() => window.__e2eFocusLog ?? null);
-  if (!log) return ["keyboard: not followed in this page load"];
-  const now = Date.now();
-  return [`keyboard, last ${log.length} moves and shortcut keys:`, ...log.map(([at, text]) => `  ${now - at} ms ago: ${text}`)];
-}
-
-/** The commands the page is still waiting for, and those answered last, as lines. */
-function commandLines(page) {
-  const commands = commandsOf.get(page);
-  if (!commands) return ["commands: not followed (no step ran on this page)"];
-  const now = Date.now();
-  const waiting = [...commands.waiting.values()].map(({ name, at }) => `${name} for ${now - at} ms`);
-  return [
-    `commands waiting for the app: ${waiting.length ? waiting.join(", ") : "none"}`,
-    `commands answered last: ${commands.answered.length ? commands.answered.join(", ") : "none"}`,
-  ];
 }
 
 /** `work`, or a rejection with `message` once `ms` have passed. */
@@ -199,7 +127,14 @@ async function describeFailure(suite, title, pageOf) {
   // Windows of the app's that the page knows nothing of: the shell's dialogs (a copy waiting to
   // be told whether to replace a file), message boxes, the Windows menu's helper.
   const others = await part("other windows", () => otherWindows(PART_LIMIT_MS));
-  if (others) console.log(`  other windows of the app: ${others.length ? others.join("; ") : "none"}`);
+  if (others) {
+    console.log(`  other windows of the app: ${others.own.length ? others.own.join("; ") : "none"}`);
+    if (others.hidden) console.log("  the app's window is minimised or hidden");
+    else console.log(`  windows over the app's window: ${others.over.length ? others.over.join("; ") : "none"}`);
+  }
+  // Whether the page draws: a step that waits for a paint stalls when frames stop coming.
+  const drawing = await part("frames", () => page.evaluate(framesInPage));
+  if (drawing) console.log(`  frames: ${drawing}`);
 
   const messages = await part("console", () => consoleMessages(page));
   if (messages) {

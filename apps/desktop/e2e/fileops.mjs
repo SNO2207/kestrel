@@ -8,6 +8,7 @@
 // Start the app as described in smoke.mjs, then run: node e2e/fileops.mjs
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -219,8 +220,42 @@ try {
       await row("Clip").waitFor();
       await row("gamma.txt").waitFor();
     });
+
+    await step("a paste that ends while the tab is on its way elsewhere doesn't take the tab back", async () => {
+      // An operation refreshes its tab when it ends. One that ended while the tab was on its way
+      // to another folder (Up pressed just after a paste, in a full run) listed the folder being
+      // left again, and the tab went back into it. Here the way elsewhere is held: into a
+      // compressed tar, whose reading the backend holds (`archive_dev_hold`), while the paste,
+      // held behind its copy, is let go.
+      const invoke = (command, args) => page.evaluate(([name, values]) => window.__TAURI_INTERNALS__.invoke(name, values), [command, args]);
+      const tar = join(sandbox, "held.tar.gz");
+      execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe"), ["-czf", tar, "-C", sandbox, "during.txt"]);
+      await row("held.tar.gz").waitFor();
+      const pastedBefore = await page.evaluate(() => window.__kestrelClipboard.pasted());
+      await invoke("archive_dev_hold", { path: tar, hold: true });
+      await page.evaluate(() => window.__kestrelClipboard.hold(true));
+      try {
+        await row("during.txt").click();
+        await page.keyboard.press("Control+c");
+        await page.keyboard.press("Control+v");
+        await page.waitForFunction(() => window.__kestrelClipboard.waiting() === 1);
+        // On its way into the archive, which waits for its turn to be read.
+        await row("held.tar.gz").dblclick();
+        await page.evaluate(() => window.__kestrelClipboard.hold(false));
+        await page.waitForFunction((before) => window.__kestrelClipboard.pasted() > before, pastedBefore);
+        assert(onDisk("during - Copy.txt"), "the paste was made");
+      } finally {
+        await page.evaluate(() => window.__kestrelClipboard.hold(false));
+        await invoke("archive_dev_hold", { path: tar, hold: false });
+      }
+      await page.locator(".crumb").last().filter({ hasText: /^held\.tar\.gz$/ }).waitFor({ timeout: 10_000 });
+      await row("during.txt").waitFor();
+      await page.keyboard.press("Alt+ArrowUp");
+      await row("held.tar.gz").waitFor();
+      await row("during - Copy.txt").waitFor();
+    });
   } else {
-    console.log("--  Ctrl+V while a copy is on its way skipped (a release build can't hold the copy)");
+    console.log("--  Ctrl+V while a copy is on its way, and a paste ending on the way elsewhere, skipped (a release build can't hold them)");
   }
 
   await step("cut and paste moves a file into a folder", async () => {

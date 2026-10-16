@@ -10,6 +10,7 @@
 
 import { chromium } from "playwright-core";
 
+import { follow } from "./follow.mjs";
 import { appUrl, cdpPort } from "./slot.mjs";
 
 export const port = cdpPort;
@@ -49,7 +50,11 @@ export async function waitForKestrelWindow(browser, label, timeout = 20_000) {
 export async function connectToKestrel(label = "main") {
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
   const match = (await kestrelPages(browser)).find((candidate) => candidate.label === label);
-  if (match) return { browser, page: match.page };
+  if (match) {
+    // What the page does from now on, for a failing step to print (steps.mjs).
+    await follow(match.page);
+    return { browser, page: match.page };
+  }
   await browser.close();
   throw new Error(
     `No Kestrel window ${label} at ${appUrl} on debugging port ${cdpPort}. Start one with ` +

@@ -997,3 +997,13 @@ Git:
   slot's debugging port for 4 to 9 s more, so a `start` straight after `stop` found the ports in
   use (an e2e pass once lost every suite after `undo-restart.mjs` to it). `dev.mjs stop` returns
   only once the slot's ports are free and its kestrel.exe is gone, which takes 8 to 15 s.
+- A refresh (`refresh` in `state.ts`: after every file operation, a change in the folder, a new
+  index) lists where the tab is on its way to (`heading`), not `tab.path`, which stays the folder
+  being left until the new listing is shown; and it never takes the place of a job still waiting
+  in the tab's queue (which keeps one), since that job lists afresh anyway. A paste that ended
+  just after Up was pressed once listed the folder being left again and took the tab back into
+  it. `fileops.mjs` holds the way into a compressed tar (`archive_dev_hold`) to test it.
+- `e2e/follow.mjs` follows a suite's page from `connectToKestrel()` on (an init script, so from a
+  reloaded document's first line): the app's commands and the keyboard's moves and shortcut keys,
+  which a failing step prints. Keys a step sends while its page is still starting can be handled
+  before scripts the suite sent earlier: read the keyboard record with that in mind.

@@ -192,9 +192,10 @@ export interface ShellChoice {
  * read the clipboard first and paste what was on it before; every paste waits for it.
  */
 let clipboardWrite: Promise<unknown> = Promise.resolve();
-/** Clipboard writes on their way, and pastes waiting for them (development builds show both). */
+/** Clipboard writes on their way, pastes waiting for them, and pastes done (development builds show them). */
 let writing = 0;
 let waiting = 0;
+let pasted = 0;
 /** Development builds: clipboard writes wait here while a test holds them, before they are sent. */
 let writeGate: Promise<void> | null = null;
 let openWriteGate = () => {};
@@ -213,10 +214,12 @@ export function writesClipboard<T>(send: () => Promise<T>): Promise<T> {
 /** Waits for the clipboard's last write before pasting. */
 function afterClipboardWrite<T>(paste: () => Promise<T>): Promise<T> {
   waiting++;
-  return clipboardWrite.then(() => {
-    waiting--;
-    return paste();
-  });
+  return clipboardWrite
+    .then(() => {
+      waiting--;
+      return paste();
+    })
+    .finally(() => void pasted++);
 }
 
 if (import.meta.env.DEV) {
@@ -232,6 +235,7 @@ if (import.meta.env.DEV) {
       },
       writing: () => writing,
       waiting: () => waiting,
+      pasted: () => pasted,
     },
   });
 }
