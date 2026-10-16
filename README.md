@@ -2,13 +2,12 @@
 
 A fast file explorer for Windows 11. One in-memory index of every file on the drive powers
 instant search, instant folder listings with folder sizes, a command palette that reaches
-every folder and file, the projects on the drive with their git status, This PC with every
-drive, the Recycle Bin, and a folder tree in the sidebar; disk analysis is to come.
-every folder and file, and the projects on the drive with their git status. Archives (zip,
-7z, RAR, tar and its compressed forms) open like folders, extract and compress; disk analysis
-is to come.
-every folder and file, the projects on the drive with their git status, and a disk usage hub
-that shows what uses the disk.
+every folder and file, the projects on the drive with their git status, a folder tree in the
+sidebar, and a disk usage hub that shows what uses the disk, what could be cleaned up and which
+files are duplicates. Around it sits what File Explorer does: Home, This PC and the Recycle
+Bin, tabs and a second pane, Group by, columns and a filter box, the command bar and details
+pane, archives that open like folders, and more windows (`docs/explorer-parity.md` lists
+Explorer's features one by one).
 
 *Kestrel is a working name.*
 
@@ -140,7 +139,7 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Alt+P | Show or hide the preview pane (drag its left edge to resize it) |
 | Alt+Shift+P | Show or hide the details pane, in the preview pane's place |
 | Ctrl+Shift+P | Show or hide the projects hub |
-| Ctrl+Shift+U | Show or hide the disk usage of the folder on screen; in it, Alt+Left or Backspace steps back out of a folder |
+| Ctrl+Shift+U | Show or hide the disk usage hub (Overview, Map, Cleanup, Duplicates) for the folder on screen; in it, Alt+Left or Backspace steps back out of a folder |
 | Space | Quick Look; Space or Esc closes it, the arrow keys move to the previous or next item |
 | Ctrl+D | Pin the selection to the sidebar, or the folder when nothing is selected |
 | Ctrl+1 … Ctrl+9 | Open the first nine pins, or the pins given those numbers |
@@ -149,16 +148,23 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Ctrl+Alt+Space | The quick launcher, from anywhere in Windows (changeable) |
 | Mouse back / forward buttons | Back / forward |
 | Middle-click a folder | Open it in a new tab |
-| Ctrl+Shift+E | Show the folder in the folder tree (passed to the tree as `kestrel:reveal-in-tree`) |
+| Ctrl+Shift+E | Expand the folder tree to the open folder and give the tree the keyboard |
 
 Every view (details, list, tiles, content and icons) has the same mouse and keyboard handling:
 click, Ctrl+click and Shift+click to select, a rectangle drawn from empty space (Ctrl adds to the
 selection), Ctrl+A, arrow keys, typing to jump to a name, rename in place, both context menus,
 dragging out and dropping in.
 
-## This PC, the Recycle Bin and the folder tree
+## Home, This PC, the Recycle Bin and the folder tree
 
-A tab can show places that are not folders. **This PC** (type `This PC`, `Computer` or
+A tab can show places that are not folders: Home (see Explorer parity below), This PC and the
+Recycle Bin. Each is an address like a folder's, so it works in a new tab, in either pane, in a
+new window (Ctrl+N), in Back and Forward, in saved workspaces and in the layout kept between
+runs, and the palette lists all three. Searching from one searches everywhere. Archives are
+addresses too (see Archives below): an archive's path, and a folder inside it, open anywhere a
+folder does.
+
+**This PC** (type `This PC`, `Computer` or
 `shell:MyComputerFolder` in the address bar, or choose it in the folder tree or the palette)
 shows your folders (Desktop, Documents, Downloads, Music, Pictures, Videos, wherever Windows
 keeps them, OneDrive included), then devices and drives, then network locations: each drive
@@ -167,7 +173,8 @@ Explorer's does, and "N GB free of M GB". Mapped network drives are listed conne
 a drive that is slow to answer (a server that is away) says "Reading…" and fills in when it
 answers, without holding up the page. Drives that come and go (USB sticks, mapped drives)
 appear and disappear by themselves. Double-click or Enter opens a drive; its menu has Open,
-Open in new tab, Eject for removable media and discs, Properties and the Windows menu. Up from
+Open in new tab, Show disk usage (the disk usage hub, on that drive), Eject for removable media
+and discs, Properties and the Windows menu. Up from
 a drive's root goes to This PC, whose name leads every drive's path in the address bar.
 
 The **Recycle Bin** (`Recycle Bin` or `shell:RecycleBinFolder`, or Places in the sidebar)
@@ -177,13 +184,16 @@ selection back where it was deleted from, making the folder again if it has gone
 conflicts get the shell's own dialog), and goes into the undo history like any other
 operation, so Ctrl+Z sends it back to the bin. Restore all, Delete permanently (Del) and Empty
 Recycle Bin each ask first; deleting says how many items will go. The page follows the bin:
-items deleted anywhere show up within a couple of seconds.
+items deleted anywhere show up within a couple of seconds. The cleanup tab's Recycle Bin
+recommendation opens this page.
 
 The **folder tree** at the bottom of the sidebar is Explorer's navigation pane: This PC, its
 drives, and their folders, straight from the index (no disk access on indexed drives; shares
-and removable drives are read from disk), hidden folders only with "Show hidden items". The
-folder the tab shows is highlighted and, with "Expand to open folder" (on by default, in a
-folder's menu), revealed. Keys as in Explorer: Up and Down move, Left collapses or goes to the
+and removable drives are read from disk), hidden folders only with "Show hidden items" and
+protected system folders only when Folder Options show them. The
+folder the tab with the keyboard shows (in either pane) is highlighted and, with "Expand to
+open folder" (on by default, in a folder's menu), revealed; Ctrl+Shift+E reveals it and gives
+the tree the keyboard in any case. Keys as in Explorer: Up and Down move, Left collapses or goes to the
 parent, Right expands or goes to the first folder inside, typing jumps to a name, `*` expands
 everything below, Enter opens (Ctrl+Enter in a new tab), and resting on a folder opens it.
 Folders made, renamed or deleted by any program appear in the tree as they do in the index,
@@ -199,7 +209,7 @@ environment variables (`%USERPROFILE%\Documents`, `%APPDATA%`), `~`, every `shel
 (`shell:downloads`, `shell:startup`, `shell:sendto`, `shell:recent`…, suggested after
 `shell:`), forward slashes, quotes, `\\?\` long paths, shares (`\\server\share`; `\\server\`
 lists the server's shares), paths relative to the open folder, and a file's path, which opens
-its folder with the file selected.
+its folder with the file selected (an archive's opens the archive, as a double-click does).
 
 ## File operations, undo and batch rename
 
@@ -240,7 +250,10 @@ with a double-click or Enter, and the address goes on past the archive
 show in every view with their type's icon, the preview pane and Quick Look show them, and an
 archive inside an archive opens too. Opening a file copies it to a folder of its own under the
 temp folder and opens the copy, as Explorer does; Copy, a drag out to any program and
-"Extract…" copy items out. Search does not look inside archives.
+"Extract…" copy items out, and with two panes "Copy to other pane" (Alt+C) extracts the
+selection into the folder the other pane shows. The palette opens an archive as a folder too,
+and lists what is inside one after a typed path (`/C:\Downloads\photos.zip\`). Search does not
+look inside archives.
 
 "Extract all…" asks where the files go (a folder named after the archive, beside it, unless you
 choose another) and whether to show them when it is done; "Extract here" puts them in the
@@ -283,10 +296,12 @@ tool for archives. Copies made for the preview and for drags are kept in the dat
 
 The View button in the toolbar picks the view (details, list, tiles, content, or icons from 32
 to 256 pixels), the sort order, Group by, and two options: "Show hidden items" (off by default;
-hidden files, protected system files among them, are then left out of folders and search
-results, while files only marked system, such as `C:\Windows\Fonts`, show as they do in
-Explorer) and "Show file extensions".
-Each folder remembers its own view, sort and grouping, and search results have one of their own.
+hidden files are then left out of folders and search results, while files only marked system,
+such as `C:\Windows\Fonts`, show as they do in Explorer) and "Show file extensions". As in
+Explorer, protected operating system files (hidden and system both) stay out even while hidden
+items are shown, unless Folder Options say otherwise (see Explorer parity below); the folder
+tree and the address bar's suggestions follow both options. Each folder remembers its own view,
+sort and grouping, and search results have one of their own.
 
 The Content view (Ctrl+Shift+8, as in Explorer; Tiles is Ctrl+Shift+7) gives each item a wide
 row: its thumbnail or icon, name and type, then its date modified and size, and an image's
@@ -319,14 +334,6 @@ search results, to the names containing what you type, as you type; `*` and `?` 
 and one character over the whole name (`*.pdf`). The engine narrows the whole listing, the
 status bar says "n of m items", the selection follows the items that stay, and Esc clears and
 closes the box. Opening another folder closes it too.
-The View button in the toolbar picks the view (details, list, tiles, or icons from 32 to 256
-pixels), the sort order, and two options: "Show hidden items" (off by default; hidden files,
-protected system files among them, are then left out of folders and search results, while
-files only marked system, such as `C:\Windows\Fonts`, show as they do in Explorer) and "Show
-file extensions". As in Explorer, protected operating system files (hidden and system both)
-stay out even while hidden items are shown, unless Folder Options say otherwise (see Explorer
-parity below).
-Each folder remembers its own view and sort, and search results have one of their own.
 
 Icon and tile views show thumbnails rendered by the Windows shell, cached in
 `%LOCALAPPDATA%\Kestrel\thumbs` (up to about 1 GB; the oldest go first). Files whose contents
@@ -351,7 +358,9 @@ the shell's progress and conflict windows, as one operation that Ctrl+Z undoes; 
 from one pane drop into the other as they would from Explorer. Both panes refresh themselves
 when their folders change. Which panes are shown, where they split and each pane's tabs are
 kept in the app's database and come back when Kestrel starts; hiding the second pane keeps its
-tabs for the next time it opens.
+tabs for the next time it opens. Either pane can show Home, This PC, the Recycle Bin or the
+inside of an archive; the other pane's folder is where Copy and Move to other pane put things,
+so those are offered only while it shows a folder that can take them.
 
 ## Preview pane and Quick Look
 
@@ -491,8 +500,10 @@ never from a `claude.cmd` in the project folder.
 ## Disk usage
 
 "Disk usage" in the sidebar opens a hub of what uses the drive the folder on screen is on;
-Ctrl+Shift+U, "Show disk usage" in a folder's menu, or the command palette open it on the
-folder itself. Everything comes from the index, so a drive of millions of files is added up in
+"Show disk usage" in a drive's menu on This PC or in the folder tree opens it on that drive, and
+Ctrl+Shift+U, "Show disk usage" in a folder's menu or the command bar's "…" menu, or the command
+palette open it on the folder itself (from Home, This PC or the Recycle Bin, on the first drive;
+inside an archive, on the archive's folder). Everything comes from the index, so a drive of millions of files is added up in
 about a tenth of a second without reading the disk, and the hub follows the index as files
 change. The breadcrumb (click beside it to type a folder), the drive list, a click on any
 folder and Back (Alt+Left or Backspace) move around; Esc closes the hub.
@@ -530,8 +541,9 @@ back. Files kept online only (OneDrive's cloud files) take no space on the disk,
 area; they are counted apart, as in the cloud, and never downloaded. A hard-linked file counts
 once where the index charged it once, as an index read from the drive's file table does.
 
-`openDiskUsage(path)` in `src/disk.ts` opens the hub on any drive or folder, and the hub's tabs
-are a list in `DiskHub.tsx` that other panels join.
+The hub has four tabs: Overview and Map (above), and Cleanup and Duplicates (below), which work
+on the drive or folder the hub shows. `openDiskUsage(path)` in `src/disk.ts` opens the hub on
+any drive or folder, and the tabs are a list in `DiskHub.tsx` that other panels join.
 
 ## Command palette and quick launcher
 
@@ -578,37 +590,41 @@ What Windows' File Explorer does that Kestrel also does now (the full checklist,
 left out and why, is `docs/explorer-parity.md`):
 
 - **Command bar** under the address bar: New, Cut, Copy, Paste, Rename, Delete, Sort, and a "…"
-  menu with Undo, Redo, Pin, Select all, Select none, Invert selection, Open in Terminal, New
-  window, Full screen, Properties and Options; Details at its right.
+  menu with Undo, Redo, Pin, Select all, Select none, Invert selection, Compress to ZIP file,
+  Extract all…, Show disk usage, Open in Terminal, New window, Full screen, Properties and
+  Options; Details at its right. Inside an archive, Cut, Rename and Delete are greyed out.
 - **New** offers every file type Windows registers for it (`ShellNew`: Office documents,
   compressed folders, and so on), made from the registered template or bytes and then named in
   place, plus Shortcut, which asks what it points at. A Text Document is always offered.
 - **Home**: Quick access (the folders you open most), Favorites (your pins) and Recent (files
   opened lately, in any program as Windows records them, or through Kestrel). Type "Home" in the
-  address bar, or click Home at the top of the sidebar; Folder Options can make Kestrel open to it.
+  address bar, click Home at the top of the sidebar, or choose it in the palette; it is a place a
+  tab can be in, like This PC and the Recycle Bin, in either pane and in history.
 - **Details pane** (Alt+Shift+P), in the preview pane's place: the selection's size, dates,
   attributes, availability and what Windows knows of it (dimensions, length, authors...), or the
   totals of several items, or the folder's own details.
 - **More windows** (Ctrl+N, or "Open in new window"), in the same process, sharing the index,
-  pins and undo history. Closing one leaves the others open.
+  pins and undo history, each opening on the folder (or Home, This PC, an archive) it was given.
+  Closing one leaves the others open; only the first keeps its panes and tabs for the next start.
 - **Open in Terminal** opens Windows Terminal in a folder; **Open file location** shows a search
   result in its folder; **Alt+drop** makes shortcuts; **Shift+Delete** asks, as Explorer does,
   before deleting for good; Alt+Enter with nothing selected shows the folder's properties.
-- **Folder Options** ("…" > Options): open to Home or your user folder, single- or double-click
+- **Folder Options** ("…" > Options): open to Home, This PC or your user folder, single- or double-click
   to open, the full path in the tabs, hidden files, protected operating system files (hidden by
   default, as in Explorer), extensions, and sync status.
 - **Sync status**: in OneDrive and other synced folders, every view shows whether an item is
   online-only (a cloud), on this device (a ringed check) or always kept on it (a filled check),
   read from its attributes, so nothing is downloaded.
 - The status bar adds up the selection's size and has Explorer's Details and Large icons buttons.
+
 ## Cleanup recommendations and duplicate files
 
-"Cleanup recommendations" and "Find duplicate files" in the command palette (Ctrl+K) open a page
-with two panels, made to become tabs of the disk usage hub; the page has no shortcut of its own.
-"Look in" narrows either panel to the folder on screen, and Escape closes the page. Nothing is
-removed until you tick items and confirm a summary of how many, how much, and that they go to
-the Recycle Bin. They can be restored from there, or with the page's Undo: removals are file
-operations in the undo history, so Ctrl+Z in a folder undoes them too. Anything a program still
+The disk usage hub's Cleanup and Duplicates tabs work on the drive or folder the hub shows.
+"Cleanup recommendations" in the command palette (Ctrl+K) opens the hub at Cleanup on the drive
+on screen, and "Find duplicate files" at Duplicates on your user folder. Nothing is removed until
+you tick items and confirm a summary of how many, how much, and that they go to the Recycle Bin.
+They can be restored from there, or with the tab's Undo: removals are file operations in the
+undo history, so Ctrl+Z in the hub or in a folder undoes them too. Anything a program still
 has open is skipped, and the result says why. "Dry run" lists what would happen and changes
 nothing.
 
@@ -634,7 +650,7 @@ Info (shown only, with advice):
   year outside AppData (Review);
 - WSL, Docker, Hyper-V, VirtualBox and VMware disks, with how to compact each (Info: never
   touched);
-- the Recycle Bin's size, with a button that opens it, and Windows' own caches (update downloads,
+- the Recycle Bin's size, with a button that shows the Recycle Bin page, and Windows' own caches (update downloads,
   Delivery Optimization, previous installations) with buttons for Storage Sense and Disk Cleanup
   (Info: Kestrel never empties the bin or runs anything elevated).
 
@@ -704,11 +720,11 @@ With `$env:KESTREL_RELEASE = 1` set as well, `dev.mjs start` makes the slot a re
 instead: it runs `tauri build` (no installer) with the slot's identity and starts the
 `kestrel.exe` that produced, whose front end is built in. `smoke.mjs`, `fileops.mjs`,
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
-`shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`,
-`integration.mjs`, `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs` and
-`places.mjs`, `layout.mjs` and `parity.mjs` need a dev build, whose test hooks they use. A
-release build has the Windows menu's test hook only when started with `KESTREL_TEST_HOOKS=1`,
-as `dev.mjs` starts it.
+`shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`, `integration.mjs`,
+`shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs`, `places.mjs`, `layout.mjs`,
+`parity.mjs`, `archives.mjs`, `disk.mjs` and `cleanup.mjs` need a dev build, whose test hooks
+they use. A release build has the Windows menu's test hook only when started with
+`KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
 `parity.mjs` opens a second window and closes it, turns the window to full screen and back,
 and opens two native dialogs (Shift+Delete's confirmation and a folder's Properties), which it
@@ -718,10 +734,6 @@ own, and records and forgets a file of its own as opened; Windows Terminal is no
 projects feature's hook records the launch). `connectToKestrel()` in `e2e/connect.mjs` returns
 the first window, `main`, when there are several; `waitForKestrelWindow(browser, label)` finds
 another.
-`archives.mjs` need a dev build, whose test hooks they use. A release build has the Windows menu's test hook only
-`disk.mjs` need a dev build, whose test hooks they use. A release build has the Windows menu's test hook only
-`cleanup.mjs` need a dev build, whose test hooks they use. A release build has the Windows menu's test hook only
-when started with `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
 Run the suites one after another, not side by side: several use the clipboard or the window's
 settings. Every suite works in its own scratch folder under `%TEMP%` and removes it afterwards;
@@ -742,12 +754,13 @@ hub closing when a pin opens, and the preview's webview hiding under the palette
 and the hub. It makes a repository in its scratch folder, locks one folder in it with `icacls`
 for a moment, and removes the pins, tags, saved search and workspace it makes.
 
-`cleanup.mjs` needs a dev build: its development hook points every cleanup rule at a scratch
-folder laid out like a machine (a profile with its temp folder, caches, a stale Rust project,
+`cleanup.mjs` needs a dev build and drives the disk usage hub's Cleanup and Duplicates tabs: its
+development hook points every cleanup rule at a scratch folder laid out like a machine (a profile with its temp folder, caches, a stale Rust project,
 duplicate photos, and Documents, OneDrive and Program Files holding what must never be offered),
 says which programs run and which tools are installed, and records tool runs and openings
 instead of performing them. Two tiny files named `kestrel-test-*` go through the Recycle Bin and
-come back with Undo. `cleanup-dryrun.mjs` is no test: run against a slot, it reports what
+come back with Undo, and the Recycle Bin recommendation's button opens the Recycle Bin page
+(read only). `cleanup-dryrun.mjs` is no test: run against a slot, it reports what
 cleanup would offer on this machine and what a dry run of all of it would do, without changing
 anything or running any tool, and looks for duplicates of 10 MB or more in your user folder
 (reading files; online-only ones are left alone).
@@ -775,8 +788,8 @@ with two tiny files named `kestrel-test-*` and runs by default, and the helper's
 `locked.mjs` and `integration.mjs` use `icacls` to remove, then restore, the permissions of
 one scratch folder.
 
-`places.mjs` passes two small files named `kestrel-test-*` from its scratch folder through the
-real Recycle Bin: it restores one and deletes the other permanently from the bin's page, and
+`places.mjs` opens the disk usage hub on the system drive from This PC (read only), and passes
+two small files named `kestrel-test-*` from its scratch folder through the real Recycle Bin: it restores one and deletes the other permanently from the bin's page, and
 only ever selects rows whose original location is its scratch folder. It reads the bin's other
 items before and after (those not deleted from the temp folder, where other test runs work)
 and fails if any changed. Restore all and Empty Recycle Bin are never clicked, and emptying the

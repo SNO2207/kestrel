@@ -73,62 +73,63 @@ Done and verified:
   cover the actions, the index, typed paths, `@` projects (`projects/provider.rs`), `#` tags,
   and the pins, frequent folders, saved searches and workspaces (`shortcuts/provider.rs`,
   front-end halves in `lib/paletteFeatures.ts`).
-- **Places** (branch `feature/places`: `lib/locations.ts`, `places.ts`, `placesSetup.ts`,
-  `ThisPC.tsx`, `RecycleBin.tsx`, `FolderTree.tsx`, `AddressInput.tsx`, `thispc.rs`,
-  `recyclebin.rs`, `foldertree.rs`, `address.rs`, `kestrel_db::places`, `places.css`): special
-  locations (This PC, the Recycle Bin) in tabs, the sidebar's virtualised folder tree with
-  collapsible sections, and address completion; `e2e/places.mjs`. Expanding all of C: in the
-  tree (820,756 folders) took 0.7 s and scrolled at a 7.6 ms average frame.
-
+- **Places** (`lib/locations.ts`, `places.ts`, `placesSetup.ts`, `ThisPC.tsx`, `RecycleBin.tsx`,
+  `FolderTree.tsx`, `AddressInput.tsx`, `ConfirmDialog.tsx`, `thispc.rs`, `recyclebin.rs`,
+  `foldertree.rs`, `address.rs`, `kestrel_db::places`, `places.css`): the special locations
+  registry, This PC (drives probed with a time limit each, mapped and remembered network
+  drives, Eject), the Recycle Bin page (restore through `fileops` into the undo journal,
+  delete permanently, empty), the sidebar's virtualised folder tree from the index with
+  folding sections and a resizable edge, and address completion and resolution. Expanding all
+  of C: in the tree (820,756 folders) took 0.7 s and scrolled at a 7.6 ms average frame.
 - **Layout** (`layout.rs`, `kestrel_query::{group, filter}`, `kestrel_db::layout`, `panes.ts`,
   `lib/listLayout.ts`, `lib/columns.ts`, `Panes.tsx`, `ColumnHeaders.tsx`, `GroupHeader.tsx`,
   `FilterBar.tsx`, `layout.css`): a second pane (Ctrl+Shift+D) with tabs of its own, Copy and
   Move to other pane (Alt+C, Alt+X) through the undo journal, the layout restored on start;
   Explorer's Group by in every view and in search results (2.7 M results group in about 20 ms);
   configurable details columns; the filter box (Ctrl+Shift+L); the selection rectangle; and the
-  Content view (Ctrl+Shift+8; Tiles moved to Explorer's Ctrl+Shift+7).
-
+  Content view (Ctrl+Shift+8; Tiles is Explorer's Ctrl+Shift+7).
 - **Explorer parity** (`src-tauri/src/parity/`, `kestrel_db::parity`, `parity.ts`,
   `CommandBar.tsx`, `HomeView.tsx`, `DetailsPane.tsx`, `FolderOptions.tsx`, `ParityLayer.tsx`,
-  `parity.css`; checklist in `docs/explorer-parity.md`, tests in `e2e/parity.mjs`): the
-  command bar, New > every `ShellNew` type and New > Shortcut, Home (Quick access, Favorites,
-  Recent), the details pane (Alt+Shift+P), more windows (Ctrl+N), Alt+drop shortcuts, Folder
-  Options (protected files, single-click, full path, sync status glyphs), Open in Terminal,
-  Open file location, and Explorer's remaining shortcuts. Folder visits are recorded once
-  (`frecency_visit`) and the palette reads them (`kestrel_db::palette::recent`).
+  `parity.css`; checklist in `docs/explorer-parity.md`, kept current with `main`): the command
+  bar, New > every `ShellNew` type and New > Shortcut, Home (Quick access, Favorites, Recent;
+  a special location), the details pane (Alt+Shift+P), more windows (Ctrl+N), Alt+drop
+  shortcuts, Folder Options (open to Home, This PC or the user folder; protected files,
+  single-click, full path, sync status glyphs), Open in Terminal, Open file location, and
+  Explorer's remaining shortcuts. Folder visits are recorded once (`frecency_visit`) and the
+  palette reads them (`kestrel_db::palette::recent`).
 - **Archives** (`src-tauri/src/archive/`, `kestrel_db::archives`, `archives.ts`,
   `lib/archivesApi.ts`, `ArchiveDialogs.tsx`, `archives.css`): zip, 7z, RAR, tar (plain, gzip,
   bzip2, xz) and single `.gz`/`.bz2`/`.xz` files browse as read-only folders (nested archives
   too), with the preview, Quick Look, opening a file from a temp copy, Copy and drags out;
   "Extract all…", "Extract here", "Extract…", "Compress to ZIP file" and "Compress to…" (zip,
-  7z, tar.gz), with progress, cancel, undo, and the zip-slip, link, device-name, bomb, Mark of the
-  Web and password rules, each unit tested (`archive/tests.rs`) and end to end
-  (`e2e/archives.mjs`).
+  7z, tar.gz), with progress, cancel, undo, and the zip-slip, link, device-name, bomb, Mark of
+  the Web and password rules, each unit tested (`archive/tests.rs`).
 - **Disk usage** (`crates/kestrel-analyze`, `src-tauri/src/disk/`, `kestrel_db::disk`, `disk.ts`,
   `lib/diskApi.ts`, `DiskHub.tsx`, `DiskOverview.tsx`, `DiskTreemap.tsx`, `disk.css`): the hub
-  (sidebar, Ctrl+Shift+U for the folder on screen, the palette, the folder's menu), from the
-  index only. Measured on the owner's index (3.47 M entries): treemap layout 1–2 ms, overview
-  ~92 ms, daily growth sample ~7 ms (`kestrel-cli disk-bench`). Hub tabs are the `TABS` list in
-  `DiskHub.tsx`; `openDiskUsage(path)` opens it anywhere.
-
+  (sidebar, Ctrl+Shift+U, the palette, the folder's and the command bar's menus, and the drive
+  menus of This PC and the folder tree), from the index only, with four tabs: Overview, Map,
+  Cleanup and Duplicates. Measured on the owner's index (3.47 M entries): treemap layout 1–2 ms,
+  overview ~92 ms, daily growth sample ~7 ms (`kestrel-cli disk-bench`).
 - **Cleanup recommendations and duplicates** (`crates/kestrel-cleanup`, `src-tauri/src/cleanup/`,
-  `kestrel_db::cleanup`, `CleanupPanel.tsx`, `DuplicatesPanel.tsx`, `CleanupPage.tsx`,
-  `CleanupParts.tsx`, `cleanup.ts`, `lib/cleanupApi.ts`, `cleanup.css`): rules over the index in
-  three tiers, recycled through `fileops` into the undo journal after a confirmation, tools run
-  on a click; duplicates by size, then ends, then BLAKE3, hashes cached by file id. The panels are
-  made for the disk usage hub's tabs; until it has them, a page of their own opens from the
-  palette (branch `feature/cleanup`, not yet merged).
+  `kestrel_db::cleanup`, `CleanupPanel.tsx`, `DuplicatesPanel.tsx`, `CleanupParts.tsx`,
+  `cleanup.ts`, `lib/cleanupApi.ts`, `cleanup.css`): rules over the index in three tiers,
+  recycled through `fileops` into the undo journal after a confirmation, tools run on a click;
+  duplicates by size, then ends, then BLAKE3, hashes cached by file id. The two panels are the
+  disk usage hub's Cleanup and Duplicates tabs, on the hub's drive or folder; the palette's
+  "Cleanup recommendations" and "Find duplicate files" open the hub there.
 
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
-hardening, shortcuts, projects and palette. Every unit test and all 16 e2e suites pass there
-in a dev build, and the ten that need no development hook (smoke, fileops, live-index, views,
-undo, batchrename, locked, preview, shellmenu, undo-restart) in a release build too;
-`integration.mjs` and `connections.mjs` cover where the features meet.
+hardening, shortcuts, projects and palette, then places, layout, parity, archives, disk and
+cleanup (integrated 2026-10-15). Every unit test and all 22 e2e suites pass there in a dev build
+(`cleanup-dryrun.mjs` is a read-only report, not a suite), and the suites that need no
+development hook in a release build too (the list is in the README's Testing section);
+`integration.mjs` and `connections.mjs` cover where the older features meet, and the newer
+suites cover theirs (`places.mjs` opens the disk usage hub from This PC, `cleanup.mjs` drives
+the hub's tabs and the Recycle Bin page).
 
 Not done yet: an installer (bundling is off; the helper would then need a Tauri sidecar entry,
-see README) and shortcuts on drop (Alt).
-see README), Explorer's Content view (Ctrl+Shift+7) and marquee selection; what else Explorer
-does that Kestrel does not is listed in `docs/explorer-parity.md`.
+see README); what else Explorer does that Kestrel does not is listed in
+`docs/explorer-parity.md`.
 
 ## How the app fits together
 
@@ -173,8 +174,9 @@ does that Kestrel does not is listed in `docs/explorer-parity.md`.
   `preview-2`), folder watch (`Watcher::watch_for`) and drag hook; `preview::guard`,
   capabilities (`main-*`) and `navigation.rs` admit them by `is_app_window`/`is_preview_label`.
   The quick launcher, the tray and a second launch bring forward the window used last
-  (`appwindows::target`); Kestrel exits when the last app window closes. Home is a place a tab
-  can be (`lib/home.ts`, address "Home"; `HomeView` stands in for the file list).
+  (`appwindows::target`); Kestrel exits when the last app window closes. A window opened with
+  Ctrl+N gets its folder from `window_start` (`givenLocation` in `lib/home.ts`); only `main`
+  restores and saves the pane layout (`keepsLayout` in `panes.ts`).
 - `src-tauri/src/projects/`: `discover.rs` finds project roots in the index (marker files,
   excluded locations), `facts.rs` walks a project's part of the index (sizes, languages,
   activity, and a fingerprint of what git would see), `git.rs` runs git read-only with a
@@ -187,7 +189,8 @@ does that Kestrel does not is listed in `docs/explorer-parity.md`.
 - Layout: every tab belongs to a pane (`Tab.pane`); each pane shows one of its tabs
   (`shownTab`), the active tab is the one the pane with the keyboard shows, and while two panes
   are shown both shown panels carry `.tab-panel.current` (only one `.active`). The active
-  tab's folder is watched by `list_dir`, the other pane's by `watch_other_pane`. A new listing
+  tab's folder is watched by `list_dir`, the other pane's by `watch_other_pane`; both watches
+  are per window (`Watcher::watch_for(window.label())`) and end with it. A new listing
   passes through
   `arrange` in `state.ts`, which groups it (`group_set`: the engine keeps the plain sorted order
   aside, `Arranged` in `engine.rs`, and the group starts) and narrows it by the tab's filter
@@ -210,19 +213,30 @@ does that Kestrel does not is listed in `docs/explorer-parity.md`.
   its tables: it adds a module with its `Migration`s and lists them in `MIGRATIONS`. Migrations
   run once in name order, so name them `<yyyy_mm_dd>_<feature>_<what>` and never edit one that
   has shipped.
-- Special locations (`lib/locations.ts`): a tab can show a place that is not a folder. A
-  location is registered with `registerLocation({ address, title, icon, page, aliases })`
-  from a module of the feature's own that App.tsx imports (This PC and the Recycle Bin are
-  registered in `placesSetup.ts`). The tab keeps the address in `Tab.path` and its history,
-  with `listing` null; `navigate` in state.ts sends any spelling of it there, and the tab
-  panel draws `page` (given `LocationPageProps`: tab id, address, whether active, a revision
-  bumped by Refresh, and `focusRef`) over the hidden file list. Back and Forward, tab titles,
-  the breadcrumb (`crumbsOf`), Up (`parentOf`), the sidebar's highlight, workspaces, searches
-  (which go everywhere from a location) and the palette (`lib/paletteLocations.ts`) follow by
-  themselves. A family of addresses (inside an archive) gives `claims(address)` and its own
-  `title`, `crumbs` and `parent`; `adopts(path)` makes a location the parent of file system
-  roots (This PC adopts drive roots). Pages report the status bar's text with
-  `setLocationStatus`. Code that takes `tab.path` as a folder must check `locationOf` first.
+- **Navigation: one mechanism.** Everything a tab can show goes through `navigate(tabId,
+  address)` in `state.ts`, from every entry point (address bar, breadcrumb, sidebar, folder
+  tree, palette, history, new tabs, new windows, the saved layout, workspaces, drops):
+  - `resolveLocation(address)` (`lib/locations.ts`) first: a *special location* (Home, This PC,
+    the Recycle Bin; registered with `registerLocation` in `placesSetup.ts`) under any of its
+    spellings. `showLocation` keeps its canonical address in `Tab.path` and the history, with
+    `listing` null, and the tab's panel in App.tsx draws the location's `page` (given
+    `LocationPageProps`: tab id, address, whether active, a revision bumped by Refresh, and
+    `focusRef`) over the hidden file list, in whichever pane the tab is.
+  - anything else goes to `list_dir`: a folder, a share, or an *archive address*
+    (`C:\x\a.zip\dir`), which `archive::list` answers before the engine with a read-only
+    listing (`Listing.archive` set).
+  Everything else follows `Tab.path`: titles (`tabTitle` in TitleBar.tsx, used by both panes'
+  strips, and `titleOf`), the breadcrumb (`crumbsOf`), Up (`parentOf`; a drive's parent is This
+  PC), the sidebar's and tree's highlight, searches (which go everywhere from a location), the
+  saved layout and workspaces, and the palette (`lib/paletteLocations.ts` lists the locations;
+  the files provider opens archives as folders and the `/` paths provider lists inside them).
+  Code that takes a tab's path as a folder checks `locationOf(tab.path)` and
+  `inArchive(tab.listing)` first, or uses the helpers that do: `inFolder` (parity.ts),
+  `otherPaneFolder` (panes.ts), `analysableFolder` (disk.ts). The status bar shows a page's own
+  `setLocationStatus` parts. Hubs (projects, disk usage) are overlays over the content, not
+  locations; they close when the active tab moves. A family of addresses can be a location with
+  `claims(address)` and its own `title`, `crumbs` and `parent`; `adopts(path)` makes a location
+  the parent of file system roots (This PC adopts drive roots).
 - Places (`places.ts`, backend `thispc.rs`, `recyclebin.rs`, `foldertree.rs`, `address.rs`):
   This PC's drives are probed on a thread each with a time limit (`thispc::Drives`) and a
   watcher emits `drives-changed`; late answers come as `drive-details`. The bin is read through
@@ -230,9 +244,11 @@ does that Kestrel does not is listed in `docs/explorer-parity.md`.
   path); restores run as `Op::Restore` through `fileops` and are recorded in the undo journal;
   `recycle::find` prefers an exact deletion time, so a restore of one listed item is exact.
   The tree's folders come from the index (`tree_children`, `tree_reveal`, `tree_subtree`), and
-  `folders-changed` (the engine's revision) makes it ask again for the folders in view. The
-  disk usage hub opens on a drive through `setDiskUsageHandler` in places.ts. The sidebar's
-  collapsed sections and "Expand to open folder" are in `kestrel_db::places`.
+  `folders-changed` (the engine's revision) makes it ask again for the folders in view; it
+  follows "Show hidden items" and "Hide protected operating system files", as the address bar's
+  suggestions do. The disk usage hub opens on a drive through `setDiskUsageHandler` in
+  places.ts, which App.tsx sets at startup. The sidebar's collapsed sections and "Expand to
+  open folder" are in `kestrel_db::places`.
 - Archives (`src-tauri/src/archive/`, see its module documentation): `address.rs` (formats by
   name, and addresses inside archives), `reader.rs` (one `Source` per format; RAR through
   `System32\tar.exe`, converted to a tar stream, so the same checks apply), `names.rs` (paths
@@ -255,9 +271,10 @@ does that Kestrel does not is listed in `docs/explorer-parity.md`.
   `archive::refuse_entries`/`refuse_location` in delete, rename, batch rename, new folder,
   paste, cut, drops (`dragdrop::plan`) and the Windows menu; `archive::materialize` in Copy and
   drags out; `archive::open_entry` in `open_path`; `archive::preview_file`/`preview_details` in
-  the preview's commands and protocol; `archive::icon_key` for icons. A new place that lists
-  things (special locations, a second pane) keeps archives working by calling `list_dir` with
-  the address, and should run any new path-taking command past those checks.
+  the preview's commands and protocol; `archive::icon_key` for icons; `archive::entries` for
+  the palette's typed paths. Anything that lists things keeps archives working by calling
+  `list_dir` with the address, and any new path-taking command goes past those checks (the
+  Windows menu for paths, `shell_paths_menu`, does).
 - Cleanup: `crates/kestrel-cleanup` holds the rules (`rules/`, one module each, run in order and
   claiming what they offer), `Locations` (every place they look; `Locations::under` lays a
   machine out in a scratch folder for tests), the `Guard` (what is never offered: system and
@@ -265,7 +282,8 @@ does that Kestrel does not is listed in `docs/explorer-parity.md`.
   `dupes` with `hash`. `src-tauri/src/cleanup/` keeps the latest scan and checks every action
   against it; `cleanup_dev_sandbox` (dev builds) points the rules at a scratch folder and records
   tools instead of running them. Run a scan's rules one per index lock (`Scan`), never the whole
-  scan under one.
+  scan under one. The panels are tabs of the disk usage hub (`TABS` in `DiskHub.tsx`), which
+  gives them its root; `cleanup.ts` only holds the palette's ways in.
 - Shortcuts: data in `kestrel_db::shortcuts` (pins and groups, frecency, saved searches, tags,
   workspaces), commands in `src-tauri/src/shortcuts/`, front end in `src/shortcuts.ts`,
   `lib/shortcutsApi.ts`, `shortcuts.css` and the `Pinned*`, `Shortcut*`, `GoToFolder`,
@@ -332,8 +350,8 @@ Git:
   `CARGO_TARGET_DIR` fixed it.
 - The preview's webview is drawn above the page, so anything of the app's that can lie over
   the preview area must be in `OVERLAYS` (`lib/previewSurface.ts`), or it ends up underneath
-  the image or video: menus, dialogs, notices, Quick Look, the palette, Go to folder and the
-  projects hub are.
+  the image or video: menus, dialogs, notices, Quick Look, the palette, Go to folder, the
+  projects and disk usage hubs, the address bar's suggestions and the archive jobs panel are.
 - Every key typed into the palette stops there (`CommandPalette.tsx`), so the window's own
   shortcuts never act behind it; window-wide keys that must work over it listen in the capture
   phase, as Ctrl+K does.
@@ -410,8 +428,9 @@ Git:
 - `git check-ignore` refuses a whole batch over one path inside a submodule; `git::ignored`
   drops the paths git names and asks again. `git status` without `--no-optional-locks` writes
   the index file; every command in `projects/git.rs` passes it.
-- The sidebar's first `.place` is taken to be Home by `dragdrop.mjs`; the Projects entry is a
-  `.projects-entry`, not a place.
+- The sidebar's first `.place` is the user folder, named after the account, which
+  `dragdrop.mjs` drops on; Home (`.home-entry`), Projects (`.projects-entry`) and Disk usage
+  (`.disk-entry`) are drawn like places but are not, and take no drops.
 - Shell commands outlive `InvokeCommand`: Properties opens its dialog on another thread
   without taking the process reference, and Copy leaves an OLE data object on the clipboard.
   The helper therefore waits for its windows to close and flushes the clipboard before it

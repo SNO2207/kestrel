@@ -63,6 +63,12 @@ function updateDrive(drive: DriveInfo) {
   setThisPc((data) => ({ ...data, drives: data.drives.map((known) => (known.letter === drive.letter ? drive : known)) }));
 }
 
+/** A drive's name as This PC shows it ("OS (C:)"), once This PC has been read; null until then. */
+export function driveTitle(root: string): string | null {
+  const letter = root.slice(0, 1).toUpperCase();
+  return thisPc().drives.find((drive) => drive.letter.toUpperCase().startsWith(letter))?.name || null;
+}
+
 /** How full a drive is, from 0 to 1; 0 when unknown. */
 export const usedShare = (drive: DriveInfo) => (drive.total > 0 ? Math.min(1, (drive.total - drive.free) / drive.total) : 0);
 /** Explorer turns a drive's bar red once it is 90 % full. */

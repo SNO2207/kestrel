@@ -284,7 +284,8 @@ export { filterFocus };
 
 export function openFilter(tabId: number) {
   const tab = tabs.find((each) => each.id === tabId);
-  if (!tab) return;
+  // Only a listing narrows: Home, This PC and the Recycle Bin have pages instead.
+  if (!tab?.listing) return;
   if (tab.filter === null) setFilter(tabId, "");
   setFilterFocus((n) => n + 1);
 }

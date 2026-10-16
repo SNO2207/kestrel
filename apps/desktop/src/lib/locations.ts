@@ -61,6 +61,8 @@ export interface SpecialLocation {
   crumbs?: (address: string) => Crumb[];
   /** File system roots it is the parent of, such as drive roots for This PC. */
   adopts?: (path: string) => boolean;
+  /** The name of a root it adopts, for the breadcrumb and tab titles ("OS (C:)"); null if unknown. */
+  rootTitle?: (root: string) => string | null;
   /** Listed by the palette; true unless it says otherwise. */
   inPalette?: boolean;
   /** More words the palette matches it by. */
@@ -113,8 +115,17 @@ export function locationTitle(address: string): string | null {
   return typeof location.title === "string" ? location.title : location.title(address);
 }
 
-/** What a tab at a folder or a location is called: the location's title, or the folder's name. */
-export const titleOf = (path: string): string => locationTitle(path) ?? (baseName(path) || path);
+/** The location that adopts a file system root, if any (This PC adopts drive roots). */
+const adopterOf = (root: string) => locations().find((candidate) => candidate.adopts?.(root));
+
+/** What an adopted root is called, as its adopter names it ("OS (C:)" for `C:\`), or null. */
+const rootTitle = (root: string): string | null => adopterOf(root)?.rootTitle?.(root) ?? null;
+
+/**
+ * What a tab at a folder or a location is called: the location's title, a drive's name as This
+ * PC gives it, or the folder's name.
+ */
+export const titleOf = (path: string): string => locationTitle(path) ?? rootTitle(path) ?? (baseName(path) || path);
 
 /** Where Up goes from a path or a location's address, or `null` when nowhere. */
 export function parentOf(path: string): string | null {
@@ -133,8 +144,11 @@ export function crumbsOf(path: string): Crumb[] {
   }
   const crumbs: Crumb[] = breadcrumbs(path);
   const root = crumbs[0]?.path;
-  const adopter = root ? locations().find((candidate) => candidate.adopts?.(root)) : undefined;
-  if (adopter) crumbs.unshift({ label: locationTitle(adopter.address) ?? adopter.address, path: adopter.address, icon: adopter.icon });
+  const adopter = root ? adopterOf(root) : undefined;
+  if (adopter && root) {
+    crumbs[0] = { ...crumbs[0], label: rootTitle(root) ?? crumbs[0].label };
+    crumbs.unshift({ label: locationTitle(adopter.address) ?? adopter.address, path: adopter.address, icon: adopter.icon });
+  }
   return crumbs;
 }
 

@@ -138,7 +138,8 @@ export function LayoutButtons() {
         title="Filter by name (Ctrl+Shift+L)"
         aria-label="Filter by name"
         aria-pressed={(activeTab()?.filter ?? null) !== null}
-        disabled={!activeTab()}
+        // A special location's page has no list to narrow.
+        disabled={!activeTab()?.listing}
         onClick={() => {
           const tab = activeTab();
           if (tab) openFilter(tab.id);

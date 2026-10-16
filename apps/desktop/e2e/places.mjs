@@ -173,10 +173,14 @@ try {
     const tile = page.locator(".pc-tile.drive", { hasText: `(${system})` });
     await tile.click();
     assert.equal(await tile.getAttribute("aria-selected"), "true");
+    // The drive is called as This PC calls it, in the breadcrumb and on its tab.
+    const driveName = (await tile.locator(".pc-tile-name").innerText()).trim();
+    assert(driveName.endsWith(`(${system})`), driveName);
     await page.keyboard.press("Enter");
     await arrivedAt(`${system}\\`);
     await panel.locator(".row").first().waitFor();
-    assert.deepEqual(await crumbs(), ["This PC", system]);
+    assert.deepEqual(await crumbs(), ["This PC", driveName]);
+    assert.equal(await tabTitle(), driveName);
     await page.keyboard.press("Alt+ArrowLeft");
     await page.locator(".pc-page").waitFor();
     await tile.dblclick();

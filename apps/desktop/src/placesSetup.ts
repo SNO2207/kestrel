@@ -8,7 +8,7 @@ import { RecycleBinPage } from "./components/RecycleBin";
 import { ThisPcPage } from "./components/ThisPC";
 import { HOME_ALIASES, HOME_PATH } from "./lib/home";
 import { registerLocation } from "./lib/locations";
-import { RECYCLE_BIN, THIS_PC, isDriveRoot } from "./places";
+import { RECYCLE_BIN, THIS_PC, driveTitle, isDriveRoot } from "./places";
 
 // Explorer's start page: quick access, favorites and recent files (HomeView.tsx).
 registerLocation({
@@ -34,6 +34,8 @@ registerLocation({
   ],
   // Drives sit under This PC: Up from C:\ comes here, and its crumb leads every drive's path.
   adopts: isDriveRoot,
+  // A drive is called as This PC calls it, in the breadcrumb and its tab: "OS (C:)".
+  rootTitle: driveTitle,
   keywords: "computer drives disks devices",
 });
 
