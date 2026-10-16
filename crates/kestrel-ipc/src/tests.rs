@@ -288,5 +288,8 @@ fn the_last_answer_before_the_connection_closes_arrives() {
         let answer = read_line(&client.pipe, &mut client.pending, 1 << 20, SECOND).unwrap().unwrap();
         assert!(answer.len() > 200_000);
     }
-    assert!(read_line(&client.pipe, &mut client.pending, 1 << 20, SECOND).unwrap().is_none(), "then the server hung up");
+    // The server hangs up once it sees both answers read, which it may take a while to notice on
+    // a busy machine: it allows itself the write time limit (five seconds by default) for that.
+    let hang_up = Limits::default().write_timeout;
+    assert!(read_line(&client.pipe, &mut client.pending, 1 << 20, hang_up).unwrap().is_none(), "then the server hung up");
 }

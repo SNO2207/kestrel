@@ -11,7 +11,7 @@
 import { chromium } from "playwright-core";
 
 import { follow } from "./follow.mjs";
-import { appUrl, cdpPort } from "./slot.mjs";
+import { appUrl, cdpPort, slot } from "./slot.mjs";
 
 export const port = cdpPort;
 
@@ -46,11 +46,32 @@ export async function waitForKestrelWindow(browser, label, timeout = 20_000) {
   throw new Error(`No Kestrel window ${label} appeared within ${timeout / 1000} s`);
 }
 
+/** Whether this process has already started its suite from the window's default settings. */
+let freshStart = false;
+
+/**
+ * Starts a suite from the window's default settings: views, panes, search and folder options
+ * live in the page's local storage and outlast the suite that changed them (a suite killed
+ * before its `finally`, or a restore lost when the app is stopped right after it). One left
+ * behind, such as search results in tiles or item check boxes on, broke later suites. Only the
+ * first connection of a process does this: suites that restart the app and connect again
+ * (layout, undo-restart) keep what they set. Never on slot 0, which is the owner's own app.
+ */
+async function startFresh(page) {
+  if (freshStart || slot === 0) return;
+  freshStart = true;
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  // Window shortcuts are ignored until the first tab exists.
+  await page.locator(".tab").first().waitFor();
+}
+
 /** Connects to the slot's Kestrel window `label`: the first window, `main`, unless given. */
 export async function connectToKestrel(label = "main") {
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
   const match = (await kestrelPages(browser)).find((candidate) => candidate.label === label);
   if (match) {
+    if (label === "main") await startFresh(match.page);
     // What the page does from now on, for a failing step to print (steps.mjs).
     await follow(match.page);
     return { browser, page: match.page };
