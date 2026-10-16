@@ -137,9 +137,10 @@ Done and verified:
   `lib/semanticApi.ts`, `lib/moments.ts`, `AiSearchPage.tsx`, `DescribeToggle.tsx`,
   `DescribeBar.tsx`, `MomentBadge.tsx`, `semantic.css`; branch `feature/semantic`): Describe in the
   search box, the AI search page (a special location) with both SigLIP 2 models, downloads with
-  progress, resume, cancel and SHA-256 checks, the self-test, describing photos and video frames in
-  the background, OCR text and names in a hybrid score, the relevance slider, Find similar, and video
-  hits opening at their moment. Verified with the tiny test model only: **the real models were never
+  progress, resume, cancel and SHA-256 checks, the self-test, describing photos and video frames as
+  a stage of the media library's pass, the library's OCR text and names in a hybrid score, the
+  relevance slider, Find similar, similar photos in the Duplicates tab, and video hits opening at
+  their moment. Verified with the tiny test model only: **the real models were never
   downloaded**, so their self-test (the golden check of preprocessing and tokenizer) first runs on
   the owner's first download, and the slider's ranges (`catalog::Cutoffs`) are estimates until then.
   WinML runs the tiny model on the RTX 5080 and on the CPU; vector search over 200,000 vectors takes
@@ -151,11 +152,11 @@ Done and verified:
   `HitSnippet.tsx`, `TriagePage.tsx`, `TriageEntry.tsx`, `WslPlaces.tsx`, `SearchIcon.tsx`,
   `search.css`; suite `e2e/search.mjs`): content search with ripgrep's crates (`content:` and the
   search box's page button), streaming into the results list with the matching line in every
-  view and the preview opened at it; `taken:` (date taken, from the property system); phrases
-  read into clauses by rules and shown as editable chips; the New downloads page (a special
-  location, `kestrel:new-downloads`) with a sidebar badge, learnt move suggestions, moves and
-  recycling through `fileops` and the undo journal; WSL distributions from the registry in This
-  PC and the sidebar, browsed the Linux way. Verified with stand-ins only: this machine has no
+  view and the preview opened at it; `taken:` read from each photo in a folder the media library
+  doesn't read; phrases read into clauses by rules (the media clauses too) and shown as editable
+  chips; the New downloads page (a special location, `kestrel:new-downloads`) with a sidebar
+  badge, learnt move suggestions, moves and recycling through `fileops` and the undo journal; WSL
+  distributions from the registry in This PC and the sidebar, browsed the Linux way. Verified with stand-ins only: this machine has no
   WSL, so the `\\wsl.localhost` share and Linux permissions over it are untested.
 - **Developer tools** (branch `feature/devtools`: `crates/kestrel-term`, `crates/kestrel-ipc`,
   `apps/mcp`, `src-tauri/src/devtools/`, `kestrel_db::devtools`, `devtools.ts`, `devtoolsSetup.ts`,
@@ -164,8 +165,8 @@ Done and verified:
   "cd to this folder", tabs, shells, links to paths, the projects hub's Run in the pane as a
   setting), the local query service over a named pipe, `kestrel-cli --live`, the MCP server
   `kestrel-mcp.exe`, and the Developer tools page (a special location) with the
-  `claude mcp add` command. Verified on slot 4 with `devtools.mjs`, `smoke.mjs`, `views.mjs`,
-  `integration.mjs`, `parity.mjs`, `projects.mjs` and `palette.mjs`; not yet merged.
+  `claude mcp add` command. The query service's search (so the MCP server's and
+  `kestrel-cli --live`'s) reads its text as the search box does.
 
 - **Explorer parity, second round** (`src-tauri/src/parity2/`, `archive/add.rs`,
   `kestrel_db::parity2`, `parity2.ts`, `parity2Setup.ts`, `lib/parity2Api.ts`, `Parity2Layer.tsx`,
@@ -178,10 +179,24 @@ Done and verified:
   tab menu, tabs dragged out to a new window or into another window's strip; Libraries and the
   Network as special locations, Map and Disconnect network drive and Add a network location
   (Windows' own dialogs); the privacy switches and Clear history; files dropped or pasted on a zip.
+- **Where the 2026-10-16 branches meet** (the integration on `main`): AI search's describing is
+  a stage of the media library's pass (`semantic/stage.rs`, `DescribeStage`), so one decode of
+  each photo feeds its facts, thumbnail, text and description, one Pause (the library's, also on
+  the AI search page) holds all of it, and one progress counts it. Describe weighs the words of a
+  description against the text the library's text stage read (`kestrel_db::media::text_hits`).
+  Similar photos (vectors at least the model's `near_duplicate` cosine alike) are groups of their
+  own in the Duplicates tab, never ticked for the owner (`semantic/similar.rs`, `dupes_similar`).
+  Phrases know the media clauses ("videos longer than 5 minutes", "photos of a dog on the
+  beach", "screenshots containing invoice"). `taken:` is one clause, the library's. Every search,
+  from the search box, the `search` command, a search inside files choosing its files, and the
+  query service, resolves tags, media clauses and descriptions the same way
+  (`search/resolve.rs`). The terminal pane opens a WSL folder in its distribution's shell and a
+  library's address in its save folder.
 
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette, then places, layout, parity, archives, disk and
-cleanup (integrated 2026-10-15). Every unit test and all 23 e2e suites pass there in a dev build
+cleanup (integrated 2026-10-15), then media, semantic, search, devtools and parity2 (integrated
+2026-10-16). Every unit test and all 28 e2e suites pass there in a dev build
 (`cleanup-dryrun.mjs` is a read-only report, not a suite), and the suites that need no
 development hook in a release build too (the list is in the README's Testing section);
 `integration.mjs` and `connections.mjs` cover where the older features meet, and
@@ -413,8 +428,11 @@ see README); what else Explorer does that Kestrel does not is listed in
   `Engine::show_entries` result set plus every item's date and shape, and the e2e fixtures).
   The Gallery and the settings page are special locations (`mediaSetup.ts`); the Gallery reports
   its focused item like Home does and steps Quick Look through `registerPageStepper`
-  (previewState.ts).
-- **Adding a stage to the media pass** (the embedding stage is meant to plug in this way): implement
+  (previewState.ts). `Media::set_scopes` and `set_paused` are the one place the folders and the
+  pause change (AI search's page calls them too), `Media::covers` says whether a folder is read,
+  and `Media::after_plan` runs a feature's tidying after each plan (AI search drops vectors of
+  files the library let go of, compacts and flushes its store there).
+- **Adding a stage to the media pass** (AI search's embedding stage plugs in this way): implement
   `kestrel_media::pipeline::Stage` and register it with `app.state::<Arc<media::Media>>()
   .pipeline().register(Arc::new(stage))` in `main.rs`'s `setup` (or right after `Media::new`).
   A stage gives a `name()` that never changes (it is stored with each record), a `version()` (bump
@@ -428,8 +446,12 @@ see README); what else Explorer does that Kestrel does not is listed in
   again until the file changes. `run` is called from two worker threads at once, at background
   priority, in a COM multithreaded apartment; per-thread state (a WinML session, say) goes in a
   `thread_local!` (as `ocr::TextStage` keeps its recogniser). `forget(ids)` hears of items dropped
-  after a month gone. A new stage's work is queued at once over everything it applies to; the
-  settings page lists it by name (add a label to `STAGE_LABELS` in `media.ts`). Item ids, facts
+  after a month gone. A stage that can't always work (no model downloaded yet) says so with
+  `ready()`: it then has no work queued, and an error from a run during which it stopped being
+  ready (or changed `version()`) is not recorded; call `Pipeline::requeue` once it is ready.
+  Records name the version a stage was planned at. A new stage's work is queued at once over
+  everything it applies to; the settings page lists it by name (add a label to `STAGE_LABELS` in
+  `media.ts`). Item ids, facts
   and text are in `kestrel_db::media`; a stage's output belongs in tables of its own, in a module
   of its own with `2026_10_20_<feature>_<what>` migrations.
 - AI search: `crates/kestrel-embed` holds the models' side: `catalog.rs` (the two SigLIP 2 models,
@@ -437,33 +459,38 @@ see README); what else Explorer does that Kestrel does not is listed in
   sessions, GPU with CPU fallback), `image.rs` (WIC decode, EXIF orientation), `resize.rs` (Pillow's
   bilinear, rounding and all), `preprocess.rs`, `tokenize.rs` (lower-case, pad to 64), `siglip.rs`
   (the `Embedder`), `download.rs` (WinHTTP, resume, cancel, SHA-256), `video.rs` (Media Foundation
-  frames, and a test video writer), `ocr.rs` (`Windows.Media.Ocr`), `draw.rs` (GDI text),
+  frames, and a test video writer), `draw.rs` (GDI text),
   `selftest.rs`, and `onnx.rs` (a protobuf writer and the tiny SigLIP-shaped test model).
   `crates/kestrel-vector` is the store (vectors file + key table, append, tombstone, compact,
   rayon + AVX2/F16C search). The app's half, `src-tauri/src/semantic/`: `mod.rs` (state, the loaded
   model, settings, `semantic-state` events), `models.rs` (page data, downloads, delete, self-test,
-  development hooks), `stage.rs` (the embedding stage), `driver.rs` (stands in for the media
-  pipeline), `search.rs` (resolves `like:` for `Engine::search_ranked`, the hybrid score),
-  `scopes.rs`. The `search` command in main.rs calls `semantic::search::prepare` before the engine
-  holds the index and `Prepared::resolve` inside it, as tags are resolved; results with a
-  description come best first (`Engine::search_ranked`), and their video moments are kept per
+  development hooks), `stage.rs` (the media pass's embedding stage: ready while a model is
+  loaded, its version from the store's tag, so another model describes everything again),
+  `similar.rs` (similar photos for the Duplicates tab), `search.rs` (resolves `like:` for
+  `Engine::search_ranked`, the hybrid score, with the library's text). A thread (`keep_ready`)
+  keeps the model in use loaded and readies the stage (`use_model`, then `Pipeline::requeue`);
+  the page's state reads the pass's progress for the `embedding` stage (`Semantic::indexing`).
+  Every search resolves descriptions through `search/resolve.rs`: `Resolver::prepare` runs the
+  model before the engine holds the index and `resolve` inside it, as tags are resolved; results
+  with a description come best first (`Engine::search_ranked`), and their video moments are kept per
   result set (`semantic_moments`) for `MomentBadge` and the preview (`surfaceUrl` adds `t=`, the
   viewer page a `#t=` media fragment). Front end: `semantic.ts` (Describe mode, Find similar, the
   shared state), the page in `AiSearchPage.tsx`, the bar above results in `DescribeBar.tsx`
   (mounted by FileList for any description query).
-- Folding the embedding stage into the media pipeline: the pipeline hands
-  `semantic::stage::EmbedStage` `MediaItem`s (path, `FileKey` = volume, file id, size, mtime, and
-  kind), asks `wants(item, skips)` first, batches photos into `run_images` and videos into
-  `run_video`, and owns scheduling, pausing and placeholders (the stage still re-checks a file's
-  attributes before opening it). `driver.rs` then goes, keeping `collect` and `sweep` (vectors of
-  files that went or changed are tombstoned) wherever the pipeline does its bookkeeping. OCR text
-  (`kestrel_db::semantic::{set_text, search_text}`) can come from the pipeline's own OCR instead.
+- Similar photos (`semantic/similar.rs`): the live photo rows of the model in use's store
+  (video frames left out), found under the Duplicates tab's folders through the index by file id,
+  each searched for its neighbours at the model's `near_duplicate` cutoff and joined by
+  union-find. `cleanup::dupes_similar` keeps the groups with the exact ones (`Latest::similar`),
+  and `dupes_recycle` takes either kind, with the same checks.
 - Search (`src-tauri/src/search/`, front end `search.ts`): every search the search box runs goes
   through `search_run`, the tabs' search source (`setSearchSource` in state.ts; without one,
   `runSearch` calls the plain `search`). It reads the text as a phrase (`places.rs` resolves
   known folders and projects; `search_dev_places` stands scratch folders in), then either runs
-  the index search or, for `content:`/`taken:` or "Search inside files", starts a search inside
-  files for that window and tab (`content.rs`, `Searches`): it runs on its own threads, sends
+  the index search (`resolve::index_search`: tags, media clauses, descriptions) or, for
+  `content:` (and `taken:` in a search limited to a folder the media library doesn't read,
+  `Ask::library`) or "Search inside files", starts a search inside files for that window and
+  tab (`content.rs`, `Searches`; `plan` takes the chooser of files, so the query service can read
+  the index in place and run it to the end with `run_to_end`): it runs on its own threads, sends
   `search-progress` to its window, and the window asks again with `update` (`updateSearch` in
   state.ts), getting a fresh `Rows::Found` set of everything so far (`Engine::show_found`); rows
   carry `hit`, drawn by `HitSnippet` in `FileList` and `ViewItem`. Chips and progress show in
@@ -476,7 +503,8 @@ see README); what else Explorer does that Kestrel does not is listed in
 - WSL (`wsl.rs`, `wsl.ts`): distributions from `HKCU\...\Lxss` (a `Registry` trait so tests read
   made-up keys); `list_dir` hands a path inside one to `wsl::list` (after arming the watch), which
   lists it with `walk::list`, marks dot files hidden and shows it through `Engine::show_live`;
-  `open_in_terminal` asks `wsl::terminal` first. This PC adopts distribution roots
+  `open_in_terminal` asks `wsl::terminal` first, and the terminal pane opens a distribution's
+  folder in its shell (`kestrel_term::shells::for_wsl_folder`). This PC adopts distribution roots
   (`placesSetup.ts`), so Up goes there; `wsl_dev_distros` stands folders in for distributions.
 - Shortcuts: data in `kestrel_db::shortcuts` (pins and groups, frecency, saved searches, tags,
   workspaces), commands in `src-tauri/src/shortcuts/`, front end in `src/shortcuts.ts`,
@@ -821,8 +849,14 @@ Git:
 - Model files and vectors are the app's own data in `data_dir()\models` and `data_dir()\semantic`;
   `remove_own_folder` refuses anything else. Delete forgets the install first, then waits for the
   describing thread to let go of the vector store (a mapped file can't be deleted).
-- The driver leaves out pictures under 4 KB (icons) but not videos (a short clip of plain colours
-  is smaller); the e2e fixtures pad their PNGs after the image end to pass that floor.
+- AI search's folders are the media library's: in a test slot (`KESTREL_MEDIA_SCOPES=none`) it
+  describes nothing until a suite gives the library a folder (`semantic_dev_setup` with `scopes`,
+  or `media_dev_sandbox`). The semantic suite's PNGs are padded after the image end (decoders stop
+  there) so each file has its own bytes, and two past 100 KB for the Duplicates tab.
+- The query service's search (devtools/query.rs) reads the index in place with its own cancel
+  flag; it must never call `Engine::search_resolving` or `search_ranked`, which keep a result set
+  and replace the window's cancel flag. Its searches inside files choose files the same way
+  (`search::plan` with its own chooser) and run on its thread (`search::run_to_end`).
 - A search inside files is one per window and tab (`search::Searches`), and an `update` of it
   never starts it again: Stop raises its cancel flag and keeps what it found (`search_cancel`
   with `forget: false`), so an update already on its way shows that; leaving the search forgets

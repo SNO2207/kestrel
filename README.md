@@ -1030,9 +1030,9 @@ instead: it runs `tauri build` (no installer) with the slot's identity and start
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
 `shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`, `integration.mjs`,
 `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs`, `places.mjs`, `layout.mjs`,
-`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs`, `navigation.mjs`, `media.mjs`, `semantic.mjs`, `search.mjs`,
-`devtools.mjs` and `parity2.mjs` need a dev build,
-whose test hooks they use. A release build has the Windows menu's test hook only when started with
+`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs`, `navigation.mjs`, `media.mjs`,
+`semantic.mjs`, `search.mjs`, `devtools.mjs` and `parity2.mjs` need a dev build, whose test hooks
+they use. A release build has the Windows menu's test hook only when started with
 `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
 `parity.mjs` opens a second window and closes it, turns the window to full screen and back,
