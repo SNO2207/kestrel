@@ -29,10 +29,12 @@ import { api } from "../lib/api";
 import { CATEGORIES } from "../lib/diskApi";
 import { breadcrumbs, formatCount, formatSize } from "../lib/format";
 import { activeId, activeTab, notify, places } from "../state";
+import { CleanupPanel } from "./CleanupPanel";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import { DiskIcon } from "./DiskIcon";
 import { DiskOverviewPanel, type ListedItem } from "./DiskOverview";
 import { DiskTreemap } from "./DiskTreemap";
+import { DuplicatesPanel } from "./DuplicatesPanel";
 import { Icon } from "./Icon";
 
 /** A tab of the hub. Its panel is given the folder (or drive) being analysed as `root`. */
@@ -43,15 +45,15 @@ export interface DiskTabSpec {
 }
 
 /**
- * The hub's tabs, in order. Other features add theirs here: the cleanup and duplicates panels,
- * whose props are `{ root: string }`, go in as
- *
- *   { id: "cleanup", label: "Cleanup", panel: CleanupPanel },
- *   { id: "duplicates", label: "Duplicates", panel: DuplicatesPanel },
+ * The hub's tabs, in order. A panel gets the folder or drive analysed as `root`, stays mounted
+ * while the hub moves elsewhere, and fills a flex column of bounded height. Cleanup and
+ * Duplicates are the cleanup feature's panels (`cleanup.ts`), working on the same root.
  */
 const TABS: DiskTabSpec[] = [
   { id: "overview", label: "Overview", panel: OverviewTab },
   { id: "map", label: "Map", panel: MapTab },
+  { id: "cleanup", label: "Cleanup", panel: CleanupPanel },
+  { id: "duplicates", label: "Duplicates", panel: DuplicatesPanel },
 ];
 
 // ---------- the menu and the confirmation, shared by every tab ----------
@@ -266,6 +268,8 @@ export function DiskHub() {
       event.stopPropagation();
     };
     if (key === "escape") {
+      // A dialog of a tab's (the cleanup panels' confirmations) closes itself first.
+      if (event.target instanceof Element && event.target.closest(".dialog-backdrop")) return;
       stop();
       if (editing()) setEditing(false);
       else closeDiskUsage();

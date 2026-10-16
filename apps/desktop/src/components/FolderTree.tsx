@@ -530,7 +530,7 @@ export function FolderTree() {
     const drive = node.drive;
     if (drive && (canAnalyse() || canEject(drive))) {
       entries.push("separator");
-      if (canAnalyse()) entries.push({ label: "Analyse disk usage", run: () => analyseDiskUsage(path) });
+      if (canAnalyse()) entries.push({ label: "Show disk usage", run: () => analyseDiskUsage(path) });
       if (canEject(drive)) entries.push({ label: "Eject", run: () => void ejectDrive(drive) });
     }
     if (node.kind !== "pc") {

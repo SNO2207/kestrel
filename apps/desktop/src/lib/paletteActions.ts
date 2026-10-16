@@ -5,6 +5,7 @@
  * the selected files, and hands a chosen one to the main window (palette.ts).
  */
 import { inArchive } from "../archives";
+import { cleanupActions } from "../cleanup";
 import type { ListCommand } from "../components/FileList";
 import { openGoto } from "../components/GoToFolder";
 import { askName } from "../components/ShortcutDialogs";
@@ -163,6 +164,7 @@ function actions(): Action[] {
       keywords: "disk usage space storage size treemap free full drive analyse analyze",
       run: () => openDiskUsage(driveOf(activeTab()?.path ?? "C:\\")),
     },
+    ...cleanupActions(),
     { id: "search", title: "Search", hint: "Ctrl+F", icon: "search", keywords: "find", run: () => focusTargets.search?.() },
     {
       id: "search-scope",

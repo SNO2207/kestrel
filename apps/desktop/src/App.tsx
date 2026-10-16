@@ -4,6 +4,7 @@ import { Dynamic } from "solid-js/web";
 import { api, type Row } from "./lib/api";
 import { locationOf } from "./lib/locations";
 import { startPlaces } from "./placesSetup";
+import { setDiskUsageHandler } from "./places";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { locationKey, setViewMode, shortcutView } from "./lib/views";
 import { LOCKED_MESSAGE, isLocked, recheckAccess } from "./lib/access";
@@ -189,6 +190,8 @@ export function App() {
     });
     void start(openLayout).then(focusList);
     startPlaces();
+    // This PC's drives and the folder tree's drives open the disk usage hub.
+    setDiskUsageHandler((path) => openDiskUsage(path));
     const stopDrops = listenForDrops();
     onCleanup(() => void stopDrops.then((stop) => stop()));
   });

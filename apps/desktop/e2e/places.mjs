@@ -192,20 +192,21 @@ try {
     assert.equal(await page.locator(".nav button[aria-label='Up']").isDisabled(), true, "This PC has nothing above it");
   });
 
-  await step("a drive's menu opens it, offers the disk usage hub once there is one, and the Windows menu", async () => {
+  await step("a drive's menu opens it, shows its disk usage in the hub, and the Windows menu", async () => {
     const system = (process.env.SystemDrive ?? "C:").toUpperCase();
     const tile = page.locator(".pc-tile.drive", { hasText: `(${system})` });
     await tile.click({ button: "right" });
     await menu.waitFor();
-    assert.deepEqual(await menuLabels(), ["Open", "Open in new tab", "Properties", "Show more options"]);
+    assert.deepEqual(await menuLabels(), ["Open", "Open in new tab", "Show disk usage", "Properties", "Show more options"]);
+    // The disk usage hub opens on the drive, over This PC, and Escape closes it again.
+    await menu.locator(".menu-label", { hasText: "Show disk usage" }).click();
+    const hub = page.locator(".disk-hub");
+    await hub.waitFor();
+    assert.equal(await hub.locator('select[aria-label="Drive"]').inputValue(), `${system}\\`);
+    await hub.locator("h1").click();
     await page.keyboard.press("Escape");
-    await menu.waitFor({ state: "detached" });
-    // The disk usage hub is another feature's; this stands in for it.
-    await page.evaluate(() => window.__kestrelPlaces.setDiskUsageHandler((path) => (window.__analysed = path)));
-    await tile.click({ button: "right" });
-    await menu.locator(".menu-label", { hasText: "Analyse disk usage" }).click();
-    assert.equal(await page.evaluate(() => window.__analysed), `${system}\\`);
-    await page.evaluate(() => window.__kestrelPlaces.setDiskUsageHandler(null));
+    await hub.waitFor({ state: "detached" });
+    await page.locator(".tab-panel.active .pc-tile").first().waitFor();
     // The Windows menu, listed by the helper instead of shown (as shellmenu.mjs does).
     await invoke("shell_probe", { mode: "verbs" });
     try {

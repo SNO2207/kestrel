@@ -23,6 +23,8 @@ sevenz-rust2 = { version = "0.20.2", default-features = false, features = ["aes2
 tar = { version = "0.4.46", default-features = false }
 zip = { version = "9.0.3", default-features = false, features = ["aes-crypto", "bzip2", "deflate-flate2-zlib-rs", "deflate64", "lzma", "ppmd", "xz"] }
 kestrel-analyze = { workspace = true }
+# Cleanup recommendations and the duplicate finder (cleanup/).
+kestrel-cleanup = { workspace = true }
 kestrel-db = { workspace = true }
 kestrel-index = { workspace = true }
 kestrel-query = { workspace = true }
@@ -79,6 +81,8 @@ windows-sys = { workspace = true, features = [
     "Win32_System_IO",
     # The size of NTFS's own file table, for the disk usage hub's totals (disk/volume.rs).
     "Win32_System_Ioctl",
+    # A cleanup tool that runs too long is stopped with everything it started (cleanup/tool.rs).
+    "Win32_System_JobObjects",
     "Win32_System_Memory",
     "Win32_System_Ole",
     # The optional "start with Windows" entry under HKCU\...\Run (launcher.rs).

@@ -20,6 +20,7 @@ that shows what uses the disk.
 | `crates/kestrel-ntfs` | NTFS access: change journal reader, MFT record parser, raw volume reader |
 | `crates/kestrel-query` | Query language, parallel search, sorting |
 | `crates/kestrel-analyze` | Disk usage from the index: treemap layout, breakdowns by type and age, largest items, growth |
+| `crates/kestrel-cleanup` | Cleanup recommendations and the duplicate finder, over the index |
 | `crates/kestrel-cli` | Command-line front end and benchmark harness |
 | `apps/desktop` | The app: Tauri 2 backend in `src-tauri`, SolidJS front end in `src` |
 | `apps/broker` | Optional Windows service that reads drives' file tables for the app |
@@ -600,6 +601,58 @@ left out and why, is `docs/explorer-parity.md`):
   online-only (a cloud), on this device (a ringed check) or always kept on it (a filled check),
   read from its attributes, so nothing is downloaded.
 - The status bar adds up the selection's size and has Explorer's Details and Large icons buttons.
+## Cleanup recommendations and duplicate files
+
+"Cleanup recommendations" and "Find duplicate files" in the command palette (Ctrl+K) open a page
+with two panels, made to become tabs of the disk usage hub; the page has no shortcut of its own.
+"Look in" narrows either panel to the folder on screen, and Escape closes the page. Nothing is
+removed until you tick items and confirm a summary of how many, how much, and that they go to
+the Recycle Bin. They can be restored from there, or with the page's Undo: removals are file
+operations in the undo history, so Ctrl+Z in a folder undoes them too. Anything a program still
+has open is skipped, and the result says why. "Dry run" lists what would happen and changes
+nothing.
+
+Recommendations come from rules over the index, each with a plain reason, the space it frees on
+disk and how sure you can be: Safe (made again when needed), Review (you may still want it) or
+Info (shown only, with advice):
+
+- temporary files untouched for 7 days or more in your temp folder (Safe);
+- crash dumps (`%LOCALAPPDATA%\CrashDumps`, `.dmp` files in your user folder) and Windows Error
+  Reporting's per-user reports (Safe);
+- build output of projects with no file changes for 90 days: `node_modules`, `target`, `bin` and
+  `obj`, virtual environments, `__pycache__`, `dist`, `build`, `.next`, `.nuxt`, `.gradle`,
+  Unreal's `Intermediate`, `DerivedDataCache` and `Saved`, Unity's `Library` and `Temp`, each only
+  beside the file that makes it build output; Rust's goes through `cargo clean` when Cargo is
+  installed (Safe);
+- package caches: pnpm's store (`pnpm store prune`), npm, Cargo's downloads and git checkouts,
+  pip (`pip cache purge`), NuGet (`dotnet nuget locals all --clear`), Gradle, Go's build cache
+  (`go clean -cache`), Yarn (Safe), and the Hugging Face hub (Review: models are big downloads);
+  without its tool installed, a cache's contents go to the Recycle Bin instead;
+- Chrome, Edge, Firefox, Discord, Teams, Spotify and VS Code caches (Review), offered only while
+  the app is closed;
+- installers and archives in Downloads untouched for 90 days, and files over 1 GB untouched for a
+  year outside AppData (Review);
+- WSL, Docker, Hyper-V, VirtualBox and VMware disks, with how to compact each (Info: never
+  touched);
+- the Recycle Bin's size, with a button that opens it, and Windows' own caches (update downloads,
+  Delivery Optimization, previous installations) with buttons for Storage Sense and Disk Cleanup
+  (Info: Kestrel never empties the bin or runs anything elevated).
+
+Nothing is ever recommended inside the Windows folder, Program Files, ProgramData, your
+Documents, Pictures, Videos, Music or Desktop (where Windows says they are and, when OneDrive
+backs them up, where they were), OneDrive, a project's sources, Kestrel's own data, a tool's hidden
+folder in your profile, or through a junction or link. A tool runs only when you click it, after
+a confirmation showing the exact command and folder and saying it can't be undone; its output is
+shown when it finishes.
+
+Duplicates are exact copies within the folders you choose (by default your user folder without
+AppData), 1 MB or larger unless you choose otherwise. Files the same size are compared by their
+first and last 64 KB, then whole with BLAKE3, on background-priority threads, with progress and
+Cancel. Names of one file (hard links) are not copies, and files only in the cloud are never
+opened, so nothing is downloaded. Hashes are kept in `kestrel.db` by file id, size and time, so
+searching again reads only what changed. Choose the copy to keep in each group (or let Newest,
+Oldest or "Copies in a folder" choose), tick the groups, and the other copies go to the Recycle
+Bin after a confirmation that lists them and the ones kept.
 
 ## Testing
 
@@ -643,6 +696,7 @@ node e2e/layout.mjs         # two panes, grouping, columns, the filter box, the 
 node e2e/parity.mjs         # Explorer parity: New, Home, the details pane, a second window, shortcuts
 node e2e/archives.mjs       # compress, browse inside a zip, preview, Extract all, undo, zip slip
 node e2e/disk.mjs           # the disk usage hub on a scratch folder of known composition
+node e2e/cleanup.mjs        # cleanup recommendations and duplicates, in a scratch machine
 node e2e/dev.mjs stop
 ```
 
@@ -666,6 +720,7 @@ the first window, `main`, when there are several; `waitForKestrelWindow(browser,
 another.
 `archives.mjs` need a dev build, whose test hooks they use. A release build has the Windows menu's test hook only
 `disk.mjs` need a dev build, whose test hooks they use. A release build has the Windows menu's test hook only
+`cleanup.mjs` need a dev build, whose test hooks they use. A release build has the Windows menu's test hook only
 when started with `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
 Run the suites one after another, not side by side: several use the clipboard or the window's
@@ -686,6 +741,16 @@ palette's projects, tags, pins, frequent folders, saved searches and workspaces,
 hub closing when a pin opens, and the preview's webview hiding under the palette, Go to folder
 and the hub. It makes a repository in its scratch folder, locks one folder in it with `icacls`
 for a moment, and removes the pins, tags, saved search and workspace it makes.
+
+`cleanup.mjs` needs a dev build: its development hook points every cleanup rule at a scratch
+folder laid out like a machine (a profile with its temp folder, caches, a stale Rust project,
+duplicate photos, and Documents, OneDrive and Program Files holding what must never be offered),
+says which programs run and which tools are installed, and records tool runs and openings
+instead of performing them. Two tiny files named `kestrel-test-*` go through the Recycle Bin and
+come back with Undo. `cleanup-dryrun.mjs` is no test: run against a slot, it reports what
+cleanup would offer on this machine and what a dry run of all of it would do, without changing
+anything or running any tool, and looks for duplicates of 10 MB or more in your user folder
+(reading files; online-only ones are left alone).
 
 `projects.mjs` makes repositories in its scratch folder with the git command line and needs
 a dev build: projects are found by the location rules, which leave out the temp folder, so it

@@ -6,7 +6,7 @@
  * answer) says so and fills in when its answer comes.
  *
  * Double-click or Enter opens; the arrow keys move between tiles; typing jumps to a name.
- * The context menu offers Open, Open in new tab, Analyse disk usage (once the disk usage hub
+ * The context menu offers Open, Open in new tab, Show disk usage (once the disk usage hub
  * is there; see `setDiskUsageHandler` in places.ts), Eject for removable media, Properties
  * and the Windows menu. Drives and folders take drops like any place in the sidebar.
  */
@@ -138,7 +138,7 @@ export function ThisPcPage(props: LocationPageProps) {
     if (tile.kind === "drive") {
       const drive = tile.drive;
       if (canAnalyse() || canEject(drive)) entries.push("separator");
-      if (canAnalyse()) entries.push({ label: "Analyse disk usage", run: () => analyseDiskUsage(drive.path) });
+      if (canAnalyse()) entries.push({ label: "Show disk usage", run: () => analyseDiskUsage(drive.path) });
       if (canEject(drive)) entries.push({ label: "Eject", run: () => void ejectDrive(drive) });
     } else {
       entries.push("separator", { label: "Pin to sidebar", run: () => void pinPaths([tile.path]) });

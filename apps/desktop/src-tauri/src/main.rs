@@ -5,6 +5,7 @@ mod access;
 mod address;
 mod archive;
 mod batchrename;
+mod cleanup;
 mod clipboard;
 mod disk;
 mod dragdrop;
@@ -373,6 +374,7 @@ fn main() {
     let database = open_database();
     let projects = projects::Projects::new(engine.clone(), database.clone());
     let disk = disk::Disk::new(engine.clone(), database.clone());
+    let cleanup = cleanup::Cleanup::new(engine.clone(), database.clone(), projects.clone());
     // The command palette's providers; other features register theirs in `setup` (palette.rs).
     let palette = Arc::new(palette::Palette::new(database.clone()));
     palette.register(Arc::new(palette::files::FilesProvider::new(engine.clone())));
@@ -396,6 +398,7 @@ fn main() {
         .manage(database.clone())
         .manage(projects.clone())
         .manage(disk.clone())
+        .manage(cleanup)
         .manage(palette)
         // This PC's drives, each asked about on a thread of its own (thispc.rs).
         .manage(Arc::new(thispc::Drives::default()))
@@ -573,6 +576,16 @@ fn main() {
             archive::archive_preferences,
             archive::archive_set_preferences,
             archive::archive_dev_materialize,
+            cleanup::cleanup_scan,
+            cleanup::cleanup_recycle,
+            cleanup::cleanup_run_tool,
+            cleanup::cleanup_open,
+            cleanup::dupes_defaults,
+            cleanup::dupes_scan,
+            cleanup::dupes_cancel,
+            cleanup::dupes_recycle,
+            cleanup::cleanup_dev_sandbox,
+            cleanup::cleanup_dev_take,
         ]))
         .on_window_event(|window, event| {
             dragdrop::on_window_event(event);

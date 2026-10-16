@@ -83,7 +83,7 @@ export async function ejectDrive(drive: DriveInfo) {
 
 /**
  * Opens the disk usage hub on a drive or folder. Another feature provides the hub: it calls
- * `setDiskUsageHandler` at startup, and This PC and the folder tree then offer "Analyse disk
+ * `setDiskUsageHandler` at startup, and This PC and the folder tree then offer "Show disk
  * usage" on every drive.
  */
 const [diskUsage, setDiskUsage] = createSignal<((path: string) => void) | null>(null);
@@ -92,7 +92,7 @@ export function setDiskUsageHandler(open: ((path: string) => void) | null) {
   setDiskUsage(() => open);
 }
 
-/** Whether "Analyse disk usage" can be offered. */
+/** Whether "Show disk usage" can be offered. */
 export const canAnalyse = () => diskUsage() !== null;
 
 export function analyseDiskUsage(path: string) {
