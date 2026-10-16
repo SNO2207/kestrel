@@ -11,6 +11,7 @@ import { DiskEntry } from "./DiskEntry";
 import { FolderTree } from "./FolderTree";
 import { GalleryEntry } from "./GalleryEntry";
 import { HomeEntry } from "./HomeEntry";
+import { LibrariesSection } from "./LibrariesSection";
 import { Icon, hasIcon } from "./Icon";
 import { PinnedPlaces } from "./PinnedPlaces";
 import { ParityIcon } from "./ParityIcon";
@@ -107,6 +108,8 @@ export function Sidebar() {
           </button>
         </section>
         <WslPlaces />
+        {/* Folder Options' "Show libraries in the navigation pane" (parity2.ts). */}
+        <LibrariesSection />
         <ShortcutLists />
       </div>
       <FolderTree />

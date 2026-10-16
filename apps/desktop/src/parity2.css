@@ -1,0 +1,244 @@
+/*
+ * Explorer parity, second round (parity2.ts): compact view, item check boxes, compressed and
+ * encrypted files in colour, the navigation pane hidden, tabs being dragged out, the Libraries
+ * and Network pages, and Folder Options' privacy section. Loaded after styles.css, whose tokens
+ * it uses. Its only colours of its own are Explorer's for compressed (blue) and encrypted
+ * (green) files, which mean what they mean only in those hues.
+ */
+
+:root {
+  --ntfs-compressed: #6ea8ff;
+  --ntfs-encrypted: #5fc77f;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --ntfs-compressed: #1f55d6;
+    --ntfs-encrypted: #17803b;
+  }
+}
+
+/* ---------- the navigation pane, hidden (View > Show > Navigation pane) ---------- */
+
+:root.nav-pane-hidden .app {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+:root.nav-pane-hidden .sidebar {
+  display: none;
+}
+
+/* ---------- compact view: tighter rows and cells in every view (lib/viewLayout.ts) ---------- */
+
+.filelist.compact {
+  --row: 22px;
+}
+
+.filelist.compact .view-item {
+  gap: 3px;
+  margin: 1px;
+  padding: 3px 4px 2px;
+}
+
+.filelist.compact[data-view="list"] .view-item {
+  gap: 8px;
+  margin: 0 4px;
+  padding: 0 6px;
+}
+
+.filelist.compact[data-view="tiles"] .view-item {
+  gap: 10px;
+  padding: 3px 10px;
+}
+
+.filelist.compact[data-view="content"] .view-item {
+  gap: 16px;
+  height: 56px;
+  margin: 0 8px;
+  padding: 0 14px 0 12px;
+}
+
+/* ---------- item check boxes (View > Show > Item check boxes) ---------- */
+
+.item-check {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  visibility: hidden;
+}
+
+.item-check-box {
+  fill: var(--surface);
+  stroke: var(--muted);
+  stroke-width: 1.2;
+}
+
+.item-check-mark {
+  stroke: transparent;
+}
+
+.item-check.checked .item-check-box {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.item-check.checked .item-check-mark {
+  stroke: var(--accent-ink);
+}
+
+/* Shown on the item under the pointer and on selected items, as in Explorer. */
+.row:hover .item-check,
+.row.selected .item-check,
+.view-item:hover .item-check,
+.view-item.selected .item-check {
+  visibility: visible;
+}
+
+.item-check:hover .item-check-box {
+  stroke: var(--accent);
+}
+
+.filelist.checkboxes .view-item {
+  position: relative;
+}
+
+/* In the icon views the box sits in the item's corner, over its picture. */
+.filelist.checkboxes .view-item > .item-check {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 1;
+}
+
+/* In the list and tile views it comes before the icon, as in a details row. */
+.filelist.checkboxes[data-view="list"] .view-item > .item-check,
+.filelist.checkboxes[data-view="tiles"] .view-item > .item-check {
+  position: static;
+}
+
+/* The Content view's columns stay as they are; the box takes the room before them. */
+.filelist.checkboxes[data-view="content"] .view-item {
+  padding-left: 34px;
+}
+
+.filelist.checkboxes[data-view="content"] .view-item > .item-check {
+  top: 50%;
+  left: 10px;
+  transform: translateY(-50%);
+}
+
+/* ---------- compressed and encrypted files in colour ---------- */
+
+.row.ntfs-compressed .cell.name .label,
+.view-item.ntfs-compressed .label {
+  color: var(--ntfs-compressed);
+}
+
+.row.ntfs-encrypted .cell.name .label,
+.view-item.ntfs-encrypted .label {
+  color: var(--ntfs-encrypted);
+}
+
+/* ---------- a tab dragged out of its strip ---------- */
+
+.tab.tab-lifted {
+  opacity: 0.85;
+  cursor: grabbing;
+}
+
+.tab.tab-leaving {
+  opacity: 0.55;
+  box-shadow: inset 0 0 0 1px var(--select-line);
+  cursor: copy;
+}
+
+/* ---------- pages of tiles: Libraries, the Network, a computer's shares ---------- */
+
+.tile-page-note {
+  max-width: 640px;
+  padding: 6px 4px 2px;
+  color: var(--muted);
+}
+
+.tile-page-note p {
+  margin: 0 0 6px;
+}
+
+.tile-page-note .hint {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tile-page-note code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.tile-page-empty .pc-empty {
+  margin: 12px 0;
+  text-align: left;
+}
+
+.tile-page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+/* ---------- Folder Options: two columns, View on the right, and privacy ---------- */
+
+/* The dialog holds more options now: side by side, and scrolling when the window is short. */
+.options-dialog {
+  width: min(900px, 100%);
+}
+
+.options-body {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* General keeps its own height; Privacy follows it, and the room left is below Privacy. */
+  grid-template-rows: auto 1fr;
+  align-items: start;
+  column-gap: 32px;
+  min-height: 0;
+}
+
+.options-body > section:nth-of-type(2) {
+  grid-row: span 2;
+}
+
+@media (max-width: 860px) {
+  .options-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .options-body > section:nth-of-type(2) {
+    grid-row: auto;
+  }
+}
+
+.options-privacy {
+  display: grid;
+  gap: 9px;
+}
+
+.options-clear {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding-top: 4px;
+}
+
+.options-clear-text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.options-clear .dialog-button {
+  flex: none;
+  min-width: 76px;
+}

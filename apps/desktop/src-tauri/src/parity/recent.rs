@@ -174,6 +174,10 @@ pub fn recent_files(db: &Db, limit: usize, with_windows: bool) -> Vec<RecentFile
     let opened = store::opened(db, store::MAX_OPENED).unwrap_or_default();
     let kestrel = opened.into_iter().map(|item| Candidate { path: item.path, used: item.last_opened, source: "kestrel" });
     let windows = if with_windows { windows_recent() } else { Vec::new() };
+    // "Clear File Explorer history" (parity2::privacy) leaves Windows' folder alone; its items
+    // from before then are left out here instead.
+    let cleared = crate::parity2::privacy::cleared_at(db);
+    let windows = windows.into_iter().filter(|candidate| candidate.used > cleared);
     checked(kestrel.chain(windows).collect(), &hidden(db), attributes, REMOTE_WAIT, limit)
 }
 

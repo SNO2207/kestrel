@@ -7,8 +7,10 @@ import { iconPixels, showsThumbnails, thumbPixels } from "../lib/viewLayout";
 import { LOCKED_MESSAGE } from "../lib/access";
 import { displayName, type ViewMode } from "../lib/views";
 import type { GitBadge } from "../lib/projectsApi";
+import { alwaysIcons, isZipRow, ntfsTint } from "../parity2";
 import { GitGlyph } from "./GitGlyph";
 import { HitSnippet } from "./HitSnippet";
+import { ItemCheck } from "./ItemCheck";
 import { LockGlyph } from "./LockGlyph";
 import { SyncGlyph } from "./SyncGlyph";
 import { TagDots } from "./TagDots";
@@ -34,6 +36,8 @@ export function ViewItem(props: {
   loadThumbs: boolean;
   /** The item's git status in a folder inside a repository; ignored items are dimmed. */
   git?: GitBadge;
+  /** View > Show > Item check boxes: the item has one, shown under the pointer and when selected. */
+  checkbox?: boolean;
   onMouseDown: (event: MouseEvent) => void;
   onDblClick: (event: MouseEvent) => void;
   onContextMenu: (event: MouseEvent) => void;
@@ -42,7 +46,8 @@ export function ViewItem(props: {
   /** The thumbnail this item would show; folders and the small views show icons. */
   const thumbSrc = () => {
     const row = props.row;
-    return row && !row.dir && showsThumbnails(props.mode) ? thumbUrl(row, thumbPixels(props.visual)) : null;
+    // Folder Options' "Always show icons, never thumbnails" (parity2.ts).
+    return row && !row.dir && showsThumbnails(props.mode) && !alwaysIcons() ? thumbUrl(row, thumbPixels(props.visual)) : null;
   };
   // A thumbnail is only asked for once scrolling pauses, so flinging through a large folder
   // does not queue thousands of them; once asked for, it stays.
@@ -68,12 +73,15 @@ export function ViewItem(props: {
         dimmed: props.row?.hidden || props.locked || props.git?.ignored,
         locked: props.locked,
         "drop-target": props.dropTarget,
+        "ntfs-compressed": ntfsTint(props.row?.attrs) === "compressed",
+        "ntfs-encrypted": ntfsTint(props.row?.attrs) === "encrypted",
       }}
       role="option"
       aria-selected={props.selected}
       data-index={props.index}
       data-path={props.row?.path}
       data-folder={props.row?.dir ? "" : undefined}
+      data-zip={isZipRow(props.row) ? "" : undefined}
       title={props.row && !props.renaming ? (props.locked ? `${props.row.name}\n${LOCKED_MESSAGE}` : hitTitle(props.row)) : undefined}
       onMouseDown={(event) => props.onMouseDown(event)}
       onDblClick={(event) => props.onDblClick(event)}
@@ -82,6 +90,9 @@ export function ViewItem(props: {
       <Show when={props.row}>
         {(row) => (
           <>
+            <Show when={props.checkbox}>
+              <ItemCheck checked={props.selected} />
+            </Show>
             <span class="view-item-visual" style={{ width: `${props.visual}px`, height: `${props.visual}px` }}>
               <img
                 class="view-item-icon"

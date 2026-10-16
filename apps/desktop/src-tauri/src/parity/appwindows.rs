@@ -110,6 +110,13 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
 /// right of it, as Explorer's Ctrl+N does. Returns its label.
 #[tauri::command(async)]
 pub fn new_window(app: AppHandle, window: Window, path: Option<String>) -> Result<String, String> {
+    open_window(&app, &window, path, None)
+}
+
+/// Opens another window as [`new_window`] does, at `at` (logical pixels on the screen) when
+/// given, as a tab dragged out of its strip does (`parity2::tabs`).
+pub fn open_window(app: &AppHandle, window: &Window, path: Option<String>, at: Option<(f64, f64)>) -> Result<String, String> {
+    let app = app.clone();
     let label = format!("{PREFIX}{}", NEXT.fetch_add(1, Ordering::Relaxed));
     if let Some(path) = path.filter(|path| !path.trim().is_empty()) {
         STARTS.lock().push((label.clone(), path));
@@ -123,7 +130,9 @@ pub fn new_window(app: AppHandle, window: Window, path: Option<String>) -> Resul
         .min_inner_size(720.0, 420.0)
         .decorations(false)
         .shadow(true);
-    if let Ok(at) = window.outer_position() {
+    if let Some((x, y)) = at {
+        builder = builder.position(x, y);
+    } else if let Ok(at) = window.outer_position() {
         let at = at.to_logical::<f64>(scale);
         builder = builder.position(at.x + CASCADE, at.y + CASCADE);
     }

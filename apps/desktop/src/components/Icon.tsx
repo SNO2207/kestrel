@@ -38,6 +38,10 @@ const PATHS = {
   linux: "M8 2.5c-1.6 0-2.4 1.3-2.4 2.9v1.4L3.8 10c-.5 1 .1 2.5 1.4 2.5h5.6c1.3 0 1.9-1.5 1.4-2.5l-1.8-3.2V5.4c0-1.6-.8-2.9-2.4-2.9ZM6.6 8.5c.4.9.8 1.3 1.4 1.3s1-.4 1.4-1.3M7 5.2h.01M9 5.2h.01M5 12.5l-.7 1M11 12.5l.7 1",
   // The terminal pane and the Developer tools page (devtools.ts).
   terminal: "M2.5 3.5h11v9h-11ZM5 6.5l2 1.75L5 10M8.5 10h2.5",
+  // Explorer parity, second round: Libraries, the Network and its computers and shares.
+  library: "M3 2.5h2.5v11H3ZM6.5 2.5H9v11H6.5ZM10 3.2l2.3-.6 1.7 10.6-2.3.6Z",
+  network: "M6 2.5h4v3.5H6ZM8 6v2.5M3.5 8.5h9M3.5 8.5V10M12.5 8.5V10M2 10h3v3.5H2ZM11 10h3v3.5h-3Z",
+  share: "M2.5 4.5h4L8 6h5.5v6.5h-11ZM5 12.5v1.5M11 12.5v1.5M4 14h8",
 } as const;
 
 export type IconName = keyof typeof PATHS;

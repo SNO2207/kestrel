@@ -35,6 +35,7 @@ import {
   thisPc,
 } from "../places";
 import { closeDiskUsage, diskOpen } from "../disk";
+import { disconnectEntry, networkEntries, parity2Options, shownDrives, toggleOption } from "../parity2";
 import { closeProjects, projectsOpen } from "../projects";
 import { pinPaths } from "../shortcuts";
 import { activeTab, isSearch, notify } from "../state";
@@ -163,7 +164,8 @@ export function FolderTree() {
 
   /** Keeps This PC's children in step with the drives, keeping each drive's state. */
   createEffect(() => {
-    const drives = thisPc().drives;
+    // "Hide empty drives" (parity2.ts) holds for the tree too, as in Explorer.
+    const drives = shownDrives(thisPc().drives);
     const before = new Map((root.children ?? []).map((node) => [node.fixedPath!.toLowerCase(), node]));
     const readable = (drive: DriveInfo) => drive.state === "ready" || drive.state === "reading";
     root.children = drives.map((drive) => {
@@ -538,6 +540,9 @@ export function FolderTree() {
       if (canAnalyse()) entries.push({ label: "Show disk usage", run: () => analyseDiskUsage(path) });
       if (canEject(drive)) entries.push({ label: "Eject", run: () => void ejectDrive(drive) });
     }
+    // The network's commands on This PC, and Disconnect on a mapped drive (parity2.ts).
+    if (node.kind === "pc") entries.push("separator", ...networkEntries());
+    if (drive?.kind === "network") entries.push("separator", disconnectEntry(drive));
     if (node.kind !== "pc") {
       entries.push(
         "separator",
@@ -548,6 +553,8 @@ export function FolderTree() {
       );
     }
     entries.push("separator", { label: "Expand to open folder", checked: expandToOpen(), run: () => setExpandToOpen(!expandToOpen()) });
+    // Explorer's navigation pane offers its libraries here too (parity2.ts).
+    entries.push({ label: "Show libraries", checked: parity2Options().showLibraries, run: () => toggleOption("showLibraries") });
     showMenu(x, y, entries);
   };
 
@@ -596,6 +603,11 @@ export function FolderTree() {
     if ((event.key === "*" || event.code === "NumpadMultiply") && !event.ctrlKey && !event.altKey) {
       handled();
       return void expandAll(node);
+    }
+    // Num Lock+plus and Num Lock+minus (the keypad's) expand and collapse, as in Explorer.
+    if ((event.code === "NumpadAdd" || event.code === "NumpadSubtract") && !event.ctrlKey && !event.altKey) {
+      handled();
+      return event.code === "NumpadAdd" ? void expand(node) : collapse(node);
     }
     if (event.key.length === 1 && event.key !== " " && !event.ctrlKey && !event.altKey && !event.metaKey) {
       handled();

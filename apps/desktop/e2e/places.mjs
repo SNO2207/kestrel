@@ -395,6 +395,8 @@ try {
       "Properties",
       "Show more options",
       "Expand to open folder",
+      // Explorer parity's second round: the navigation pane's libraries (off by default).
+      "Show libraries",
     ]);
     assert.equal(await menu.locator(".menu-item", { hasText: "Expand to open folder" }).getAttribute("aria-checked"), "true");
     await shotBoth("6-tree-menu");

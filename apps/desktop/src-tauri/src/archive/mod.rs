@@ -16,6 +16,7 @@
 //! Every extraction and compression goes into the undo journal as the items it created, so an
 //! undo sends them to the Recycle Bin, and only while they are as the job left them.
 
+mod add;
 mod address;
 mod browse;
 mod compress;
@@ -149,6 +150,49 @@ pub fn materialize(paths: Vec<String>) -> Result<Vec<String>, String> {
 pub fn open_entry(path: &str) -> Option<Result<(), String>> {
     let name = path.rsplit('\\').next().unwrap_or(path).to_owned();
     browse::open_entry(path, None, &Job::quiet()).map(|result| result.map_err(|failure| failure.problem(&name).message))
+}
+
+// ---------- adding to a zip ----------
+
+/// The zip a drop or paste at `target` adds to, and the folder inside it: `target` is a zip
+/// file, or a folder of one open in a tab. `None` for anything else.
+fn zip_target(target: &str) -> Option<(PathBuf, Vec<String>)> {
+    let (archive, inner) = address::split(target)?;
+    let archive = PathBuf::from(archive);
+    // An archive inside the zip is not the zip: nothing is added to nested archives.
+    let nested = inner.iter().any(|part| address::Format::of(part).is_some());
+    (add::is_zip(&archive) && !nested).then_some((archive, inner))
+}
+
+/// Whether files pasted into the folder `target` go into a zip: it is a zip open in a tab, or a
+/// folder of one (see [`add_to`]).
+pub fn adds_to_zip(target: &str) -> bool {
+    address::is_location(target) && zip_target(target).is_some()
+}
+
+/// Adds `paths` to the zip at `target` (a zip, or a folder of one), as Explorer does with files
+/// dropped on a zip or pasted into one, and records it for undo. Items inside other archives are
+/// copied out first. Returns the names added, to select.
+pub fn add_to(window: &Window, journal: &Journal, target: &str, paths: Vec<String>) -> Result<add::Added, String> {
+    let Some((zip, inner)) = zip_target(target) else {
+        return Err(READ_ONLY.to_owned());
+    };
+    let paths = materialize(paths)?;
+    let sources: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    let options = fileops::Options { owner: window.hwnd().ok().map(|hwnd| hwnd.0 as isize), quiet: false };
+    let (added, outcome) = add::add_to_zip(&zip, &inner, &sources, options, &Job::quiet()).map_err(|failure| {
+        let name = fileops::file_name(&zip.to_string_lossy()).to_owned();
+        failure.problem(&name).message
+    })?;
+    let name = fileops::file_name(&added.archive).to_owned();
+    journal.record_as(&outcome, format!("adding to {name}"));
+    Ok(added)
+}
+
+/// Adds files dropped on a zip, or into a folder of one open in a tab, to it.
+#[tauri::command(async)]
+pub fn archive_add(window: Window, journal: State<Journal>, target: String, paths: Vec<String>) -> Result<add::Added, String> {
+    add_to(&window, &journal, &target, paths)
 }
 
 // ---------- commands ----------

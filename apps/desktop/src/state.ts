@@ -112,8 +112,38 @@ export const dismissNotice = () => setNotice(null);
  * `version` changes with every change, which is how an async step notices that the user
  * selected something else while it was waiting.
  */
-const selections = new Map<number, { selection: Selection; focus: number; version: number }>();
+const selections = new Map<number, { selection: Selection; focus: number; version: number; set?: number }>();
 const NO_MARKS: Marks = { ranges: [], focus: null };
+
+/**
+ * Sets a tab has stopped showing but its list may still draw: the list keeps the rows it has
+ * until the replacement's rows for the view have arrived (FileList.tsx), and its selection is
+ * of the set it draws, so commands meanwhile still act on that set. Released once the list
+ * reports the new set on screen (`listShows`).
+ */
+const retiring = new Map<number, Set<number>>();
+
+/** The set a tab's selection refers to: the one its list draws. */
+const selectionSet = (tabId: number) => selections.get(tabId)?.set ?? find(tabId)?.listing?.set;
+
+/** A tab's list now draws `set`: the sets it drew before can go. */
+export function listShows(tabId: number, set: number | undefined) {
+  const old = retiring.get(tabId);
+  if (!old) return;
+  const keep = new Set([set, find(tabId)?.listing?.set, find(tabId)?.unfiltered?.set]);
+  for (const each of old) {
+    if (keep.has(each)) continue;
+    old.delete(each);
+    void api.releaseSet(each);
+  }
+  if (old.size === 0) retiring.delete(tabId);
+}
+
+function retire(tabId: number, set: number) {
+  const old = retiring.get(tabId) ?? new Set<number>();
+  old.add(set);
+  retiring.set(tabId, old);
+}
 
 /**
  * Loads for one tab run one at a time, and only the most recent request waiting behind the
@@ -162,10 +192,14 @@ const patch = (tabId: number, change: (tab: Tab) => void) =>
   setTabs((tab) => tab.id === tabId, produce(change));
 const samePath = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-/** The tab's selected and focused rows, or `null` when there are none. */
-function marksOf(tabId: number): Marks | null {
+/**
+ * The tab's selected and focused rows, or `null` when there are none, or when they are rows of
+ * another set than `set` (the list still draws the one before it).
+ */
+function marksOf(tabId: number, set?: number): Marks | null {
   const held = selections.get(tabId);
   if (!held || (held.selection.count === 0 && held.focus < 0)) return null;
+  if (set !== undefined && held.set !== undefined && held.set !== set) return null;
   return { ranges: held.selection.ranges as RowRange[], focus: held.focus >= 0 ? held.focus : null };
 }
 
@@ -176,7 +210,8 @@ function marksOf(tabId: number): Marks | null {
  * background refresh is never lost.
  */
 async function carryMarks(tabId: number, listing: Listing): Promise<Marks> {
-  const previous = find(tabId)?.listing?.set;
+  // The set the selection is of: the one the list draws, which may be older than the tab's.
+  const previous = selectionSet(tabId);
   for (;;) {
     const marks = marksOf(tabId);
     if (previous === undefined || !marks) return NO_MARKS;
@@ -198,12 +233,13 @@ function show(tabId: number, listing: Listing, restore: Marks, change: (tab: Tab
     tab.error = null;
     tab.failed = null;
   });
-  // Released only now that the tab shows the new listing, so a late row request for the old
-  // one is simply ignored rather than read as a stale index.
-  if (previous !== undefined && previous !== listing.set) void api.releaseSet(previous);
+  // Released only once the tab's list draws the new listing (`listShows`), so a late row
+  // request for the old one is simply ignored rather than read as a stale index, and a command
+  // on the selection the list still shows acts on the rows it shows.
+  if (previous !== undefined && previous !== listing.set) retire(tabId, previous);
   // The listing a filter narrowed goes too, once nothing is narrowed from it any more.
   const base = find(tabId)?.unfiltered?.set;
-  if (previousBase !== undefined && previousBase !== base && previousBase !== listing.set) void api.releaseSet(previousBase);
+  if (previousBase !== undefined && previousBase !== base && previousBase !== listing.set) retire(tabId, previousBase);
 }
 
 /** A listing as the tab shows it: grouped as its location is, and narrowed by the tab's filter. */
@@ -489,7 +525,7 @@ export function setSortSpec(tabId: number, sort: SortSpec) {
     const tab = find(tabId);
     if (!tab?.listing) return;
     try {
-      const moved = await api.sortSet(tab.listing.set, sort, marksOf(tabId) ?? NO_MARKS);
+      const moved = await api.sortSet(tab.listing.set, sort, marksOf(tabId, tab.listing.set) ?? NO_MARKS);
       patch(tabId, (tab) => {
         // A listing that arrived while this waited set the sort it was made with; the rows
         // are now in this order instead.
@@ -515,7 +551,7 @@ export function setGrouping(tabId: number, group: GroupSpec | null) {
     const tab = find(tabId);
     if (!tab?.listing) return;
     try {
-      const grouped = await layoutApi.groupSet(tab.listing.set, tab.sort, group, marksOf(tabId) ?? NO_MARKS);
+      const grouped = await layoutApi.groupSet(tab.listing.set, tab.sort, group, marksOf(tabId, tab.listing.set) ?? NO_MARKS);
       patch(tabId, (tab) => {
         tab.groups = group ? grouped.starts : null;
         tab.restore = grouped.marks;
@@ -559,9 +595,12 @@ export function setFilter(tabId: number, text: string | null) {
   });
 }
 
-/** Called by a tab's list whenever its selection or focused row changes. */
-export function reportSelection(tabId: number, selection: Selection, focus: number) {
-  selections.set(tabId, { selection, focus, version: (selections.get(tabId)?.version ?? 0) + 1 });
+/**
+ * Called by a tab's list whenever its selection or focused row changes, or it draws another set:
+ * `set` is the set the rows it draws (and so the selection) belong to.
+ */
+export function reportSelection(tabId: number, selection: Selection, focus: number, set?: number) {
+  selections.set(tabId, { selection, focus, set, version: (selections.get(tabId)?.version ?? 0) + 1 });
   if (find(tabId)?.selected !== selection.count) patch(tabId, (tab) => void (tab.selected = selection.count));
 }
 
@@ -588,7 +627,8 @@ function selected(tabId: number) {
   const tab = find(tabId);
   const held = selections.get(tabId);
   if (!tab?.listing || !held || held.selection.count === 0) return null;
-  return { tab, set: tab.listing.set, selection: held.selection, ranges: held.selection.ranges as RowRange[] };
+  // The rows the list draws, which for a moment after a refresh may be the previous set's.
+  return { tab, set: held.set ?? tab.listing.set, selection: held.selection, ranges: held.selection.ranges as RowRange[] };
 }
 
 /** The set and ranges of a tab's selection, for commands that act on it, or `null` if none. */
@@ -764,6 +804,31 @@ export function addTab(path?: string, pane: number = activePane(), activate = tr
   return id;
 }
 
+/**
+ * Opens a tab that brings its own history: a duplicate (beside the tab `after`) or a tab moved
+ * here from another window (parity2.ts). It becomes the active tab.
+ */
+export function addTabWith(source: { path: string; history: string[]; cursor: number }, pane: number = activePane(), after?: number): number {
+  const id = addTab(source.path, pane);
+  const history = source.history.length > 0 ? [...source.history] : [];
+  const cursor = Math.min(Math.max(source.cursor, -1), history.length - 1);
+  setTabs(
+    produce((all) => {
+      const at = all.findIndex((tab) => tab.id === id);
+      if (at < 0) return;
+      const [tab] = all.splice(at, 1);
+      // Its own history, which navigating to where it already is leaves as it is.
+      if (history.length > 0 && history[cursor]?.toLowerCase() === source.path.toLowerCase()) {
+        tab.history = history;
+        tab.cursor = cursor;
+      }
+      const beside = after === undefined ? -1 : all.findIndex((other) => other.id === after);
+      all.splice(beside < 0 ? all.length : beside + 1, 0, tab);
+    }),
+  );
+  return id;
+}
+
 /** Makes a tab the one its pane shows, without moving the keyboard to that pane. */
 export function revealTab(tabId: number) {
   const tab = find(tabId);
@@ -796,12 +861,13 @@ export function closeTab(tabId: number) {
 /** Removes a tab and frees what it held. */
 function forget(tabId: number) {
   const tab = find(tabId);
-  const sets = [tab?.listing?.set, tab?.unfiltered?.set];
+  const sets = [tab?.listing?.set, tab?.unfiltered?.set, ...(retiring.get(tabId) ?? [])];
   setTabs((all) => all.filter((each) => each.id !== tabId));
   cancelListing(tabId);
   queues.delete(tabId);
   selections.delete(tabId);
-  for (const set of sets) if (set !== undefined) void api.releaseSet(set);
+  retiring.delete(tabId);
+  for (const set of new Set(sets)) if (set !== undefined) void api.releaseSet(set);
 }
 
 /**

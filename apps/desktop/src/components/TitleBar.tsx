@@ -6,6 +6,7 @@ import { folderOptions } from "../lib/folderOptions";
 import { locationOf, locationTitle, titleOf } from "../lib/locations";
 import { activateTab, activeId, closeTab, dual, isSearch, openTab, tabs, type Tab } from "../state";
 import { Icon } from "./Icon";
+import { openTabMenu, startTabDrag, tabDragClasses } from "./TabMenu";
 
 /** What a tab is called in the title bar and in each pane's tab strip (Panes.tsx). */
 export function tabTitle(tab: Tab): string {
@@ -35,7 +36,7 @@ export function TitleBar() {
             {(tab) => (
               <div
                 class="tab"
-                classList={{ active: tab.id === activeId(), "drop-target": isDropTab(tab.id) }}
+                classList={{ active: tab.id === activeId(), "drop-target": isDropTab(tab.id), ...tabDragClasses(tab.id) }}
                 role="tab"
                 data-tab-id={tab.id}
                 aria-selected={tab.id === activeId()}
@@ -45,6 +46,9 @@ export function TitleBar() {
                   // Middle-click closes, as in a browser.
                   if (event.button === 1) closeTab(tab.id);
                 }}
+                // Explorer parity (parity2.ts): the tab's menu, and dragging it out of the strip.
+                onPointerDown={(event) => startTabDrag(tab.id, event)}
+                onContextMenu={(event) => openTabMenu(tab.id, event)}
               >
                 <span class="tab-title">{tabTitle(tab)}</span>
                 <button

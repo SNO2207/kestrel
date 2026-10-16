@@ -14,5 +14,6 @@ import "./media.css";
 import "./semantic.css";
 import "./search.css";
 import "./devtools.css";
+import "./parity2.css";
 
 render(() => <App />, document.getElementById("root")!);

@@ -31,6 +31,8 @@ import {
 } from "../places";
 import { isDropPlace } from "../dragdrop";
 import { openInTerminal } from "../parity";
+import { parity2Api, type NetworkPlace } from "../lib/parity2Api";
+import { disconnectEntry, networkEntries, shownDrives } from "../parity2";
 import { pinPaths } from "../shortcuts";
 import { wslDistros } from "../wsl";
 import { notify } from "../state";
@@ -80,16 +82,20 @@ export function ThisPcPage(props: LocationPageProps) {
   const typeAhead = { prefix: "", at: 0 };
 
   const folders = createMemo<Tile[]>(() => thisPc().folders.map((folder) => ({ kind: "folder", folder, path: folder.path, name: folder.name })));
+  // "Hide empty drives" leaves out card readers and disc drives with nothing in them (parity2.ts).
   const local = createMemo<Tile[]>(() =>
-    thisPc()
-      .drives.filter((drive) => drive.kind !== "network")
+    shownDrives(thisPc().drives)
+      .filter((drive) => drive.kind !== "network")
       .map((drive) => ({ kind: "drive", drive, path: drive.path, name: drive.name })),
   );
-  const network = createMemo<Tile[]>(() =>
-    thisPc()
+  // Mapped drives, then the network locations "Add a network location" made.
+  const [netPlaces, setNetPlaces] = createSignal<NetworkPlace[]>([]);
+  const network = createMemo<Tile[]>(() => [
+    ...thisPc()
       .drives.filter((drive) => drive.kind === "network")
-      .map((drive) => ({ kind: "drive", drive, path: drive.path, name: drive.name })),
-  );
+      .map((drive): Tile => ({ kind: "drive", drive, path: drive.path, name: drive.name })),
+    ...netPlaces().map((place): Tile => ({ kind: "folder", folder: { name: place.name, kind: "share", path: place.target }, path: place.target, name: place.name })),
+  ]);
   // WSL's Linux distributions, when installed (wsl.ts).
   const linux = createMemo<Tile[]>(() =>
     wslDistros().map((distro) => ({ kind: "folder", folder: { name: distro.name, kind: "linux", path: distro.path }, path: distro.path, name: distro.name })),
@@ -97,7 +103,15 @@ export function ThisPcPage(props: LocationPageProps) {
   const tiles = createMemo(() => [...folders(), ...local(), ...network(), ...linux()]);
 
   // Read again whenever the page is shown or refreshed.
-  createEffect(on(() => props.revision, () => void loadThisPc()));
+  createEffect(
+    on(
+      () => props.revision,
+      () => {
+        void loadThisPc();
+        void parity2Api.networkPlaces().then(setNetPlaces).catch(() => setNetPlaces([]));
+      },
+    ),
+  );
 
   createEffect(() => {
     const count = tiles().length;
@@ -146,6 +160,8 @@ export function ThisPcPage(props: LocationPageProps) {
       if (canAnalyse() || canEject(drive)) entries.push("separator");
       if (canAnalyse()) entries.push({ label: "Show disk usage", run: () => analyseDiskUsage(drive.path) });
       if (canEject(drive)) entries.push({ label: "Eject", run: () => void ejectDrive(drive) });
+      // A mapped drive disconnects from its menu, as in Explorer (parity2.ts).
+      if (drive.kind === "network") entries.push("separator", disconnectEntry(drive));
     } else if (tile.folder.kind === "linux") {
       // A distribution's shell opens in its root.
       entries.push("separator", { label: "Open in Terminal", run: () => openInTerminal(tile.path) }, { label: "Pin to sidebar", run: () => void pinPaths([tile.path]) });
@@ -308,7 +324,13 @@ export function ThisPcPage(props: LocationPageProps) {
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) setSelected(null);
       }}
-      onContextMenu={(event) => event.preventDefault()}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        // The page's own menu, with the network's commands, as Explorer's This PC has them.
+        if (event.target !== event.currentTarget && !(event.target as Element).closest(".pc-group-title")) return;
+        setSelected(null);
+        showMenu(event.clientX, event.clientY, [...networkEntries(), "separator", { label: "Refresh", hint: "F5", run: () => void loadThisPc() }]);
+      }}
     >
       <Group title="Folders" label="Folders" tiles={folders()} />
       <Group title="Devices and drives" label="Devices and drives" tiles={local()} />

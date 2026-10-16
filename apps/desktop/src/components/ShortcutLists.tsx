@@ -22,6 +22,7 @@ import {
 } from "../shortcuts";
 import { projectsOpen } from "../projects";
 import { diskOpen } from "../disk";
+import { parity2Options } from "../parity2";
 import { activeTab, isSearch } from "../state";
 import { askName, showMenu } from "./ShortcutDialogs";
 import { ShortcutIcon } from "./ShortcutIcon";
@@ -59,7 +60,8 @@ function FrequentFolders() {
     ]);
   };
   return (
-    <Show when={frequent().length > 0}>
+    // Folder Options' "Show frequently used folders" (parity2.ts).
+    <Show when={frequent().length > 0 && parity2Options().showFrequent}>
       <section class="shelf" aria-label="Frequent">
         <div class="shelf-head">
           <h2>Frequent</h2>

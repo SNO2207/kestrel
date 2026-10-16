@@ -17,6 +17,7 @@ import { BatchRenameDialog, openBatchRename } from "./components/BatchRename";
 import { CommandBar } from "./components/CommandBar";
 import { DetailsPane } from "./components/DetailsPane";
 import { ParityLayer } from "./components/ParityLayer";
+import { Parity2Layer } from "./components/Parity2Layer";
 import { registerSelector } from "./lib/selectionOps";
 import { copyFromArchive, isArchiveFile, openEntry, runArchiveCommand, tabInArchive } from "./archives";
 import { ArchiveDialogs, ArchiveJobs } from "./components/ArchiveDialogs";
@@ -60,6 +61,7 @@ import {
   goBack,
   goForward,
   goUp,
+  listShows,
   navigate,
   notice,
   noticeTone,
@@ -273,7 +275,8 @@ export function App() {
                 onSort={(key) => setSort(tab.id, key)}
                 onOpen={(row, inNewTab) => open(tab.id, row, inNewTab)}
                 onStale={() => refresh(tab.id)}
-                onSelectionChange={(selection, focus) => reportSelection(tab.id, selection, focus)}
+                onSelectionChange={(selection, focus, set) => reportSelection(tab.id, selection, focus, set)}
+                onShows={(set) => listShows(tab.id, set)}
                 onPendingDone={() => clearPending(tab.id)}
                 onRenaming={(active) => setRenaming(tab.id, active)}
                 onRename={(row, name) => rename(tab.id, row, name)}
@@ -320,6 +323,7 @@ export function App() {
       <QuickLook focusList={focusList} />
       <ShortcutsLayer focusList={focusList} />
       <ParityLayer focusList={focusList} />
+      <Parity2Layer focusList={focusList} />
       <PaletteOverlay runCommand={(command) => runCommand(activeId(), command)} focusList={focusList} />
       <LauncherSettingsDialog onClose={focusList} />
       <ConfirmDialog onClose={focusList} />

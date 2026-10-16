@@ -12,6 +12,7 @@ import { registerLocation } from "./lib/locations";
 import { RECYCLE_BIN, THIS_PC, driveTitle, isDriveRoot } from "./places";
 import { TRIAGE, TRIAGE_ALIASES } from "./triage";
 import { isWslRoot, wslTitle } from "./wsl";
+import { registerParity2Locations } from "./parity2Setup";
 
 // Explorer's start page: quick access, favorites and recent files (HomeView.tsx).
 registerLocation({
@@ -61,5 +62,7 @@ registerLocation({
   aliases: TRIAGE_ALIASES,
   keywords: "downloads triage arrived recent installers archives",
 });
+// Libraries and the Network (Explorer parity, second round), after the places above.
+registerParity2Locations();
 
 export { startPlaces } from "./places";

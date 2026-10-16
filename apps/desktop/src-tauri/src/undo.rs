@@ -304,6 +304,16 @@ fn has_home(op: &Op) -> bool {
     destination(op).is_none_or(|folder| Path::new(&folder).is_dir())
 }
 
+/// Runs `ops`, in which whatever takes an item away comes first: as one shell operation, or as
+/// two in turn when items are both taken away and put back (`fileops::run_in_turn`). An archive
+/// replaced in place (`archive::add`) is undone that way: the new one is recycled before the old
+/// one is restored to its path.
+fn run_removals_first(ops: Vec<Op>, options: Options) -> Result<Outcome, String> {
+    let removing = |op: &Op| matches!(op, Op::Recycle { .. } | Op::Erase { .. });
+    let split = ops.iter().position(|op| !removing(op)).unwrap_or(ops.len());
+    fileops::run_in_turn(ops, split, options)
+}
+
 impl Journal {
     /// Records what an operation did, so it can be undone. Operations that did nothing are not
     /// recorded; one that erased anything ends the history, since nothing brings that back.
@@ -419,6 +429,10 @@ impl Journal {
             };
             return Err(format!("Couldn't {} the {}: {why}.", direction.verb(), entry.label));
         }
+        // What takes an item away goes before what puts one back: undoing an archive replaced in
+        // place (`archive::add`) recycles the new one before the old one is restored to its path,
+        // and redoing it the other way round.
+        present.sort_by_key(|(_, op)| !matches!(op, Op::Recycle { .. } | Op::Erase { .. }));
         let (positions, ops): (Vec<usize>, Vec<Op>) = present.into_iter().unzip();
         let outcome = if ops.iter().all(|op| matches!(op, Op::Rename { .. })) {
             let renames = ops
@@ -430,7 +444,7 @@ impl Journal {
                 .collect();
             fileops::rename_all(renames, options)?
         } else {
-            fileops::run(ops, false, options)?
+            run_removals_first(ops, options)?
         };
 
         let mut reversed = vec![false; entry.steps.len()];

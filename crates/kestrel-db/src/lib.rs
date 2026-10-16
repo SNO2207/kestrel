@@ -23,6 +23,7 @@ pub mod layout;
 pub mod media;
 pub mod palette;
 pub mod parity;
+pub mod parity2;
 pub mod places;
 pub mod projects;
 pub mod semantic;

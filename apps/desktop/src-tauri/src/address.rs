@@ -395,7 +395,7 @@ pub fn rank(names: Vec<String>, typed: &str) -> Vec<String> {
 
 /// The disk shares of a server, `\\server`, with a time limit. Hidden shares (`C$`) only when
 /// hidden items are shown.
-fn shares(server: &str, show_hidden: bool) -> Vec<String> {
+pub(crate) fn shares(server: &str, show_hidden: bool) -> Vec<String> {
     let server = server.to_owned();
     with_time_limit(move || {
         let name = wide(&server);

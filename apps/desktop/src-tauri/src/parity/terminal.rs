@@ -10,6 +10,7 @@ use crate::projects::launch;
 /// Opens Windows Terminal in `folder`.
 #[tauri::command(async)]
 pub fn open_in_terminal(folder: String) -> Result<(), String> {
+    let folder = crate::parity2::libraries::folder_for(&folder);
     // In a WSL distribution, the distribution's own shell (wsl.rs).
     if let Some(shell) = crate::wsl::terminal(&folder) {
         return launch::start(shell);

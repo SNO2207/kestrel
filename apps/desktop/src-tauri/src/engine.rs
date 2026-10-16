@@ -406,6 +406,50 @@ impl Engine {
         Listing { set, total, path: String::new(), max_size, took_us: 0, archive: None }
     }
 
+    /// Lists several folders as one folder at `address`, as a library shows the folders it
+    /// includes (`parity2::libraries`): each is read from disk and reconciled with the index as
+    /// [`Engine::list_dir_with`] does, and their items are sorted together. Also returns the
+    /// folders left out: those that can't be read, and those the index doesn't hold (shares,
+    /// removable drives), whose items would have no entries to page through.
+    pub fn list_merged(&self, address: &str, folders: &[String], spec: SortSpec, visibility: Visibility) -> (Listing, Vec<String>) {
+        let started = Instant::now();
+        let sort_spec = spec.resolve(true);
+        let mut skipped = Vec::new();
+        let mut read = Vec::new();
+        for folder in folders {
+            let path = normalize(folder);
+            match walk::list(&path) {
+                Ok(items) => read.push((path, items)),
+                Err(_) => skipped.push(path),
+            }
+        }
+        let mut index = self.index.write();
+        let mut ids: Vec<EntryId> = Vec::new();
+        let mut seen = HashSet::new();
+        for (path, items) in read {
+            let indexed = index
+                .lookup(&path)
+                .filter(|&dir| index.is_dir(dir))
+                .filter(|&dir| index.attrs(dir) & attr::REPARSE_POINT == 0 || !walk::is_alias(&path));
+            let Some(dir) = indexed else {
+                skipped.push(path);
+                continue;
+            };
+            let mut sync = Sync::default();
+            sync.dir(&mut index, dir, items);
+            sync.finish(&mut index);
+            // A folder included twice shows its items once.
+            ids.extend(index.children(dir).filter(|&id| visibility.shows(index.attrs(id)) && seen.insert(id)).collect::<Vec<_>>());
+        }
+        sort(&index, &mut ids, sort_spec);
+        let max_size = ids.iter().map(|&id| index.size(id)).max().unwrap_or(0);
+        drop(index);
+        let total = ids.len() as u32;
+        let set = self.store(ResultSet { rows: Rows::Indexed(ids), is_search: false, arranged: Arranged::sorted(sort_spec) });
+        let listing = Listing { set, total, path: address.to_owned(), max_size, took_us: started.elapsed().as_micros() as u64, archive: None };
+        (listing, skipped)
+    }
+
     /// Runs a query, optionally restricted to the folder `scope`. Hidden items are included,
     /// as for [`Engine::list_dir`].
     #[allow(dead_code)]
