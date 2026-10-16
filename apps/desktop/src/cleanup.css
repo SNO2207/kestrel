@@ -42,6 +42,12 @@
 
 /* ---------- shared controls ---------- */
 
+/* Pushes what follows to the end of a row (lost in an earlier merge, which left the footers'
+   buttons and the groups' sizes against the text before them). */
+.cleanup-spacer {
+  flex: 1;
+}
+
 .cleanup-button {
   display: inline-flex;
   align-items: center;

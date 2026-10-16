@@ -31,6 +31,7 @@ const within = (path: string, folder: string) => {
 };
 const copies = (n: number) => (n === 1 ? "1 copy" : `${formatCount(n)} copies`);
 const photos = (n: number) => (n === 1 ? "1 photo" : `${formatCount(n)} photos`);
+const files = (n: number) => (n === 1 ? "1 file" : `${formatCount(n)} files`);
 
 /** What choosing the copy to keep needs of a group, exact or similar. */
 type Choice = { id: string; files: { path: string; modified: number }[] };
@@ -117,6 +118,8 @@ export function DuplicatesPanel(props: { root: string | null }) {
     ...chosenSimilar().flatMap((group) => removing(group).map((file) => ({ path: file.path, bytes: file.bytes }))),
   ];
   const chosenBytes = () => chosenFiles().reduce((n, file) => n + file.bytes, 0);
+  /** What is chosen, in words: copies, photos (similar ones are not copies), or both. */
+  const moving = (n: number) => (chosenSimilar().length === 0 ? copies(n) : chosen().length === 0 ? photos(n) : files(n));
   /** Folders holding copies, most first, for "Keep copies in". */
   const folders = createMemo(() => {
     const counts = new Map<string, { folder: string; n: number }>();
@@ -527,21 +530,21 @@ export function DuplicatesPanel(props: { root: string | null }) {
       <Show when={groups().length > 0 || similarGroups().length > 0}>
         <footer class="cleanup-footer">
           <span class="cleanup-selected">
-            {chosenCount() === 0 ? "Tick the groups to clean up." : `${copies(chosenFiles().length)} selected · ${formatSize(chosenBytes())}`}
+            {chosenCount() === 0 ? "Tick the groups to clean up." : `${moving(chosenFiles().length)} selected · ${formatSize(chosenBytes())}`}
           </span>
           <span class="cleanup-spacer" />
           <button class="cleanup-button cleanup-dry-run" disabled={chosenCount() === 0 || busy()} onClick={() => void dryRun()}>
             Dry run
           </button>
           <button class="cleanup-button primary cleanup-recycle" disabled={chosenCount() === 0 || busy()} onClick={() => setDialog({ kind: "recycle" })}>
-            Move copies to Recycle Bin…
+            {chosen().length === 0 && chosenSimilar().length > 0 ? "Move photos to Recycle Bin…" : "Move copies to Recycle Bin…"}
           </button>
         </footer>
       </Show>
 
       <Show when={dialog()?.kind === "recycle"}>
         <CleanupDialog
-          title={`Move ${copies(chosenFiles().length)} to the Recycle Bin?`}
+          title={`Move ${moving(chosenFiles().length)} to the Recycle Bin?`}
           confirm="Move to Recycle Bin"
           busy={busy()}
           onConfirm={() => void recycle()}

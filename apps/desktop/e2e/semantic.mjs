@@ -433,7 +433,7 @@ try {
     assert.equal(await hub.locator(".cleanup-recycle").isDisabled(), true, "nothing to move until a group is ticked");
     // Ticked, a dry run moves only the photo not kept; nothing is changed.
     await group.locator(".dupes-group-check").check();
-    await hub.locator(".cleanup-selected", { hasText: "1 copy selected" }).waitFor();
+    await hub.locator(".cleanup-selected", { hasText: "1 photo selected" }).waitFor();
     await shotBoth("7-similar-photos");
     await hub.locator(".cleanup-dry-run").click();
     const dry = page.locator(".cleanup-dialog");
