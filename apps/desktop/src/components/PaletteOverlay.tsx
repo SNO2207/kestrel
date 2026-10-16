@@ -5,6 +5,7 @@ import { actionsProvider } from "../lib/paletteActions";
 import { featureProviders } from "../lib/paletteFeatures";
 import { paletteApi } from "../lib/paletteApi";
 import { filesProvider, rememberVisits } from "../lib/paletteFiles";
+import { locationsProvider } from "../lib/paletteLocations";
 import { notify } from "../state";
 import { CommandPalette } from "./CommandPalette";
 import type { ListCommand } from "./FileList";
@@ -45,7 +46,7 @@ export function PaletteOverlay(props: { runCommand: (command: ListCommand) => vo
 
   onMount(() => {
     const host = { runCommand: props.runCommand, focusList: props.focusList, openSettings: openLauncherSettings };
-    const removers = [actionsProvider(host), filesProvider, ...featureProviders()].map(registerPaletteProvider);
+    const removers = [actionsProvider(host), filesProvider, locationsProvider, ...featureProviders()].map(registerPaletteProvider);
     rememberVisits();
     // Captured, so the shortcut works from any field, menu or dialog.
     const onKeyDown = (event: KeyboardEvent) => {

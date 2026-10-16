@@ -1,15 +1,25 @@
-import { For, Show } from "solid-js";
+import { For, Show, onMount } from "solid-js";
 
 import { isDropPlace } from "../dragdrop";
-import { formatSize } from "../lib/format";
+import { collapsibleSections } from "../lib/sidebarSections";
+import { RECYCLE_BIN, collapsedSections, samePlace, setSectionCollapsed } from "../places";
 import { activeTab, navigate, openTab, places } from "../state";
 import { closeProjects, projectsOpen, toggleProjects } from "../projects";
+import { FolderTree } from "./FolderTree";
 import { Icon, hasIcon } from "./Icon";
 import { PinnedPlaces } from "./PinnedPlaces";
 import { ProjectIcon } from "./ProjectIcon";
 import { ShortcutLists } from "./ShortcutLists";
+import { SidebarResizer } from "./SidebarResizer";
 
+/**
+ * The sidebar: the projects hub, pinned places, places, frequent folders, saved searches, tags
+ * and workspaces above, each section folding away from its heading; and below them the folder
+ * tree, This PC and its drives, which scrolls on its own so a deep tree never pushes the
+ * sections above out of reach.
+ */
 export function Sidebar() {
+  let shelves!: HTMLDivElement;
   // While the projects hub covers the list, no place is the current one.
   const current = () => (projectsOpen() ? "" : (activeTab()?.path.toLowerCase() ?? ""));
   const open = (path: string, event: MouseEvent) => {
@@ -20,87 +30,71 @@ export function Sidebar() {
     else navigate(tab.id, path);
   };
 
+  onMount(() => collapsibleSections(shelves, collapsedSections, setSectionCollapsed));
+
   return (
     <nav class="sidebar" aria-label="Places">
-      <section>
-        <button
-          class="projects-entry"
-          classList={{ current: projectsOpen() }}
-          title="Projects (Ctrl+Shift+P)"
-          aria-pressed={projectsOpen()}
-          onClick={toggleProjects}
-        >
-          <ProjectIcon name="projects" />
-          <span>Projects</span>
-        </button>
-      </section>
-      <PinnedPlaces />
-
-      <section>
-        <h2>Places</h2>
-        <Show when={places().home}>
+      <div ref={shelves} class="sidebar-shelves">
+        <section>
           <button
-            class="place"
-            classList={{ current: current() === places().home.toLowerCase(), "drop-target": isDropPlace(places().home) }}
-            data-place={places().home}
-            data-place-name="Home"
-            onClick={[open, places().home]}
-            onAuxClick={[open, places().home]}
+            class="projects-entry"
+            classList={{ current: projectsOpen() }}
+            title="Projects (Ctrl+Shift+P)"
+            aria-pressed={projectsOpen()}
+            onClick={toggleProjects}
           >
-            <Icon name="home" />
-            <span>Home</span>
+            <ProjectIcon name="projects" />
+            <span>Projects</span>
           </button>
-        </Show>
-        <For each={places().folders}>
-          {(folder) => (
+        </section>
+        <PinnedPlaces />
+
+        <section aria-label="Places">
+          <h2>Places</h2>
+          <Show when={places().home}>
             <button
               class="place"
-              classList={{ current: current() === folder.path.toLowerCase(), "drop-target": isDropPlace(folder.path) }}
-              title={folder.path}
-              data-place={folder.path}
-              data-place-name={folder.name}
-              onClick={[open, folder.path]}
-              onAuxClick={[open, folder.path]}
+              classList={{ current: current() === places().home.toLowerCase(), "drop-target": isDropPlace(places().home) }}
+              data-place={places().home}
+              data-place-name="Home"
+              onClick={[open, places().home]}
+              onAuxClick={[open, places().home]}
             >
-              <Icon name={hasIcon(folder.kind) ? folder.kind : "folder"} />
-              <span>{folder.name}</span>
+              <Icon name="home" />
+              <span>Home</span>
             </button>
-          )}
-        </For>
-      </section>
-
-      <section>
-        <h2>Drives</h2>
-        <For each={places().drives}>
-          {(drive) => {
-            const used = () => (drive.total > 0 ? (drive.total - drive.free) / drive.total : 0);
-            return (
+          </Show>
+          <For each={places().folders}>
+            {(folder) => (
               <button
-                class="place drive"
-                classList={{ current: current() === drive.path.toLowerCase(), "drop-target": isDropPlace(drive.path) }}
-                data-place={drive.path}
-                data-place-name={`${drive.label || "Local Disk"} (${drive.path.slice(0, 2)})`}
-                onClick={[open, drive.path]}
-                onAuxClick={[open, drive.path]}
+                class="place"
+                classList={{ current: current() === folder.path.toLowerCase(), "drop-target": isDropPlace(folder.path) }}
+                title={folder.path}
+                data-place={folder.path}
+                data-place-name={folder.name}
+                onClick={[open, folder.path]}
+                onAuxClick={[open, folder.path]}
               >
-                <Icon name="drive" />
-                <span class="drive-body">
-                  <span class="drive-name">
-                    {drive.label || "Local Disk"} ({drive.path.slice(0, 2)})
-                  </span>
-                  <Show when={drive.total > 0}>
-                    <span class="meter" classList={{ full: used() > 0.9 }}>
-                      <span style={{ width: `${used() * 100}%` }} />
-                    </span>
-                    <span class="drive-free">{formatSize(drive.free)} free of {formatSize(drive.total)}</span>
-                  </Show>
-                </span>
+                <Icon name={hasIcon(folder.kind) ? folder.kind : "folder"} />
+                <span>{folder.name}</span>
               </button>
-            );
-          }}
-        </For>
-      </section>
-      <ShortcutLists />
+            )}
+          </For>
+          <button
+            class="place recycle-bin-place"
+            classList={{ current: samePlace(current(), RECYCLE_BIN) }}
+            title="Recycle Bin"
+            onClick={[open, RECYCLE_BIN]}
+            onAuxClick={[open, RECYCLE_BIN]}
+          >
+            <Icon name="bin" />
+            <span>Recycle Bin</span>
+          </button>
+        </section>
+        <ShortcutLists />
+      </div>
+      <FolderTree />
+      <SidebarResizer />
     </nav>
   );
 }

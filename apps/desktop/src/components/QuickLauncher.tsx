@@ -5,6 +5,9 @@ import { actionsProvider } from "../lib/paletteActions";
 import { featureProviders } from "../lib/paletteFeatures";
 import { paletteApi } from "../lib/paletteApi";
 import { filesProvider } from "../lib/paletteFiles";
+import { locationsProvider } from "../lib/paletteLocations";
+// This PC and the Recycle Bin, which the palette lists, are registered there.
+import "../placesSetup";
 import { setOption, showExtensions, showHidden } from "../lib/views";
 import { setPaneOpen } from "../previewState";
 import { CommandPalette } from "./CommandPalette";
@@ -42,7 +45,7 @@ export function QuickLauncher() {
   const [failure, setFailure] = createSignal<string | null>(null);
 
   onMount(() => {
-    const removers = [actionsProvider(), filesProvider, ...featureProviders()].map(registerPaletteProvider);
+    const removers = [actionsProvider(), filesProvider, locationsProvider, ...featureProviders()].map(registerPaletteProvider);
     const stopShown = paletteApi.onShown(() => {
       setFailure(null);
       setGeneration((count) => count + 1);

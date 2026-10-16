@@ -3,12 +3,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { isDropTab } from "../dragdrop";
 import { baseName } from "../lib/format";
+import { locationTitle } from "../lib/locations";
 import { activateTab, activeId, closeTab, isSearch, openTab, tabs, type Tab } from "../state";
 import { Icon } from "./Icon";
 
 function tabTitle(tab: Tab): string {
   if (isSearch(tab)) return `Search: ${tab.query}`;
-  return baseName(tab.path) || tab.path;
+  return locationTitle(tab.path) ?? (baseName(tab.path) || tab.path);
 }
 
 export function TitleBar() {
@@ -33,7 +34,7 @@ export function TitleBar() {
               role="tab"
               data-tab-id={tab.id}
               aria-selected={tab.id === activeId()}
-              title={isSearch(tab) ? tab.query : tab.path}
+              title={isSearch(tab) ? tab.query : (locationTitle(tab.path) ?? tab.path)}
               onMouseDown={(event) => {
                 if (event.button === 0) activateTab(tab.id);
                 // Middle-click closes, as in a browser.

@@ -14,6 +14,7 @@ import { createStore, reconcile } from "solid-js/store";
 import { api } from "./lib/api";
 import { closeProjects } from "./projects";
 import { baseName, parentPath } from "./lib/format";
+import { locationOf } from "./lib/locations";
 import {
   shortcutsApi as backend,
   type Board,
@@ -158,7 +159,8 @@ export async function pinSelection(tabId: number) {
 /** Pins the folder the tab shows. */
 export async function pinFolder(tabId: number) {
   const tab = tabs.find((candidate) => candidate.id === tabId);
-  if (tab && !isSearch(tab) && tab.path) await pinPaths([tab.path]);
+  // A special location (This PC, the Recycle Bin) is not a folder to pin.
+  if (tab && !isSearch(tab) && tab.path && !locationOf(tab.path)) await pinPaths([tab.path]);
 }
 
 /**
@@ -247,7 +249,7 @@ export async function saveSearch(tabId: number, name: string) {
   const tab = tabs.find((candidate) => candidate.id === tabId);
   if (!tab || tab.query.trim() === "") return;
   try {
-    await backend.saveSearch(name, tab.query, everywhere() ? null : tab.path);
+    await backend.saveSearch(name, tab.query, everywhere() || locationOf(tab.path) ? null : tab.path);
     await refreshSearches();
     notify(`Saved the search as "${name.trim()}"`, "info");
   } catch (error) {

@@ -24,6 +24,14 @@ const PATHS = {
   "view-details": "M2.5 4h11M2.5 8h11M2.5 12h11",
   "view-icons": "M2.5 2.5h4v4h-4ZM9.5 2.5h4v4h-4ZM2.5 9.5h4v4h-4ZM9.5 9.5h4v4h-4Z",
   "view-tiles": "M2.5 3h4v4h-4ZM8.5 4h5M8.5 6h3M2.5 9h4v4h-4ZM8.5 10h5M8.5 12h3",
+  // Places: This PC, the Recycle Bin and the kinds of drive.
+  pc: "M3.5 3.5h9v6.5h-9ZM1.5 12.5h13",
+  bin: "M2.5 4.5h11M6.25 4.5V2.75h3.5V4.5M4 4.5l.75 9h6.5l.75-9M6.75 7v4M9.25 7v4",
+  usb: "M5.5 6.5h5v7h-5ZM6.5 2.5h3v4h-3Z",
+  disc: "M8 2.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11ZM8 6.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z",
+  "network-drive": "M2.5 2.5h11v5h-11ZM8 7.5v4M3 13.5h10M11 5h.01",
+  "restore-item": "M5.5 3.5 2.5 6.5l3 3M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7",
+  eject: "M3 9.5 8 4l5 5.5ZM3 12.5h10",
 } as const;
 
 export type IconName = keyof typeof PATHS;
