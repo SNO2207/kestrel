@@ -988,9 +988,9 @@ Git:
   left on across a restart made every later search look inside files, and a whole e2e pass
   failed on it. Don't persist a new mode of that kind either.
 - Copy, Cut and a copy out of an archive put files on the clipboard through `writesClipboard`
-  (`lib/api.ts`), and `api.pasteItems` waits for the last of them: commands run on a pool of
-  threads, so a Ctrl+V sent right after Ctrl+C could be handled before the copy and paste what
-  the clipboard held before. A new command that writes files to the clipboard goes through
+  (`lib/clipboardOrder.ts`), and `api.pasteItems` waits for the last of them: commands run on a
+  pool of threads, so a Ctrl+V sent right after Ctrl+C could be handled before the copy and
+  paste what the clipboard held before. A new command that writes files to the clipboard goes through
   `writesClipboard` too. `__kestrelClipboard.hold` (development builds) holds writes so a test
   can paste while one is on its way (`fileops.mjs`).
 - A process killed with `taskkill /F` is reported gone at once, but the web view's kept the

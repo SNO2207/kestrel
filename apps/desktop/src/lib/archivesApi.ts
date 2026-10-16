@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { writesClipboard } from "./api";
+import { writesClipboard } from "./clipboardOrder";
 
 let nextJob = 1;
 

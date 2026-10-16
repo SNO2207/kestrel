@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { afterClipboardWrite, writesClipboard } from "./clipboardOrder";
 import { showProtected } from "./folderOptions";
 import type { Hit } from "./searchApi";
 import { showHidden } from "./views";
@@ -184,60 +185,6 @@ export interface ShellChoice {
   verb: string | null;
   /** False if nothing was chosen, or if the command is Kestrel's to carry out (rename). */
   invoked: boolean;
-}
-
-/**
- * The last command that puts files on the clipboard, until it is done. Commands run on a pool of
- * threads, so a paste sent while a copy was still on its way (Ctrl+C, then Ctrl+V at once) could
- * read the clipboard first and paste what was on it before; every paste waits for it.
- */
-let clipboardWrite: Promise<unknown> = Promise.resolve();
-/** Clipboard writes on their way, pastes waiting for them, and pastes done (development builds show them). */
-let writing = 0;
-let waiting = 0;
-let pasted = 0;
-/** Development builds: clipboard writes wait here while a test holds them, before they are sent. */
-let writeGate: Promise<void> | null = null;
-let openWriteGate = () => {};
-
-/** Sends a command that puts files on the clipboard (`send`), as the write pastes wait for. */
-export function writesClipboard<T>(send: () => Promise<T>): Promise<T> {
-  writing++;
-  const write = import.meta.env.DEV && writeGate ? writeGate.then(send) : send();
-  clipboardWrite = write.then(
-    () => void writing--,
-    () => void writing--,
-  );
-  return write;
-}
-
-/** Waits for the clipboard's last write before pasting. */
-function afterClipboardWrite<T>(paste: () => Promise<T>): Promise<T> {
-  waiting++;
-  return clipboardWrite
-    .then(() => {
-      waiting--;
-      return paste();
-    })
-    .finally(() => void pasted++);
-}
-
-if (import.meta.env.DEV) {
-  Object.assign(window, {
-    __kestrelClipboard: {
-      /** Holds clipboard writes before they are sent, or sends those held, so a test can paste while a copy is on its way. */
-      hold: (hold: boolean) => {
-        if (hold && !writeGate) writeGate = new Promise((resolve) => (openWriteGate = resolve));
-        if (!hold) {
-          writeGate = null;
-          openWriteGate();
-        }
-      },
-      writing: () => writing,
-      waiting: () => waiting,
-      pasted: () => pasted,
-    },
-  });
 }
 
 export const api = {
