@@ -239,6 +239,8 @@ try {
     assert.deepEqual(await crumbs(), ["Recycle Bin"]);
     // A new tab opens where the tab is; the palette knows both places.
     await page.keyboard.press("Control+k");
+    // Keys typed before the palette's box is there would go to the page beneath it.
+    await page.locator(".palette input").waitFor();
     await page.keyboard.type("this pc");
     await page.locator(".palette-item", { hasText: "This PC" }).first().waitFor();
     await page.keyboard.press("Enter");

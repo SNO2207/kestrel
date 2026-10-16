@@ -121,6 +121,23 @@ const NO_MARKS: Marks = { ranges: [], focus: null };
  */
 const queues = new Map<number, { running: boolean; next: (() => Promise<void>) | null }>();
 
+/**
+ * Tabs whose refresh came back while a name was being edited in them. Showing it would end
+ * the edit (the list redraws its rows), so it is set aside and the tab is listed again once the
+ * edit is over. No refresh starts during an edit, but one already on its way still arrives: F2
+ * just after a file operation, or the rename that follows "New folder", met one regularly.
+ */
+const refreshAfterRename = new Set<number>();
+
+/** Whether a refresh that just came back must wait for an edit in the tab to end. */
+function heldForRename(tabId: number, arranged: Arranged): boolean {
+  if (!find(tabId)?.renaming) return false;
+  void api.releaseSet(arranged.listing.set);
+  if (arranged.unfiltered) void api.releaseSet(arranged.unfiltered.set);
+  refreshAfterRename.add(tabId);
+  return true;
+}
+
 function enqueue(tabId: number, job: () => Promise<void>) {
   const queue = queues.get(tabId) ?? { running: false, next: null };
   queues.set(tabId, queue);
@@ -301,8 +318,10 @@ export function navigate(tabId: number, path: string, mode: NavigateMode = "push
       const sort = { ...(recall(folderKey(path)).sort ?? DEFAULT_SORT) };
       // Only the tabs on screen are watched for changes; others catch up when activated.
       const shown = await arrange(tabId, await listFolder(tabId, path, sort), sort);
+      if (refreshing && heldForRename(tabId, shown)) return;
       const listing = shown.listing;
       const restore = refreshing ? await carryMarks(tabId, listing) : NO_MARKS;
+      if (refreshing && heldForRename(tabId, shown)) return;
       show(tabId, listing, restore, (tab) => {
         tab.unfiltered = shown.unfiltered;
         tab.groups = shown.groups;
@@ -337,8 +356,11 @@ function runSearch(tabId: number, keepSelection = false) {
       // Search results keep a sort of their own, separate from any folder's.
       const sort = { ...(recall(SEARCH_LOCATION).sort ?? DEFAULT_SORT) };
       const shown = await arrange(tabId, await api.search(tab.query, scope, sort), sort);
+      if (keepSelection && heldForRename(tabId, shown)) return;
       const listing = shown.listing;
-      show(tabId, listing, keepSelection ? await carryMarks(tabId, listing) : NO_MARKS, (tab) => {
+      const restore = keepSelection ? await carryMarks(tabId, listing) : NO_MARKS;
+      if (keepSelection && heldForRename(tabId, shown)) return;
+      show(tabId, listing, restore, (tab) => {
         tab.unfiltered = shown.unfiltered;
         tab.groups = shown.groups;
         tab.sort = sort;
@@ -526,8 +548,11 @@ export function reportSelection(tabId: number, selection: Selection, focus: numb
   if (find(tabId)?.selected !== selection.count) patch(tabId, (tab) => void (tab.selected = selection.count));
 }
 
-export const setRenaming = (tabId: number, active: boolean) =>
+export function setRenaming(tabId: number, active: boolean) {
   patch(tabId, (tab) => void (tab.renaming = active));
+  // A refresh set aside during the edit (see `heldForRename`) is due now.
+  if (!active && refreshAfterRename.delete(tabId)) refresh(tabId);
+}
 
 export const clearPending = (tabId: number) => patch(tabId, (tab) => void (tab.pending = null));
 
@@ -606,7 +631,11 @@ export function paste(tabId: number) {
  */
 export function selectInFolder(folder: string, names: string[]) {
   for (const tab of tabs) {
-    if (isSearch(tab) || tab.renaming || !samePath(tab.path, folder)) continue;
+    if (isSearch(tab) || !samePath(tab.path, folder)) continue;
+    if (tab.renaming) {
+      refreshAfterRename.add(tab.id);
+      continue;
+    }
     if (names.length > 0) patch(tab.id, (tab) => void (tab.pending = { names, rename: false }));
     refresh(tab.id);
   }
@@ -835,7 +864,10 @@ export async function start(open: (home: string) => Promise<void> = async (home)
   });
   await api.onDirChanged((path) => {
     for (const tab of tabs) {
-      if (!isSearch(tab) && !tab.renaming && samePath(tab.path, path)) refresh(tab.id);
+      if (isSearch(tab) || !samePath(tab.path, path)) continue;
+      // A change during an edit is shown once the edit is over.
+      if (tab.renaming) refreshAfterRename.add(tab.id);
+      else refresh(tab.id);
     }
   });
   await open(initialPlaces.home);

@@ -86,6 +86,31 @@ try {
     assert(onDisk("beta.txt") && !onDisk("discarded.txt"));
   });
 
+  await step("a refresh on its way when F2 is pressed doesn't end the rename", async () => {
+    await row("beta.txt").click();
+    // Both in one go, so the refresh is certain to come back after the edit has begun.
+    await page.evaluate(() => {
+      document.querySelector('button[aria-label="Refresh"]').click();
+      document
+        .querySelector(".tab-panel.active .list-viewport")
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true, cancelable: true }));
+    });
+    const input = panel.locator("input.rename");
+    await input.waitFor();
+    await page.waitForTimeout(600);
+    assert.equal(await input.count(), 1, "the rename box outlives the refresh");
+    assert.equal(await input.inputValue(), "beta.txt");
+  });
+
+  await step("a file that arrives during a rename shows once the rename is over", async () => {
+    writeFileSync(join(sandbox, "during.txt"), "during");
+    await page.waitForTimeout(600);
+    assert.equal(await row("during.txt").count(), 0, "the list stays still while a name is edited");
+    await page.keyboard.press("Escape");
+    await panel.locator("input.rename").waitFor({ state: "detached" });
+    await row("during.txt").waitFor({ timeout: 5_000 });
+  });
+
   await step("copy and paste in place makes a duplicate and selects it", async () => {
     await row("beta.txt").click();
     await page.keyboard.press("Control+c");
