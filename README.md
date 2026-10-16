@@ -121,7 +121,7 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | `regex:^a.*\d$` | regular expression on the name |
 | `tag:urgent`, `tag:"two words"` | carries this tag |
 | `kind:photo`, `kind:video` | a photo or video the media library holds (other kinds, such as `kind:image`, are types) |
-| `taken:2024-07`, `taken:>2025`, `taken:7d` | taken (or recorded) then, read as `dm:` reads dates |
+| `taken:2024-07`, `taken:>2025`, `taken:7d` | taken (or recorded) then, read as `dm:` reads dates: from the media library, or, in a folder it doesn't read (with the search limited to that folder), from each photo |
 | `width:>1920`, `height:1080`, `width:1000..2000` | shown size in pixels |
 | `camera:pixel`, `camera:"canon eos"` | the camera's make or model contains this |
 | `duration:>1m`, `duration:30s..2m`, `duration:<10s` | a video's length (`s`, `m`, `h`; a plain number is seconds) |
@@ -142,7 +142,13 @@ changed today in kestrel" `type:code dm:today in:"…\Kestrel"` (projects by nam
 by theirs). Kinds ("pdfs", "word documents", "rust files"), dates after a verb or preposition
 ("since march", "3 days ago", "in the past 2 weeks", "on monday", "older than 90 days"), sizes
 ("under 10 mb", "between 1 and 2 gb", "huge videos"), places and contents ("containing invoice")
-are understood; other words stay words of the name. A kind word alone ("videos") is searched as
+are understood, and so is what the media library knows: a video's length ("videos longer than 5
+minutes" `type:video duration:>5m`, "short videos"), the camera ("photos taken with my pixel"
+`camera:pixel`), a location ("photos with gps" `geo:yes`) and, in pictures, their text
+("screenshots containing invoice" `type:image screenshot text:invoice`, the words read in them
+rather than their bytes). What a photo shows is a description for AI search: "photos of a dog on
+the beach" is `type:image like:"a dog on the beach"`, ranked best first like any description;
+other words stay words of the name. A kind word alone ("videos") is searched as
 a name. Above the results, chips show what the text was read as: click one to edit its clause,
 × to remove it, or "Search the words as typed" to take the text literally. Typed clauses get
 chips too.
@@ -768,6 +774,13 @@ searching again reads only what changed. Choose the copy to keep in each group (
 Oldest or "Copies in a folder" choose), tick the groups, and the other copies go to the Recycle
 Bin after a confirmation that lists them and the ones kept.
 
+Below the exact copies come **similar photos**, once AI search has a model: photos that look
+nearly the same without being copies (a burst, the same shot again, an edited or resized copy),
+found by comparing the descriptions AI search already has of the photos in the media library's
+folders, so nothing is read from disk. Each group says how alike its photos are. None is ever
+ticked for you, not even by Select all: tick a group to keep the photo chosen and move the others
+to the Recycle Bin, through the same confirmation, checks and undo as exact copies.
+
 ## Gallery and the media library
 
 "Gallery" under Home in the sidebar (or `Gallery` in the address bar, Explorer's
@@ -804,14 +817,17 @@ languages text is read in. Hidden files and anything in a hidden folder, a folde
 dot, or a dependency, build or cache folder (`node_modules`, `target`, `AppData`...) are left out.
 
 The library starts about twenty seconds after Kestrel, reads at background priority (processor,
-disk and memory), and pauses on request (Pause in the Gallery or the settings, kept between runs),
+disk and memory), and pauses on request (Pause in the Gallery, the settings or the AI search page,
+which are one and the same, kept between runs),
 while a game or another app runs full screen, and while battery saver is on. It follows the index:
 new and changed files are read, renamed and moved ones are recognised by their file id, size and
 time and never read again. Files kept online only (OneDrive's cloud files) are never opened, since
 opening one downloads it: they show in the Gallery with their icon and are counted as skipped.
 Nothing is downloaded: Windows' property system, WIC, Media Foundation and OCR do the reading.
 Formats Windows has no codec for (HEIC and camera raw without their Store extensions) are listed
-as skipped with the reason.
+as skipped with the reason. With an AI search model downloaded, describing photos and videos is
+one more step of the same pass: each photo is decoded once for its facts, thumbnail, text and
+description.
 ## AI search: describe a photo or video
 
 Turn on **Describe** in the search box (the sparkle button) and type what you are looking for:
@@ -852,15 +868,16 @@ Everything runs on this PC: the models through Windows ML (the ONNX Runtime with
 is part of Windows; nothing else is installed) on the high-performance graphics card, or on the
 processor when there is none (the page says so). No picture or description leaves the PC.
 
-In the background, at low priority, Kestrel describes the photos and videos in your picture,
-video and desktop folders (the page lists them; add or remove folders there): photos as one
-vector each, videos as a frame every five seconds (at most 24, spread further over long videos)
-plus one where the picture cuts between two of them, each with its moment. It reads the text in
-photos with Windows' own recogniser too, so a description's words found there ("costco 42.17")
-count toward a photo, as do words in its name. Files kept only in the cloud (OneDrive's
-online-only files) are skipped and never downloaded; hidden files and pictures under 4 KB are left
-out. A renamed or moved photo is known by its file id and not read again; an edited one is.
-**Pause** stops it. The vectors are kept per model in the data folder's `semantic` folder, a
+Describing is a step of the media library's background pass (see the Gallery and the media
+library above), over the library's folders (the page lists them, and adding or removing one there
+changes the library's): photos as one vector each, from the picture the pass decodes once for all
+its steps, and videos as a frame every five seconds (at most 24, spread further over long videos)
+plus one where the picture cuts between two of them, each with its moment. The text the library
+reads in photos counts too, so a description's words found there ("costco 42.17") count toward a
+photo, as do words in its name. Files kept only in the cloud (OneDrive's online-only files) are
+skipped and never downloaded, as are hidden files. A renamed or moved photo is known by its file
+id and not read again; an edited one is. **Pause** holds the whole pass, as the Gallery's does,
+and the page shows how far describing has got; the library's settings show every step. The vectors are kept per model in the data folder's `semantic` folder, a
 memory-mapped file searched in a few milliseconds (200,000 vectors: 5 ms for Fast's 768
 dimensions, 7 ms for Best's 1,152, `kestrel-cli vector-bench`).
 ## New downloads
@@ -888,8 +905,9 @@ them), the Linux way: names starting with a dot are hidden unless "Show hidden i
 names holding characters Windows forbids show as Linux spells them, and the Attributes column
 shows Linux permissions (`-rw-r--r--`) where WSL's share gives them. Up from a distribution goes
 to This PC, whose crumb leads its address. Open in Terminal there opens the distribution's shell
-(`wsl.exe -d <distro> --cd <folder>`, in Windows Terminal when installed). Without WSL nothing
-about it shows.
+(`wsl.exe -d <distro> --cd <folder>`, in Windows Terminal when installed), and "Open terminal
+here" opens it in the terminal pane at the bottom of the window. Without WSL nothing about it
+shows.
 ## Terminal, Claude Code and the command line
 
 **The terminal pane.** Ctrl+` (as in VS Code) shows a terminal docked at the bottom of the
@@ -898,7 +916,8 @@ the + in its strip, or "Open terminal here" in any folder's menu (or the folder 
 opens another tab. Drag the pane's top edge to make it taller. Each tab is a shell in a Windows
 pseudoconsole (ConPTY) drawn by xterm.js: the default shell is PowerShell 7 if it is installed,
 else Windows PowerShell; Command Prompt and each WSL distribution are in the chevron's menu, and
-the Developer tools page sets which one new terminals start. "cd to this folder" takes the
+the Developer tools page sets which one new terminals start; a folder inside a WSL distribution
+opens in that distribution's shell, at its Linux path. "cd to this folder" takes the
 terminal to the folder the file list shows (`Set-Location -LiteralPath`, `cd /d`, or `cd` to the
 `/mnt/c/...` path in WSL). Paths printed in a terminal are links: a click opens a folder in
 Kestrel, or shows a file selected in its folder (a compiler's `:line:col` after a file is left
@@ -916,7 +935,9 @@ Windows Terminal, the same command in Command Prompt, which stays open afterward
 
 **Kestrel for other programs.** While Kestrel runs, programs of your own account can ask it
 questions over a named pipe, `\\.\pipe\kestrel-query-<your SID>-<hash of the data folder>`:
-search (in the search syntax above), a folder's listing with sizes, a folder's size and how many
+search (anything the search box takes: the search syntax above, phrases, which say what they were
+read as, searches inside files, each file with its first matching line, the media library's
+clauses, and descriptions when AI search has a model), a folder's listing with sizes, a folder's size and how many
 files it holds, the projects with their git state, one project's details (scripts, README, recent
 files), the recent files, and a disk usage summary. Nothing they can ask changes a file. The pipe's
 access list admits your account alone (not other users, not even administrators or SYSTEM), it

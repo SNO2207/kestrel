@@ -39,8 +39,12 @@ mod tests {
     struct Scratch(PathBuf);
 
     impl Scratch {
+        /// A folder no other test shares: tests run side by side in one process, and several
+        /// make the same fixture.
         fn new(name: &str) -> Self {
-            let root = std::env::temp_dir().join(format!("kestrel-content-{name}-{}", std::process::id()));
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!("kestrel-content-{name}-{}-{n}", std::process::id()));
             let _ = fs::remove_dir_all(&root);
             fs::create_dir_all(&root).unwrap();
             Self(root)
