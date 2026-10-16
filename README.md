@@ -713,6 +713,7 @@ node e2e/parity.mjs         # Explorer parity: New, Home, the details pane, a se
 node e2e/archives.mjs       # compress, browse inside a zip, preview, Extract all, undo, zip slip
 node e2e/disk.mjs           # the disk usage hub on a scratch folder of known composition
 node e2e/cleanup.mjs        # cleanup recommendations and duplicates, in a scratch machine
+node e2e/navigation.mjs     # locations and archives in either pane, history, tabs, a window, the palette
 node e2e/dev.mjs stop
 ```
 
@@ -722,8 +723,8 @@ instead: it runs `tauri build` (no installer) with the slot's identity and start
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
 `shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`, `integration.mjs`,
 `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs`, `places.mjs`, `layout.mjs`,
-`parity.mjs`, `archives.mjs`, `disk.mjs` and `cleanup.mjs` need a dev build, whose test hooks
-they use. A release build has the Windows menu's test hook only when started with
+`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs` and `navigation.mjs` need a dev build,
+whose test hooks they use. A release build has the Windows menu's test hook only when started with
 `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
 `parity.mjs` opens a second window and closes it, turns the window to full screen and back,
@@ -747,6 +748,12 @@ than performed, so nothing is ever dropped on another program. `shellmenu.mjs` a
 `integration.mjs` switch the app's development hook on, which makes the Windows menu helper
 list the menu instead of showing it; showing the real menu and the Open With dialog are manual
 checks.
+
+`navigation.mjs` is where the merged features meet in navigation: Home, This PC, the Recycle
+Bin and a zip it makes with `Compress-Archive` in either pane, Back, Forward and Up, Copy to
+other pane extracting out of the archive, the palette, Ctrl+T and a window opened with Ctrl+N,
+the saved layout, the folder tree and the disk usage hub. It saves the window's settings and
+saved layout first and puts them back at the end; the Recycle Bin is only looked at.
 
 `connections.mjs` checks the padlock, git marks and tag dots together in all seven views, the
 palette's projects, tags, pins, frequent folders, saved searches and workspaces, the projects

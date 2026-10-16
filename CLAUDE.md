@@ -120,12 +120,13 @@ Done and verified:
 
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette, then places, layout, parity, archives, disk and
-cleanup (integrated 2026-10-15). Every unit test and all 22 e2e suites pass there in a dev build
+cleanup (integrated 2026-10-15). Every unit test and all 23 e2e suites pass there in a dev build
 (`cleanup-dryrun.mjs` is a read-only report, not a suite), and the suites that need no
 development hook in a release build too (the list is in the README's Testing section);
-`integration.mjs` and `connections.mjs` cover where the older features meet, and the newer
-suites cover theirs (`places.mjs` opens the disk usage hub from This PC, `cleanup.mjs` drives
-the hub's tabs and the Recycle Bin page).
+`integration.mjs` and `connections.mjs` cover where the older features meet, and
+`navigation.mjs` where the newer ones do (special locations and archives in either pane, history,
+new tabs and windows, the palette, the tree and the hub); `places.mjs` opens the disk usage hub
+from This PC and `cleanup.mjs` drives the hub's tabs and the Recycle Bin page.
 
 Not done yet: an installer (bundling is off; the helper would then need a Tauri sidecar entry,
 see README); what else Explorer does that Kestrel does not is listed in
