@@ -148,6 +148,10 @@ impl Locations {
     /// OneDrive's. The owner's folders count both where Windows says they are and where they
     /// were before: when OneDrive backs up Documents, Windows points it at `OneDrive\Documents`,
     /// and the old `Documents` in the profile, often still full, is the owner's all the same.
+    /// The system drive's Recycle Bin (whose items keep their dates, and would no longer restore
+    /// if recycled again), previous Windows installations and Windows' own folders at its root
+    /// are Windows' to empty. (Other accounts' profiles, and every drive's Recycle Bin, are
+    /// refused by the guard: see `Guard::protects`.)
     pub fn protected(&self) -> Vec<String> {
         let mut protected = vec![
             self.windows.clone(),
@@ -158,6 +162,12 @@ impl Locations {
             self.music.clone(),
             self.desktop.clone(),
         ];
+        if !self.system_drive.trim().is_empty() {
+            for name in ["$Recycle.Bin", "Windows.old", "$Windows.~BT", "$Windows.~WS", "$WinREAgent", "System Volume Information", "Recovery"]
+            {
+                protected.push(join(&self.system_drive, name));
+            }
+        }
         if !self.profile.trim().is_empty() {
             protected.extend(["Documents", "Pictures", "Videos", "Music", "Desktop"].iter().map(|name| join(&self.profile, name)));
         }

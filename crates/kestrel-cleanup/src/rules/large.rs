@@ -94,4 +94,29 @@ mod tests {
             ["users/me/backups/disk.bak", "users/me/videos-old/film.mkv"]
         );
     }
+
+    /// An index read from the drive's file table holds the whole drive: what is already in the
+    /// Recycle Bin (which keeps its dates), a previous installation, and other accounts' files
+    /// are never offered.
+    #[test]
+    fn the_recycle_bin_old_installations_and_other_accounts_are_left_alone() {
+        let sandbox = Sandbox::new("large-elsewhere");
+        for rel in [
+            r"Users\me\backups\disk.bak",
+            r"$Recycle.Bin\S-1-5-21-1-2-3-1001\$RAB12CD.mp4",
+            r"Windows.old\Users\me\Videos\old.mkv",
+            r"$Windows.~BT\Sources\install.esd",
+            r"Users\mom\Videos\big.mp4",
+            r"Users\Public\Videos\shared.mp4",
+            r"Data\$RECYCLE.BIN\S-1-5-21-1-2-3-1001\$RXY.zip",
+        ] {
+            sandbox.write(rel, 100_000, 3);
+            sandbox.age(rel, 800);
+        }
+        let mut context = sandbox.context();
+        context.large_file_bytes = 64 * 1024;
+        let recs = scan(&sandbox.index(), &context);
+        let large = recs.iter().find(|r| r.id == "large-old").unwrap();
+        assert_eq!(item_paths(&sandbox, std::slice::from_ref(large)), ["users/me/backups/disk.bak"]);
+    }
 }

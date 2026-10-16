@@ -88,6 +88,29 @@ pub struct Item {
     pub bytes: u64,
     /// The newest change in it, in milliseconds since the Unix epoch; 0 when unknown.
     pub modified: i64,
+    /// Its file id when the scan saw it (0 if unknown), so that a file put in its place since,
+    /// under the same name, is never taken for it.
+    #[serde(skip)]
+    pub file_id: u64,
+}
+
+impl Item {
+    /// Whether the index's entry for the item is still what the scan saw: the same file or
+    /// folder, with nothing in it changed since (a backup tool writing a new file of the same
+    /// name, a temp folder a program has started using again).
+    pub fn unchanged(&self, index: &Index, entry: EntryId) -> bool {
+        let same = self.file_id == 0 || index.file_id(entry) == 0 || index.file_id(entry) == self.file_id;
+        same && unix_ms(tree::newest(index, entry)) <= self.modified
+    }
+
+    /// Whether what is at the item's path on disk now is still what the scan saw, by its file id
+    /// and last write time, read from the item itself.
+    pub fn unchanged_on_disk(&self) -> bool {
+        kestrel_index::walk::info(&self.path).is_some_and(|meta| {
+            let same = self.file_id == 0 || meta.file_id == 0 || meta.file_id == self.file_id;
+            same && unix_ms(meta.mtime) <= self.modified
+        })
+    }
 }
 
 /// A program that cleans up properly, such as `cargo clean`. What it removes does not go to
@@ -99,7 +122,8 @@ pub struct Tool {
     pub args: Vec<String>,
     /// The folder it runs in.
     pub dir: Option<String>,
-    /// The command exactly as it runs, for showing: `cargo clean`.
+    /// The command, for showing: as it runs (`pnpm store prune`), or its program and verb when
+    /// the rest is the item's own path (`cargo clean`).
     pub command: String,
 }
 
@@ -108,6 +132,12 @@ impl Tool {
         let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
         let command = std::iter::once(program.to_owned()).chain(args.iter().cloned()).collect::<Vec<_>>().join(" ");
         Tool { program: program.to_owned(), args, dir: dir.map(str::to_owned), command }
+    }
+
+    /// The same tool, shown as `command`.
+    fn shown_as(mut self, command: &str) -> Self {
+        command.clone_into(&mut self.command);
+        self
     }
 }
 
@@ -379,7 +409,7 @@ mod tests {
 
     fn rec(id: &str, items: &[&str]) -> Recommendation {
         Recommendation::new(id, Rule::Temp, Tier::Safe, "t", "r").with_items(
-            items.iter().map(|path| Item { path: path.to_string(), dir: false, bytes: 10, modified: 0 }).collect(),
+            items.iter().map(|path| Item { path: path.to_string(), dir: false, bytes: 10, modified: 0, file_id: 0 }).collect(),
         )
     }
 
@@ -389,6 +419,39 @@ mod tests {
         assert!(within(r"c:\users\me\a", r"c:\users\me"));
         assert!(within(r"c:\users\me", r"c:\users\me"));
         assert!(!within(r"c:\users\meg", r"c:\users\me"));
+    }
+
+    /// An item is still the scan's only while it is what the scan saw: a new file written under
+    /// the same name since (a backup tool's next backup), or a temp folder a program has started
+    /// using again, is not.
+    #[cfg(windows)]
+    #[test]
+    fn items_are_acted_on_only_while_they_are_what_the_scan_saw() {
+        use crate::testing::Sandbox;
+        let sandbox = Sandbox::new("unchanged");
+        let backup = r"Users\me\backups\full.bak";
+        sandbox.write(backup, 100_000, 1);
+        sandbox.write(r"Users\me\AppData\Local\Temp\setup-123\a.tmp", 20_000, 2);
+        sandbox.age_tree("Users", 800);
+        let mut context = sandbox.context();
+        context.large_file_bytes = 64 * 1024;
+        let index = sandbox.index();
+        let recs = scan(&index, &context);
+        let item_at = |id: &str| recs.iter().find(|r| r.id == id).unwrap().items[0].clone();
+        let (old, temp) = (item_at("large-old"), item_at("temp"));
+        let entry = |index: &Index, item: &Item| index.lookup(&item.path).unwrap();
+        assert!(old.unchanged(&index, entry(&index, &old)) && old.unchanged_on_disk());
+        assert!(temp.unchanged(&index, entry(&index, &temp)) && temp.unchanged_on_disk());
+
+        // A new backup under the same name, and a file added to the temp folder.
+        std::fs::remove_file(sandbox.path(backup)).unwrap();
+        sandbox.write(backup, 100_000, 3);
+        sandbox.write(r"Users\me\AppData\Local\Temp\setup-123\b.tmp", 20_000, 4);
+        assert!(!old.unchanged_on_disk(), "the new backup is another file");
+        assert!(!temp.unchanged_on_disk(), "the folder changed");
+        let index = sandbox.index();
+        assert!(!old.unchanged(&index, entry(&index, &old)));
+        assert!(!temp.unchanged(&index, entry(&index, &temp)));
     }
 
     /// Every rule at once, over a machine whose protected folders are full of what the rules look

@@ -220,10 +220,41 @@ impl Engine {
 
     /// Replaces the index. Every existing result set refers to the old one and is dropped.
     pub fn install(&self, index: Index) {
-        *self.index.write() = index;
+        let mut installed = self.index.write();
+        *installed = index;
+        // Bumped before the lock goes, so whoever reads the new index sees the new generation.
         self.generation.fetch_add(1, Atomic::Relaxed);
+        drop(installed);
         self.revision.fetch_add(1, Atomic::Relaxed);
         self.sets.lock().map.clear();
+    }
+
+    /// Changes whenever the index is replaced (not when it changes): entry ids stay the same
+    /// within one generation, so work that lets go of the index between steps goes on by them.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Atomic::Relaxed)
+    }
+
+    /// Runs `step` with the index read, again and again until it says it is done, letting go of
+    /// the index between steps: the thread keeping it current takes it to write every 300 ms,
+    /// and while that writer waits for a long reader, every other reader waits behind it.
+    /// `start` makes what the steps work on, and again if the index is replaced meanwhile.
+    pub fn in_steps<W, T>(&self, start: impl Fn(&Index) -> W, mut step: impl FnMut(&mut W, &Index) -> bool, finish: impl FnOnce(W, &Index) -> T) -> T {
+        'again: loop {
+            let index = self.index.read();
+            let generation = self.generation();
+            let mut work = start(&index);
+            drop(index);
+            loop {
+                let index = self.index.read();
+                if self.generation() != generation {
+                    continue 'again;
+                }
+                if step(&mut work, &index) {
+                    return finish(work, &index);
+                }
+            }
+        }
     }
 
     /// Changes whenever the index does; see [`Engine::mark_dirty`] and [`Engine::install`].
@@ -511,6 +542,36 @@ impl Engine {
         })
     }
 
+    /// Hands `visit` whether each row in `start..start + count` is a folder, its size and its
+    /// last write time (milliseconds since the Unix epoch), in order, and returns how many rows
+    /// there were. For adding a selection up: unlike [`Engine::rows`] it makes no row, path or
+    /// name, which for a large selection cost a hundred times what the adding up does.
+    pub fn row_facts(&self, set: u32, start: u32, count: u32, mut visit: impl FnMut(bool, u64, i64)) -> Result<u32, String> {
+        let index = self.index.read();
+        let sets = self.sets.lock();
+        let set = sets.map.get(&set).ok_or("stale")?;
+        let range = |len: usize| {
+            let start = (start as usize).min(len);
+            start..(start + count as usize).min(len)
+        };
+        Ok(match &set.rows {
+            Rows::Indexed(ids) => {
+                let ids = &ids[range(ids.len())];
+                for &id in ids {
+                    visit(index.is_dir(id), index.size(id), unix_ms(index.mtime(id)));
+                }
+                ids.len() as u32
+            }
+            Rows::Live { items, .. } => {
+                let items = &items[range(items.len())];
+                for item in items {
+                    visit(item.meta.attrs & attr::DIRECTORY != 0, item.meta.size, unix_ms(item.meta.mtime));
+                }
+                items.len() as u32
+            }
+        })
+    }
+
     /// The position of the first row at or after `from` whose name starts with `prefix`,
     /// wrapping around. Used for type-to-select.
     pub fn find_prefix(&self, set: u32, prefix: &str, from: u32) -> Option<u32> {
@@ -790,6 +851,68 @@ fn sort_live(items: &mut [DirItem], spec: Sort) {
         let ordering = if spec.descending { ordering.reverse() } else { ordering };
         if spec.folders_first { is_dir(b).cmp(&is_dir(a)).then(ordering) } else { ordering }
     });
+}
+
+/// For tests of work that reads the whole index: an engine whose index holds `folders` folders,
+/// a thousand to a group, of `files` files each under `C:\Users\me`, of a few types, changed
+/// lately and sized so that many share a size; and how long the index's writer waited at most
+/// while some work ran on another thread.
+#[cfg(test)]
+pub mod busy {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use kestrel_index::{IndexBuilder, Meta, attr};
+
+    use super::Engine;
+
+    pub fn engine(folders: u32, files: u32) -> Engine {
+        let mut builder = IndexBuilder::new();
+        let root = builder.add_root("C:");
+        let dir = Meta { attrs: attr::DIRECTORY, ..Meta::default() };
+        let users = builder.push(root, "Users", dir);
+        let me = builder.push(users, "me", dir);
+        // A thousand folders to a group, as folders are spread out on a real drive.
+        let groups: Vec<u32> = (0..folders.div_ceil(1000)).map(|g| builder.push(me, &format!("group {g:03}"), dir)).collect();
+        let made: Vec<u32> = (0..folders).map(|f| builder.push(groups[(f / 1000) as usize], &format!("folder {f:06}"), dir)).collect();
+        let since_1970 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        let now = super::FILETIME_UNIX_EPOCH + (since_1970.as_nanos() / 100) as i64;
+        for (f, &folder) in made.iter().enumerate() {
+            for n in 0..files {
+                let size = (2 << 20) + u64::from((f as u32 * files + n) % 997);
+                // An hour apart, all within the last week or so.
+                let meta = Meta { size, alloc: size, mtime: now - i64::from(n) * 36_000_000_000, attrs: 0x20, file_id: 0 };
+                let ext = ["jpg", "mp4", "docx", "rs", "bin"][(f + n as usize) % 5];
+                builder.push(folder, &format!("file {n:04}.{ext}"), meta);
+            }
+        }
+        let engine = Engine::default();
+        engine.install(builder.finish());
+        engine
+    }
+
+    /// Runs `work` on another thread while this one takes the index to write every few
+    /// milliseconds, as the live index does; returns how long the work took and the longest the
+    /// writer waited.
+    pub fn writer_waits(engine: &Engine, work: impl FnOnce() + Send) -> (Duration, Duration) {
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                let started = Instant::now();
+                work();
+                done.store(true, Ordering::Relaxed);
+                started.elapsed()
+            });
+            let mut worst = Duration::ZERO;
+            while !done.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(2));
+                let asked = Instant::now();
+                drop(engine.index().write());
+                worst = worst.max(asked.elapsed());
+            }
+            (worker.join().unwrap(), worst)
+        })
+    }
 }
 
 #[cfg(test)]

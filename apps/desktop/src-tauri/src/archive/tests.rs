@@ -67,6 +67,7 @@ fn extract_with(archive: &Path, destination: &Path, password: Option<&str>, job:
     let request = extract::Request {
         archive,
         format: format_of(archive),
+        entries: None,
         name: &name,
         password,
         items: None,
@@ -94,6 +95,12 @@ fn sample_tree(root: &Path) {
     let binary: Vec<u8> = (0..300_000u32).map(|n| (n.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
     fs::write(root.join("Project/deep/er/still/data.bin"), binary).unwrap();
     fs::write(root.join("notes.md"), "notes").unwrap();
+}
+
+/// The window a test's previews stand for: one of its own, so tests running side by side
+/// don't take each other's previews for a window moving on.
+fn me() -> String {
+    format!("{:?}", std::thread::current().id())
 }
 
 /// Removes the cache and opened-files folders this test's thread used.
@@ -628,15 +635,15 @@ fn files_from_a_marked_archive_get_the_same_zone() {
     }
     // So do copies taken out for the preview and for opening.
     let entry = format!(r"{}\Project\readme.txt", archive.display());
-    let preview = browse::preview_file(&entry).unwrap().unwrap();
+    let preview = browse::preview_file(&entry, &me()).unwrap().unwrap();
     assert_eq!(motw::zone_of(Path::new(&preview)), Some(Zone(3)));
-    let opened = browse::copy_to_open(&entry, None).unwrap().unwrap();
+    let opened = browse::copy_to_open(&entry, None, &Job::quiet()).unwrap().unwrap();
     assert_eq!(fs::read(&opened).unwrap(), b"hello archive\r\n");
     assert_eq!(motw::zone_of(&opened), Some(Zone(3)));
     // Opened again unchanged, the same copy is opened; changed since, a new copy is made.
-    assert_eq!(browse::copy_to_open(&entry, None).unwrap().unwrap(), opened);
+    assert_eq!(browse::copy_to_open(&entry, None, &Job::quiet()).unwrap().unwrap(), opened);
     fs::write(&opened, b"edited in an app").unwrap();
-    let fresh = browse::copy_to_open(&entry, None).unwrap().unwrap();
+    let fresh = browse::copy_to_open(&entry, None, &Job::quiet()).unwrap().unwrap();
     assert_ne!(fresh, opened);
     assert_eq!(fs::read(&opened).unwrap(), b"edited in an app", "an edited copy is never written over");
     tidy_scratch();
@@ -678,7 +685,7 @@ fn encrypted_entries_need_the_password_which_is_never_guessed() {
     }
     let engine = crate::engine::Engine::default();
     let by_name = crate::engine::SortSpec { key: crate::engine::SortField::Name, desc: false };
-    let listing = super::list(&engine, &hidden_path.to_string_lossy(), by_name, crate::visibility::Visibility::ALL).unwrap();
+    let listing = super::list(&engine, &hidden_path.to_string_lossy(), by_name, crate::visibility::Visibility::ALL, None).unwrap();
     assert!(listing.err().unwrap().contains("Extract it to enter the password"));
     for archive in [&zip_path, &seven_path, &hidden_path] {
         let out = dir.join("out");
@@ -692,7 +699,7 @@ fn encrypted_entries_need_the_password_which_is_never_guessed() {
     }
     // The preview never asks for one.
     let entry = format!(r"{}\secret.txt", zip_path.display());
-    assert!(browse::preview_file(&entry).unwrap().unwrap_err().contains("password"));
+    assert!(browse::preview_file(&entry, &me()).unwrap().unwrap_err().contains("password"));
     // Kestrel can't read encrypted RAR archives, and says so.
     fs::write(dir.join("secret.rar"), raw_rar(&[("secret.txt", Some(b"the secret"))], true)).unwrap();
     let failure = extract_all(&dir.join("secret.rar"), &dir.join("out-rar")).unwrap_err();
@@ -843,11 +850,11 @@ fn archives_are_listed_as_folders_with_archives_inside_them_too() {
         engine.rows(listing.set, 0, 100).unwrap().into_iter().map(|row| (row.name, row.dir)).collect()
     };
 
-    let root = super::list(&engine, &base, by_name, Visibility::ALL).unwrap().unwrap();
+    let root = super::list(&engine, &base, by_name, Visibility::ALL, None).unwrap().unwrap();
     assert_eq!(root.archive.as_deref(), Some(base.as_str()));
     assert_eq!(names(&root), [("Project".to_owned(), true)]);
     // Typed in another case, the address is given back as the archive spells it.
-    let project = super::list(&engine, &format!(r"{base}\project"), by_name, Visibility::ALL).unwrap().unwrap();
+    let project = super::list(&engine, &format!(r"{base}\project"), by_name, Visibility::ALL, None).unwrap().unwrap();
     assert_eq!(project.path, format!(r"{base}\Project"));
     let listed = names(&project);
     assert_eq!(listed[..3], [("deep".to_owned(), true), ("empty".to_owned(), true), ("日本語".to_owned(), true)]);
@@ -860,24 +867,24 @@ fn archives_are_listed_as_folders_with_archives_inside_them_too() {
     assert_eq!(deep.size, 300_000, "a folder's size is what it holds");
 
     // An archive inside it opens like a folder too.
-    let nested = super::list(&engine, &format!(r"{base}\Project\inner.7z"), by_name, Visibility::ALL).unwrap().unwrap();
+    let nested = super::list(&engine, &format!(r"{base}\Project\inner.7z"), by_name, Visibility::ALL, None).unwrap().unwrap();
     assert_eq!(names(&nested), [("notes.md".to_owned(), false)]);
-    let preview = browse::preview_file(&format!(r"{base}\Project\inner.7z\notes.md")).unwrap().unwrap();
+    let preview = browse::preview_file(&format!(r"{base}\Project\inner.7z\notes.md"), &me()).unwrap().unwrap();
     assert_eq!(fs::read(&preview).unwrap(), b"notes");
 
     // Missing items and files are not folders.
-    assert!(super::list(&engine, &format!(r"{base}\Project\missing"), by_name, Visibility::ALL).unwrap().err().unwrap().contains("Can't find"));
-    assert!(super::list(&engine, &format!(r"{base}\Project\readme.txt"), by_name, Visibility::ALL).unwrap().err().unwrap().contains("isn't a folder"));
+    assert!(super::list(&engine, &format!(r"{base}\Project\missing"), by_name, Visibility::ALL, None).unwrap().err().unwrap().contains("Can't find"));
+    assert!(super::list(&engine, &format!(r"{base}\Project\readme.txt"), by_name, Visibility::ALL, None).unwrap().err().unwrap().contains("isn't a folder"));
     // A real folder is not the archive's to list.
-    assert!(super::list(&engine, &src.to_string_lossy(), by_name, Visibility::ALL).is_none());
+    assert!(super::list(&engine, &src.to_string_lossy(), by_name, Visibility::ALL, None).is_none());
 
     // The preview's details, for an item, a folder, and the archive itself.
-    let details = browse::preview_details(&engine, &format!(r"{base}\Project\readme.txt")).unwrap().unwrap();
+    let details = browse::preview_details(&engine, &format!(r"{base}\Project\readme.txt"), &me()).unwrap().unwrap();
     assert_eq!((details.size, details.dir), (Some(15), false));
-    let folder = browse::preview_details(&engine, &format!(r"{base}\Project")).unwrap().unwrap();
+    let folder = browse::preview_details(&engine, &format!(r"{base}\Project"), &me()).unwrap().unwrap();
     let summary = folder.folder.unwrap();
     assert_eq!((summary.files, summary.folders), (4, 3));
-    let itself = browse::preview_details(&engine, &base).unwrap().unwrap();
+    let itself = browse::preview_details(&engine, &base, &me()).unwrap().unwrap();
     assert!(!itself.dir && itself.folder.is_some_and(|summary| summary.folders == 1));
     tidy_scratch();
     fs::remove_dir_all(&dir).unwrap();
@@ -979,5 +986,281 @@ fn windows_reads_the_archives_kestrel_makes() {
             assert!(listed.lines().any(|line| line.trim_end_matches('/') == expected), "{kind:?} lacks {expected}:\n{listed}");
         }
     }
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+// ---------- reading streams, once and only as far as needed ----------
+
+/// A tar.gz of `first.txt`, then `size` bytes of zeros in `big.bin`, then `after.txt`.
+fn stream_with_big_middle(path: &Path, size: u64) {
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+    let mut add = |name: &str, len: u64, data: &mut dyn Read| {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(len);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, name, data).unwrap();
+    };
+    add("first.txt", 5, &mut &b"first"[..]);
+    add("big.bin", size, &mut std::io::repeat(0).take(size));
+    add("after.txt", 5, &mut &b"after"[..]);
+    fs::write(path, tar.into_inner().unwrap().finish().unwrap()).unwrap();
+}
+
+fn decompressed() -> u64 {
+    reader::DECOMPRESSED.with(|counted| counted.get())
+}
+
+fn readings_of(path: &Path) -> usize {
+    let key = path.to_string_lossy().to_lowercase();
+    browse::TREE_READS.lock().iter().filter(|read| **read == key).count()
+}
+
+fn by_name() -> crate::engine::SortSpec {
+    crate::engine::SortSpec { key: crate::engine::SortField::Name, desc: false }
+}
+
+/// Taking one item out of a listed stream reuses the listing and stops reading once it has the
+/// item, rather than decompressing the whole archive twice; an item far into it isn't
+/// previewed at all.
+#[test]
+fn an_item_is_taken_out_of_a_stream_without_reading_it_through() {
+    let dir = sandbox("stream-item");
+    let archive = dir.join("backup.tar.gz");
+    stream_with_big_middle(&archive, 3 << 20);
+    let engine = crate::engine::Engine::default();
+    let base = archive.to_string_lossy().into_owned();
+    super::list(&engine, &base, by_name(), crate::visibility::Visibility::ALL, None).unwrap().unwrap();
+    assert_eq!(readings_of(&archive), 1);
+
+    let before = decompressed();
+    let first = browse::preview_file(&format!(r"{base}\first.txt"), &me()).unwrap().unwrap();
+    assert_eq!(fs::read(first).unwrap(), b"first");
+    let read = decompressed() - before;
+    assert!(read < 64 << 10, "{read} bytes decompressed to take out the first item");
+    assert_eq!(readings_of(&archive), 1, "the listing was not read again");
+
+    // The item after 3 MB of data lies too far in to preview (1 MB in tests, 256 MB really).
+    let refused = browse::preview_file(&format!(r"{base}\after.txt"), &me()).unwrap().unwrap_err();
+    assert!(refused.contains("into a compressed archive"), "{refused}");
+    // Opening it still works, and reads as far as it, once.
+    let before = decompressed();
+    let opened = browse::copy_to_open(&format!(r"{base}\after.txt"), None, &Job::quiet()).unwrap().unwrap();
+    assert_eq!(fs::read(opened).unwrap(), b"after");
+    assert!(decompressed() - before < (3 << 20) + (64 << 10), "read once, not twice");
+    tidy_scratch();
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Several callers asking for the same stream's listing at once read it once between them.
+#[test]
+fn a_stream_asked_for_at_once_is_read_once() {
+    let dir = sandbox("stream-once");
+    let archive = dir.join("shared.tar.gz");
+    stream_with_big_middle(&archive, 4 << 20);
+    let path = archive.to_string_lossy().into_owned();
+    let start = Arc::new(std::sync::Barrier::new(4));
+    let callers: Vec<_> = (0..4)
+        .map(|_| {
+            let (path, start) = (path.clone(), start.clone());
+            std::thread::spawn(move || {
+                start.wait();
+                let located = browse::locate(&path, true, browse::Reading::All(&Job::quiet())).unwrap().unwrap();
+                located.tree.nodes.len()
+            })
+        })
+        .collect();
+    for caller in callers {
+        assert_eq!(caller.join().unwrap(), 4, "the archive and its three items");
+    }
+    assert_eq!(readings_of(&archive), 1);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A listing the window no longer wants stops: while reading, and while waiting for another
+/// caller's reading of the same archive.
+#[test]
+fn a_listing_can_be_cancelled() {
+    let dir = sandbox("stream-cancel");
+    let archive = dir.join("big.tar.gz");
+    stream_with_big_middle(&archive, 2 << 20);
+    let path = archive.to_string_lossy().into_owned();
+    let given_up = Job::quiet_until(|| true);
+    let failure = browse::locate(&path, true, browse::Reading::All(&given_up)).unwrap().err();
+    assert_eq!(failure, Some(Failure::Cancelled), "reading stops at the cancel");
+    assert_eq!(readings_of(&archive), 1);
+
+    // Another window is reading it; this one gives up waiting when cancelled.
+    let held = browse::hold_reading(&archive).unwrap();
+    let jobs = Arc::new(super::Jobs::default());
+    let listing = {
+        let (jobs, path) = (jobs.clone(), path.clone());
+        std::thread::spawn(move || {
+            let ticket = super::Ticket { jobs: &jobs, window: "main", id: 7 };
+            let engine = crate::engine::Engine::default();
+            super::list(&engine, &path, by_name(), crate::visibility::Visibility::ALL, Some(ticket)).unwrap().err()
+        })
+    };
+    let started = std::time::Instant::now();
+    while !jobs.cancel("main", 7) {
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "the listing never started");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(listing.join().unwrap().as_deref(), Some("Cancelled."));
+    assert!(!jobs.cancel("main", 7), "a cancelled listing is forgotten");
+    assert_eq!(readings_of(&archive), 1, "the waiting listing read nothing");
+    drop(held);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The palette asks with every key typed: it looks inside archives already at hand, and never
+/// starts reading a stream through.
+#[test]
+fn the_palette_only_looks_inside_archives_at_hand() {
+    let dir = sandbox("stream-palette");
+    let archive = dir.join("unread.tar.gz");
+    stream_with_big_middle(&archive, 1 << 20);
+    let path = archive.to_string_lossy().into_owned();
+    assert!(super::entries(&path).is_none());
+    assert_eq!(readings_of(&archive), 0, "typing its path read nothing");
+    let engine = crate::engine::Engine::default();
+    super::list(&engine, &path, by_name(), crate::visibility::Visibility::ALL, None).unwrap().unwrap();
+    let names: Vec<String> = super::entries(&path).unwrap().into_iter().map(|item| item.name).collect();
+    assert_eq!(names, ["first.txt", "big.bin", "after.txt"], "once opened in a tab, it is at hand");
+
+    // A zip's list of contents is at its end, cheap to read.
+    let src = dir.join("src");
+    sample_tree(&src);
+    let zip = compress::compress(
+        &compress::Request { sources: &[src.join("notes.md")], folder: &dir, name: "cheap.zip", kind: Out::Zip, level: Level::Fast },
+        &Job::quiet(),
+    )
+    .unwrap();
+    assert_eq!(super::entries(&zip.to_string_lossy()).unwrap().len(), 1);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Moving on to another item makes the preview of the last one give way; asking twice for the
+/// same item (the pane and its protocol do) doesn't.
+#[test]
+fn a_preview_gives_way_to_the_next_item() {
+    let (window, other) = (me(), format!("{} other", me()));
+    let first = browse::preview_job(r"C:\a.tar.gz\one.txt", &window);
+    let again = browse::preview_job(r"C:\A.tar.gz\ONE.txt", &window);
+    let elsewhere = browse::preview_job(r"C:\a.tar.gz\one.txt", &other);
+    assert!(!first.cancelled() && !again.cancelled());
+    let next = browse::preview_job(r"C:\a.tar.gz\two.txt", &window);
+    assert!(first.cancelled() && again.cancelled());
+    assert!(!next.cancelled());
+    assert!(!elsewhere.cancelled(), "another window's preview is its own");
+}
+
+// ---------- names from other systems ----------
+
+/// A zip made on a Japanese system by Explorer stores names in Shift-JIS without the UTF-8
+/// flag. Read in the OEM code page, as Explorer reads it, `表.txt` is one file: as CP437 it was
+/// `ò\.txt`, a folder holding `.txt`, since its second byte is a backslash.
+#[test]
+fn zip_names_without_the_utf8_flag_are_read_in_the_oem_code_page() {
+    assert_eq!(reader::decode_name(&[0x95, 0x5C, b'.', b't', b'x', b't'], 932).as_deref(), Some("表.txt"));
+    assert_eq!(reader::decode_name(&[0x8F, 0xE0, 0xA8, 0xA2, 0xA5, 0xE2], 866).as_deref(), Some("Привет"));
+    assert_eq!(reader::decode_name("utf8 ✓".as_bytes(), 932).as_deref(), Some("utf8 ✓"), "UTF-8 is taken as it is");
+
+    let dir = sandbox("oem-names");
+    let archive = dir.join("japanese.zip");
+    let name = [0x95, 0x5C, b'.', b't', b'x', b't'];
+    fs::write(&archive, raw_zip(&[RawEntry { name: &name, data: b"hyo".to_vec(), size: 3, method: 0, crc: crc32(b"hyo") }])).unwrap();
+    reader::TEST_CODE_PAGE.with(|page| page.set(Some(932)));
+    let engine = crate::engine::Engine::default();
+    let listing = super::list(&engine, &archive.to_string_lossy(), by_name(), crate::visibility::Visibility::ALL, None).unwrap().unwrap();
+    let rows: Vec<(String, bool)> = engine.rows(listing.set, 0, 10).unwrap().into_iter().map(|row| (row.name, row.dir)).collect();
+    let out = dir.join("out");
+    let extracted = extract_all(&archive, &out);
+    reader::TEST_CODE_PAGE.with(|page| page.set(None));
+    assert_eq!(rows, [("表.txt".to_owned(), false)]);
+    extracted.unwrap();
+    assert_eq!(names_in(&out), ["表.txt"]);
+    assert_eq!(fs::read(out.join("表.txt")).unwrap(), b"hyo");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+// ---------- merging into what is there ----------
+
+/// A folder the shell merged into, one already in the destination, isn't what the extraction
+/// made: recorded as made, an undo would recycle it with the owner's own items in it.
+#[test]
+fn a_folder_merged_into_is_never_recorded_as_made() {
+    let dir = sandbox("merge-link");
+    let real = dir.join("real");
+    fs::create_dir_all(real.join("Vacation")).unwrap();
+    fs::write(real.join("Vacation/precious.jpg"), b"the owner's photo").unwrap();
+    let out = dir.join("Pictures");
+    fs::create_dir_all(&out).unwrap();
+    // A junction in the destination with the name of the archive's folder: a linked folder.
+    let shell = std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+    let made = std::process::Command::new(shell)
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(out.join("Vacation"))
+        .arg(real.join("Vacation"))
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let archive = dir.join("vacation-extra.zip");
+    fs::write(&archive, raw_zip(&[RawEntry::stored("Vacation/new1.jpg", b"new"), RawEntry::stored("notes.txt", b"notes")])).unwrap();
+
+    let extracted = extract_all(&archive, &out).unwrap();
+    assert!(!extracted.created.contains(&out.join("Vacation")), "the folder merged into: {:?}", extracted.created);
+    assert!(extracted.created.contains(&out.join("notes.txt")), "{:?}", extracted.created);
+    assert_eq!(fs::read(real.join("Vacation/precious.jpg")).unwrap(), b"the owner's photo");
+    assert_nothing_staged(&out);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+// ---------- copies opened from archives ----------
+
+/// A password-protected item is decrypted afresh, with its password, each time it is opened,
+/// into a folder of its own whose copies go when Kestrel closes; copies nothing has changed
+/// for a week are removed at start, and recent ones stay.
+#[test]
+fn copies_opened_from_archives_dont_outlast_their_use() {
+    let dir = sandbox("opened-copies");
+    let zip_path = dir.join("secrets.zip");
+    {
+        let mut zip = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
+        let options = zip::write::SimpleFileOptions::default().with_aes_encryption(zip::AesMode::Aes256, "correct horse");
+        zip.start_file("tax-2025.pdf", options).unwrap();
+        zip.write_all(b"%PDF the secret").unwrap();
+        zip.finish().unwrap();
+    }
+    let entry = format!(r"{}\tax-2025.pdf", zip_path.display());
+    let quiet = Job::quiet();
+    assert_eq!(browse::copy_to_open(&entry, None, &quiet).unwrap().unwrap_err(), Failure::Password);
+    let opened = browse::copy_to_open(&entry, Some("correct horse"), &quiet).unwrap().unwrap();
+    assert_eq!(fs::read(&opened).unwrap(), b"%PDF the secret");
+    assert!(opened.starts_with(browse::test_scratch("opened").join("protected")), "{}", opened.display());
+    let again = browse::copy_to_open(&entry, None, &quiet).unwrap().unwrap_err();
+    assert_eq!(again, Failure::Password, "the decrypted copy is never handed out again without the password");
+    assert_eq!(browse::copy_to_open(&entry, Some("wrong"), &quiet).unwrap().unwrap_err(), Failure::WrongPassword);
+    browse::forget_protected_copies();
+    assert!(!opened.exists(), "gone when Kestrel closes");
+
+    // Plain copies: one nothing has touched for eight days goes at start, a fresh one stays.
+    let root = browse::test_scratch("opened");
+    let (stale, fresh) = (root.join("old a1b2c3d4"), root.join("new e5f6a7b8"));
+    for folder in [&stale, &fresh] {
+        fs::create_dir_all(folder).unwrap();
+        fs::write(folder.join("report.docx"), b"copy").unwrap();
+    }
+    let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 86_400);
+    fs::File::options().write(true).open(stale.join("report.docx")).unwrap().set_modified(long_ago).unwrap();
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_BACKUP_SEMANTICS, which opening a folder needs.
+        let folder = fs::File::options().write(true).custom_flags(0x0200_0000).open(&stale).unwrap();
+        folder.set_modified(long_ago).unwrap();
+    }
+    browse::tidy();
+    assert!(!stale.exists() && fresh.join("report.docx").exists());
+    tidy_scratch();
     fs::remove_dir_all(&dir).unwrap();
 }

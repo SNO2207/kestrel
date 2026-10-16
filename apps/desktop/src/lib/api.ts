@@ -189,9 +189,11 @@ export const api = {
    * Lists a folder. With `watch`, the folder is watched from then on, replacing any earlier
    * watch, and `onDirChanged` fires when its contents change. Hidden items are
    * included only when `hidden` is true, which defaults to the "Show hidden items" option.
+   * `ticket` (from `nextJobId`) lets the window cancel the listing with `archiveApi.cancel`:
+   * listing a large compressed archive reads it through.
    */
-  listDir: (path: string, sort: SortSpec, watch: boolean, hidden: boolean = showHidden()) =>
-    invoke<Listing>("list_dir", { path, sort, watch, showHidden: hidden, showProtected: showProtected() }),
+  listDir: (path: string, sort: SortSpec, watch: boolean, hidden: boolean = showHidden(), ticket?: number) =>
+    invoke<Listing>("list_dir", { path, sort, watch, showHidden: hidden, showProtected: showProtected(), ticket: ticket ?? null }),
   search: (query: string, scope: string | null, sort: SortSpec, hidden: boolean = showHidden()) =>
     invoke<Listing>("search", { query, scope, sort, showHidden: hidden, showProtected: showProtected() }),
   /** Maps a selection from one result set to another that shows the same files. */

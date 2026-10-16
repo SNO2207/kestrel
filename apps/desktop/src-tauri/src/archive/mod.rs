@@ -44,8 +44,9 @@ use crate::icons::IconKey;
 use crate::undo::Journal;
 use crate::visibility::Visibility;
 
-pub use browse::{preview_details, preview_file, tidy};
+pub use browse::{forget_protected_copies, preview_details, preview_file, tidy};
 pub use job::Jobs;
+use browse::Reading;
 use job::{Failure, Job, Problem};
 
 /// What Kestrel says when asked to change something inside an archive.
@@ -76,10 +77,21 @@ pub fn refuse_location(folder: &str) -> Result<(), String> {
     if address::is_location(folder) { Err(READ_ONLY.to_owned()) } else { Ok(()) }
 }
 
+/// The window and the number it gave a listing, so it can cancel one it no longer wants.
+pub struct Ticket<'a> {
+    pub jobs: &'a Jobs,
+    pub window: &'a str,
+    pub id: u32,
+}
+
 /// Lists a folder inside an archive, or an archive itself, as the file list shows folders;
 /// `None` for a path not in an archive. The listing names the archive, so the window knows.
-pub fn list(engine: &Engine, path: &str, sort: SortSpec, visibility: Visibility) -> Option<Result<Listing, String>> {
-    let located = browse::locate(path, true)?;
+/// A compressed tar is read through to be listed, which for a large one takes minutes: with a
+/// `ticket`, the window can cancel it (`archive_cancel`), and the listing fails with "Cancelled."
+pub fn list(engine: &Engine, path: &str, sort: SortSpec, visibility: Visibility, ticket: Option<Ticket>) -> Option<Result<Listing, String>> {
+    let job = Arc::new(Job::quiet_with_id(ticket.as_ref().map_or(0, |ticket| ticket.id)));
+    let _running = ticket.as_ref().map(|ticket| ticket.jobs.begin(ticket.window, job.clone()));
+    let located = browse::locate(path, true, Reading::All(&job))?;
     Some(match located {
         Err(Failure::Password) => Err(format!(
             "{} is protected by a password, which its list of contents needs too. Extract it to enter the password.",
@@ -97,10 +109,18 @@ pub fn list(engine: &Engine, path: &str, sort: SortSpec, visibility: Visibility)
 
 /// The items of an archive, or of a folder inside one, as directory entries, for lists other
 /// than the file list (the palette's typed paths); `None` for a path not in an archive, or one
-/// that can't be read without more (a password).
+/// that can't be read without more: a password, or reading a compressed tar through, which the
+/// palette, asking with every key typed, never starts (one opened in a tab is at hand).
 pub fn entries(path: &str) -> Option<Vec<DirItem>> {
-    let located = browse::locate(path, true)?.ok()?;
+    let located = browse::locate(path, true, Reading::AtHand)?.ok()?;
     located.node().dir.then(|| browse::items(&located))
+}
+
+/// Whether [`icon_key`] has to ask the disk about this key: only for a path that, by its
+/// spelling, could be inside an archive. The icon protocol runs on the window's own thread,
+/// which must never wait for the disk; such keys are resolved on another.
+pub fn icon_key_needs_disk(key: &IconKey) -> bool {
+    matches!(key, IconKey::File(path) if address::may_be_entry(path))
 }
 
 /// The icon for an item inside an archive, which can't be asked of the file itself: its type's.
@@ -128,15 +148,17 @@ pub fn materialize(paths: Vec<String>) -> Result<Vec<String>, String> {
 /// a path not in an archive.
 pub fn open_entry(path: &str) -> Option<Result<(), String>> {
     let name = path.rsplit('\\').next().unwrap_or(path).to_owned();
-    browse::open_entry(path, None).map(|result| result.map_err(|failure| failure.problem(&name).message))
+    browse::open_entry(path, None, &Job::quiet()).map(|result| result.map_err(|failure| failure.problem(&name).message))
 }
 
 // ---------- commands ----------
 
-fn start_job(app: &AppHandle, id: u32) -> Arc<Job> {
-    let app = app.clone();
+/// A job of `window`'s, whose progress goes to that window only: every window numbers its jobs
+/// from 1, so another window's panel would take the progress of its own job of that number.
+fn start_job(app: &AppHandle, window: &Window, id: u32) -> Arc<Job> {
+    let (app, label) = (app.clone(), window.label().to_owned());
     Arc::new(Job::new(id, move |progress| {
-        let _ = app.emit("archive-progress", progress);
+        let _ = app.emit_to(label.as_str(), "archive-progress", progress);
     }))
 }
 
@@ -201,25 +223,30 @@ pub fn archive_extract(
     let destination = destination_folder(&destination)?;
     let not_archive = || Problem::other(format!("{source} isn't an archive Kestrel can open."));
     let (archive, inner) = address::split(&source).ok_or_else(not_archive)?;
-    // The archive file to read, what of it, and the archive on disk whose mark passes on.
-    let (file, format, wanted, base, outer) = match items.filter(|items| !items.is_empty()) {
+    // Started before the archive is looked into, which may mean reading a stream through.
+    let job = start_job(&app, &window, job);
+    let _running = jobs.begin(window.label(), job.clone());
+    let reading = Reading::All(&job);
+    // The archive file to read, what of it, the archive on disk whose mark passes on, and the
+    // listing already read, if any.
+    let (file, format, wanted, base, outer, tree) = match items.filter(|items| !items.is_empty()) {
         // An archive on disk, whole: read as it is, without listing it first, so one whose list
         // of contents is itself encrypted can still be extracted with its password.
         None if inner.is_empty() => {
             let file = PathBuf::from(&archive);
             let format = browse::format_of(&file).map_err(|failure| failure.problem(fileops::file_name(&archive)))?;
-            (file.clone(), format, None, Vec::new(), file)
+            (file.clone(), format, None, Vec::new(), file, None)
         }
         // The archive a folder inside it belongs to, or one inside another, whole.
         None => {
-            let located = browse::locate(&source, true).ok_or_else(not_archive)?;
+            let located = browse::locate(&source, true, reading).ok_or_else(not_archive)?;
             let located = located.map_err(|failure| failure.problem(fileops::file_name(&source)))?;
-            (located.file.clone(), located.tree.format, None, Vec::new(), located.outer)
+            (located.file.clone(), located.tree.format, None, Vec::new(), located.outer, Some(located.tree))
         }
         Some(items) => {
             let mut found = Vec::new();
             for item in &items {
-                let located = browse::locate_entry(item).ok_or_else(not_archive)?;
+                let located = browse::locate_entry(item, reading).ok_or_else(not_archive)?;
                 found.push(located.map_err(|failure| failure.problem(fileops::file_name(item)))?);
             }
             let first = found.remove(0);
@@ -228,16 +255,15 @@ pub fn archive_extract(
             }
             let base = first.inner[..first.inner.len().saturating_sub(1)].to_vec();
             let wanted: Vec<Vec<String>> = std::iter::once(first.inner.clone()).chain(found.into_iter().map(|other| other.inner)).collect();
-            (first.file.clone(), first.tree.format, Some(wanted), base, first.outer)
+            (first.file.clone(), first.tree.format, Some(wanted), base, first.outer, Some(first.tree))
         }
     };
     let name = file.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     let zone = motw::zone_of(&outer);
-    let job = start_job(&app, job);
-    let _running = jobs.begin(job.clone());
     let request = extract::Request {
         archive: &file,
         format,
+        entries: tree.as_ref().and_then(|tree| tree.listing()),
         name: &name,
         password: password.as_deref(),
         items: wanted.as_deref(),
@@ -285,6 +311,7 @@ pub struct CompressReport {
 #[allow(clippy::too_many_arguments)]
 pub fn archive_compress(
     app: AppHandle,
+    window: Window,
     journal: State<'_, Journal>,
     jobs: State<'_, Jobs>,
     job: u32,
@@ -308,8 +335,8 @@ pub fn archive_compress(
         Some(name) => format!("{name}{}", kind.extension()),
         None => compress::default_name(&sources[0], kind),
     };
-    let job = start_job(&app, job);
-    let _running = jobs.begin(job.clone());
+    let job = start_job(&app, &window, job);
+    let _running = jobs.begin(window.label(), job.clone());
     let request = compress::Request { sources: &sources, folder: &folder, name: &name, kind, level };
     let path = compress::compress(&request, &job).map_err(|failure| failure.problem(&name))?;
     let subject = match sources.as_slice() {
@@ -321,17 +348,22 @@ pub fn archive_compress(
     Ok(CompressReport { path: path.to_string_lossy().into_owned(), name })
 }
 
-/// Asks a running extraction or compression to stop; it removes whatever it had written.
+/// Asks a running job of this window's to stop: an extraction or compression removes whatever
+/// it had written; a listing fails with "Cancelled.".
 #[tauri::command]
-pub fn archive_cancel(jobs: State<'_, Jobs>, job: u32) -> bool {
-    jobs.cancel(job)
+pub fn archive_cancel(window: Window, jobs: State<'_, Jobs>, job: u32) -> bool {
+    jobs.cancel(window.label(), job)
 }
 
 /// Opens a file inside an archive from a copy in the temp folder, with the password if needed.
+/// Taking it out of a large compressed tar takes a while: progress goes out for `job`, which
+/// [`archive_cancel`] stops.
 #[tauri::command(async)]
-pub fn archive_open(path: String, password: Option<String>) -> Result<(), Problem> {
+pub fn archive_open(app: AppHandle, window: Window, jobs: State<'_, Jobs>, job: u32, path: String, password: Option<String>) -> Result<(), Problem> {
     let name = fileops::file_name(&path).to_owned();
-    match browse::open_entry(&path, password.as_deref()) {
+    let job = start_job(&app, &window, job);
+    let _running = jobs.begin(window.label(), job.clone());
+    match browse::open_entry(&path, password.as_deref(), &job) {
         Some(result) => result.map_err(|failure| failure.problem(&name)),
         None => Err(Problem::other(format!("{path} isn't inside an archive."))),
     }
@@ -341,8 +373,8 @@ pub fn archive_open(path: String, password: Option<String>) -> Result<(), Proble
 /// first, so that pasting anywhere, in Explorer too, copies real files.
 #[tauri::command(async)]
 pub fn archive_copy(app: AppHandle, window: Window, jobs: State<'_, Jobs>, job: u32, paths: Vec<String>, password: Option<String>) -> Result<usize, Problem> {
-    let job = start_job(&app, job);
-    let _running = jobs.begin(job.clone());
+    let job = start_job(&app, &window, job);
+    let _running = jobs.begin(window.label(), job.clone());
     let files = browse::materialize(&paths, password.as_deref(), &job).map_err(|(failure, name)| failure.problem(&name))?;
     let owner = window.hwnd().ok().map(|hwnd| hwnd.0 as isize);
     crate::clipboard::set_files(owner, &files, false).map_err(Problem::other)?;
@@ -403,6 +435,26 @@ pub fn archive_preferences(db: State<'_, Arc<Db>>) -> Preferences {
 #[tauri::command(async)]
 pub fn archive_set_preferences(db: State<'_, Arc<Db>>, preferences: Preferences) -> Result<(), String> {
     Ok(db.set_archive_preferences(&preferences)?)
+}
+
+/// The archive whose reading the end-to-end tests hold, if any (`archive_dev_hold`).
+static HELD: parking_lot::Mutex<Option<browse::HeldReading>> = parking_lot::Mutex::new(None);
+
+/// For the end-to-end tests: holds the turn to read the archive at `path` (`hold`), as another
+/// window's long reading of a large compressed tar would, or gives it back, so a listing of it
+/// can be seen waiting, and giving way when its tab goes elsewhere. Development builds only.
+#[tauri::command(async)]
+pub fn archive_dev_hold(path: String, hold: bool) -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("Only development builds have this.".into());
+    }
+    let mut held = HELD.lock();
+    *held = None;
+    if hold {
+        let turn = browse::hold_reading(Path::new(&path)).map_err(|failure| failure.problem(fileops::file_name(&path)).message)?;
+        *held = Some(turn);
+    }
+    Ok(())
 }
 
 /// For the end-to-end tests, which must leave the clipboard alone: what Copy or a drag would

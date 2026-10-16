@@ -10,12 +10,13 @@
 //! A background thread emits `folders-changed` when the index changes (it follows each drive's
 //! change journal), and the tree asks again for the folders it shows.
 
-use std::sync::Arc;
-use std::sync::mpsc;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use kestrel_db::Db;
-use kestrel_index::{EntryId, Index, attr, fold, natural_cmp, walk};
+use kestrel_index::{DirItem, EntryId, Index, attr, fold, natural_cmp, walk};
+use parking_lot::{Condvar, Mutex};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -24,6 +25,8 @@ use crate::visibility::Visibility;
 
 /// How long a folder outside the index may take to list.
 const LIVE_WAIT: Duration = Duration::from_secs(4);
+/// How long such a listing is used again: the address bar asks with every key typed.
+const LIVE_KEEP: Duration = Duration::from_secs(3);
 /// Entries looked at, per subfolder, to tell whether it holds a folder; beyond that it is left
 /// open, and the chevron shows until the folder is expanded.
 const PEEK_BUDGET: usize = 50_000;
@@ -84,26 +87,90 @@ fn indexed(index: &Index, dir: EntryId, visibility: Visibility) -> Vec<TreeFolde
         .collect()
 }
 
+/// What listing a folder from disk gave: its items, or why there are none.
+type Listed = Result<Arc<Vec<DirItem>>, String>;
+
+/// One folder's listing from disk: under way, or done and when.
+struct Reading {
+    started: Instant,
+    done: Mutex<Option<(Instant, Listed)>>,
+    ready: Condvar,
+}
+
+/// Folders outside the index (a share's) listed from disk, one listing at a time per folder:
+/// whoever asks for a folder while it is being listed waits for that listing, and one listed a
+/// moment ago is answered from it. The address bar asks with every key typed, mostly about the
+/// same folder; listed afresh each time, a share over a slow connection was read again for each
+/// character, and one whose server is away tied up a thread per key for seconds.
+struct LiveListings {
+    readings: Mutex<HashMap<String, Arc<Reading>>>,
+    list: fn(&str) -> std::io::Result<Vec<DirItem>>,
+    /// How long a listing is used again.
+    keep: Duration,
+    /// How long anyone waits for one.
+    wait: Duration,
+}
+
+impl LiveListings {
+    /// The items of the folder at `path`, read from disk at most once per `keep`.
+    fn items(&self, path: &str) -> Listed {
+        let key = fold(path);
+        let reading = {
+            let mut readings = self.readings.lock();
+            // Done long ago, or abandoned, they go; a listing still under way stays shared.
+            readings.retain(|_, reading| reading.done.lock().as_ref().is_none_or(|(at, _)| at.elapsed() < self.keep));
+            match readings.get(&key) {
+                Some(reading) => reading.clone(),
+                None => {
+                    let reading = Arc::new(Reading { started: Instant::now(), done: Mutex::new(None), ready: Condvar::new() });
+                    self.start(path, reading.clone())?;
+                    readings.insert(key, reading.clone());
+                    reading
+                }
+            }
+        };
+        let deadline = reading.started + self.wait;
+        let mut done = reading.done.lock();
+        while done.is_none() {
+            // Waited out already, by whoever asked first: nobody waits for it again.
+            if reading.ready.wait_until(&mut done, deadline).timed_out() {
+                break;
+            }
+        }
+        match done.as_ref() {
+            Some((_, listed)) => listed.clone(),
+            None => Err(format!("{path} didn't answer.")),
+        }
+    }
+
+    fn start(&self, path: &str, reading: Arc<Reading>) -> Result<(), String> {
+        let (dir, list) = (path.to_owned(), self.list);
+        std::thread::Builder::new()
+            .name("kestrel-tree-list".into())
+            .spawn(move || {
+                let listed = match list(&dir) {
+                    Ok(items) => Ok(Arc::new(items)),
+                    Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Err(crate::access::LOCKED.to_owned()),
+                    Err(error) => Err(format!("Can't open {dir}: {error}")),
+                };
+                *reading.done.lock() = Some((Instant::now(), listed));
+                reading.ready.notify_all();
+            })
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
+}
+
+static LIVE: LazyLock<LiveListings> =
+    LazyLock::new(|| LiveListings { readings: Mutex::new(HashMap::new()), list: walk::list, keep: LIVE_KEEP, wait: LIVE_WAIT });
+
 /// The folders in a folder read from disk, with a time limit.
 fn live(path: &str, visibility: Visibility) -> Result<Vec<TreeFolder>, String> {
-    let (sender, answer) = mpsc::channel();
-    let dir = path.to_owned();
-    std::thread::Builder::new()
-        .name("kestrel-tree-list".into())
-        .spawn(move || {
-            let _ = sender.send(walk::list(&dir));
-        })
-        .map_err(|e| e.to_string())?;
-    let items = match answer.recv_timeout(LIVE_WAIT) {
-        Ok(Ok(items)) => items,
-        Ok(Err(error)) if error.kind() == std::io::ErrorKind::PermissionDenied => return Err(crate::access::LOCKED.to_owned()),
-        Ok(Err(error)) => return Err(format!("Can't open {path}: {error}")),
-        Err(_) => return Err(format!("{path} didn't answer.")),
-    };
+    let items = LIVE.items(path)?;
     let mut folders: Vec<TreeFolder> = items
-        .into_iter()
+        .iter()
         .filter(|item| item.meta.attrs & attr::DIRECTORY != 0 && visibility.shows(item.meta.attrs))
-        .map(|item| TreeFolder { hidden: item.meta.attrs & attr::HIDDEN != 0, name: item.name, children: None })
+        .map(|item| TreeFolder { hidden: item.meta.attrs & attr::HIDDEN != 0, name: item.name.clone(), children: None })
         .collect();
     folders.sort_by(|a, b| natural_cmp(fold(&a.name).as_bytes(), fold(&b.name).as_bytes()));
     Ok(folders)
@@ -278,7 +345,65 @@ mod tests {
     use super::*;
     use kestrel_index::IndexBuilder;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, SetFileAttributesW};
+
+    static SLOW_LISTINGS: AtomicUsize = AtomicUsize::new(0);
+    static AWAY_LISTINGS: AtomicUsize = AtomicUsize::new(0);
+
+    /// A share over a slow connection: listing it takes a while.
+    fn slow_share(_: &str) -> std::io::Result<Vec<DirItem>> {
+        SLOW_LISTINGS.fetch_add(1, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(300));
+        let meta = kestrel_index::Meta { attrs: attr::DIRECTORY, ..kestrel_index::Meta::default() };
+        Ok(vec![DirItem { name: "Projects".into(), meta, alias: false }])
+    }
+
+    /// A share whose server is away: listing it fails after a long while.
+    fn away_share(_: &str) -> std::io::Result<Vec<DirItem>> {
+        AWAY_LISTINGS.fetch_add(1, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_secs(3));
+        Err(std::io::Error::other("the network path was not found"))
+    }
+
+    fn listings(list: fn(&str) -> std::io::Result<Vec<DirItem>>) -> LiveListings {
+        LiveListings { readings: Mutex::new(HashMap::new()), list, keep: Duration::from_secs(2), wait: Duration::from_millis(800) }
+    }
+
+    /// Typing a share's path asks for the same folder with every key: it is listed once, and
+    /// whoever asks while that listing runs, or just after, gets it.
+    #[test]
+    fn a_folder_off_the_index_is_listed_once_for_everyone_asking() {
+        let live = Arc::new(listings(slow_share));
+        let askers: Vec<_> = (0..5)
+            .map(|n| {
+                let live = live.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(n * 40));
+                    live.items(r"\\nas\share\").map(|items| items.len())
+                })
+            })
+            .collect();
+        for asker in askers {
+            assert_eq!(asker.join().unwrap(), Ok(1));
+        }
+        assert_eq!(live.items(r"\\NAS\share\").map(|items| items.len()), Ok(1), "answered from the listing just made");
+        assert_eq!(SLOW_LISTINGS.load(Ordering::Relaxed), 1);
+    }
+
+    /// A share whose server is away is waited for once: those asking after the wait ran out are
+    /// told at once, and no new listing starts while the first is still waiting.
+    #[test]
+    fn a_share_that_doesnt_answer_is_waited_for_once() {
+        let live = listings(away_share);
+        let started = Instant::now();
+        assert_eq!(live.items(r"\\away\team").unwrap_err(), r"\\away\team didn't answer.");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let again = Instant::now();
+        assert!(live.items(r"\\away\team").is_err());
+        assert!(again.elapsed() < Duration::from_millis(100), "{:?}", again.elapsed());
+        assert_eq!(AWAY_LISTINGS.load(Ordering::Relaxed), 1);
+    }
 
     fn indexed_sandbox(name: &str) -> (Engine, std::path::PathBuf, String) {
         let root = std::env::temp_dir().join(format!("kestrel-tree-{name}-{}", std::process::id()));

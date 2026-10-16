@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /** What type of data a file is (`kestrel-analyze`'s categories, in its order). */
 export type Category =
@@ -197,9 +198,11 @@ export const diskApi = {
   treemap: (path: string, width: number, height: number, measure: Measure) =>
     invoke<TreemapData>("disk_treemap", { path, width, height, measure }),
   growth: (path: string) => invoke<GrowthView>("disk_growth", { path }),
-  /** The hub opened or closed; while open, `onChanged` fires as the index changes. */
+  /** This window's hub opened or closed; while open, `onChanged` fires as the index changes. */
   watch: (open: boolean) => invoke<void>("disk_watch", { open }),
   /** Sends items to the Recycle Bin as one undoable operation; false if nothing was. */
   recycle: (paths: string[]) => invoke<boolean>("disk_recycle", { paths }),
-  onChanged: (handler: (revision: number) => void) => listen<number>("disk-changed", (event) => handler(event.payload)),
+  /** The index changed while this window's hub is open (each window's hub is told on its own). */
+  onChanged: (handler: (revision: number) => void) =>
+    listen<number>("disk-changed", (event) => handler(event.payload), { target: getCurrentWindow().label }),
 };

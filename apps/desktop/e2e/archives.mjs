@@ -159,6 +159,9 @@ writeFileSync(join(sandbox, "secret.zip"), rawZip([["secret.txt", "the secret"]]
 // Enough data that compressing it at the highest 7z level takes a few seconds.
 mkdirSync(join(sandbox, "Big"));
 writeFileSync(join(sandbox, "Big", "noise.bin"), randomBytes(24 << 20));
+// A compressed tar, which is read through to be listed (`archive_dev_hold` makes that slow).
+const tarGz = join(sandbox, "listed.tar.gz");
+execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe"), ["-czf", tarGz, "-C", sandbox, "Project"]);
 
 /** Every file and folder under `dir`, with each file's text, for comparing trees. */
 function treeOf(dir, prefix = "") {
@@ -451,6 +454,34 @@ try {
     assert(!existsSync(join(sandbox, "slip")), "not even the safe item was extracted");
     assert(!existsSync(join(sandbox, "evil.txt")) && !existsSync(join(tmpdir(), "evil.txt")));
     assert(!readdirSync(sandbox).some((name) => name.includes("(extracting")), "no staging folder is left");
+  });
+
+  await step("a listing waiting on a long reading gives way when the tab goes elsewhere", async () => {
+    const invoke = (command, args) => page.evaluate(([name, values]) => window.__TAURI_INTERNALS__.invoke(name, values), [command, args]);
+    // Another reading of the archive holds it, as a large compressed tar being read through
+    // in another window would: this tab's listing of it waits.
+    await invoke("archive_dev_hold", { path: tarGz, hold: true });
+    try {
+      await row("listed.tar.gz").dblclick();
+      await page.waitForTimeout(500);
+      assert.notEqual((await crumbs()).at(-1), "listed.tar.gz", "the listing is still waiting");
+      // Going elsewhere cancels it, rather than waiting behind it.
+      const started = Date.now();
+      await goTo(project);
+      await row("notes.txt").waitFor({ timeout: 5_000 });
+      assert(Date.now() - started < 3_000, `the tab went elsewhere after ${Date.now() - started} ms`);
+      assert.equal(await panel.locator(".list-error").count(), 0, "a cancelled listing shows no error");
+    } finally {
+      await invoke("archive_dev_hold", { path: tarGz, hold: false });
+    }
+    await page.waitForTimeout(500);
+    assert.equal((await crumbs()).at(-1), "Project", "the cancelled listing never comes back");
+    // Not held, it opens as ever.
+    await goTo(sandbox);
+    await row("listed.tar.gz").dblclick();
+    await row("Project").waitFor({ timeout: 20_000 });
+    await goTo(sandbox);
+    await row("notes.rar").waitFor();
   });
 
   await step("a RAR archive opens as a folder too, read through Windows' tar.exe", async () => {

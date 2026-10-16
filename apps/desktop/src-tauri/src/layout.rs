@@ -10,6 +10,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
+use std::time::Duration;
 
 use kestrel_db::Db;
 use kestrel_query::{GroupBy, Grouping, NameFilter};
@@ -166,11 +167,22 @@ fn image_size(path: &str) -> Option<(u32, u32)> {
     crate::preview::image_dimensions(&header)
 }
 
+/// How long the window waits, at start, to hear whether the saved tabs' folders still exist.
+const EXISTS_WAIT: Duration = Duration::from_millis(1500);
+
 /// For each path, whether it is a folder that exists, read without opening it: a tab kept from
-/// the last run on a folder deleted since opens elsewhere rather than on an error.
+/// the last run on a folder deleted since opens elsewhere rather than on an error. No tab opens
+/// until this answers, so a share whose server is away (half a minute per server, one after
+/// another) mustn't hold the window empty: each drive or share is asked on its own, and a
+/// folder not answered for in time is taken to be there, its tab saying what is wrong once it
+/// opens.
 #[tauri::command(async)]
 pub fn folders_exist(paths: Vec<String>) -> Vec<bool> {
-    paths.iter().map(|path| is_folder(path)).collect()
+    folders_exist_within(&paths, is_folder, EXISTS_WAIT)
+}
+
+fn folders_exist_within(paths: &[String], probe: fn(&str) -> bool, wait: Duration) -> Vec<bool> {
+    crate::remote::ask_all(paths, probe, wait).into_iter().map(|answer| answer.unwrap_or(true)).collect()
 }
 
 fn is_folder(path: &str) -> bool {
@@ -357,5 +369,25 @@ mod tests {
         let found = folders_exist(vec![root.to_str().unwrap().to_owned(), path("dot.gif"), path("gone"), r"C:\".to_owned()]);
         assert_eq!(found, [true, false, false, true]);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Asking a share whose server is away takes half a minute (here, a few seconds). Saved
+    /// tabs on two such shares mustn't keep the window without a tab for that long, one after
+    /// the other: they are taken to be there, and the rest are answered as ever.
+    #[test]
+    fn saved_tabs_on_unreachable_shares_dont_hold_the_window_up() {
+        fn probe(path: &str) -> bool {
+            if path.starts_with(r"\\away") {
+                std::thread::sleep(std::time::Duration::from_secs(4));
+                return false;
+            }
+            is_folder(path)
+        }
+        let gone = std::env::temp_dir().join(format!("kestrel-layout-gone-{}", std::process::id())).to_string_lossy().into_owned();
+        let paths = [r"\\away-one\projects".to_owned(), r"C:\".to_owned(), r"\\away-two\team".to_owned(), gone];
+        let started = std::time::Instant::now();
+        let found = folders_exist_within(&paths, probe, Duration::from_millis(500));
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        assert_eq!(found, [true, true, true, false]);
     }
 }

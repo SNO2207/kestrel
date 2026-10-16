@@ -325,9 +325,10 @@ pub fn cleanup_recycle(window: Window, cleanup: Shared, journal: State<Journal>,
         let latest = cleanup.latest.lock();
         (latest.recs.clone(), latest.guard.clone().ok_or("Scan first.")?)
     };
-    let mut items = Vec::new();
+    let mut ready = Vec::new();
     let mut skipped = Vec::new();
     let mut seen = HashSet::new();
+    let changed = |item: &kestrel_cleanup::Item| Skipped { path: item.path.clone(), reason: "it changed since the scan".into() };
     {
         let index = cleanup.engine.index().read();
         for choice in &chosen {
@@ -344,15 +345,32 @@ pub fn cleanup_recycle(window: Window, cleanup: Shared, journal: State<Journal>,
                 if !seen.insert(key(path)) {
                     continue;
                 }
-                let allowed = index.lookup(&item.path).filter(|&entry| !index.is_deleted(entry)).map(|entry| {
-                    if rec.rule == Rule::Build { guard.allows_build_output(&index, entry) } else { guard.allows(&index, entry) }
-                });
-                match allowed {
-                    Some(true) => items.push((item.path.clone(), item.bytes)),
-                    Some(false) => skipped.push(Skipped { path: item.path.clone(), reason: "it's somewhere Kestrel never cleans up".into() }),
+                match index.lookup(&item.path).filter(|&entry| !index.is_deleted(entry)) {
                     None => skipped.push(Skipped { path: item.path.clone(), reason: "it's no longer there".into() }),
+                    // Another file under its name now, or something in it changed: the scan's
+                    // reasons for offering it may no longer hold.
+                    Some(entry) if !item.unchanged(&index, entry) => skipped.push(changed(item)),
+                    Some(entry) => {
+                        let allowed =
+                            if rec.rule == Rule::Build { guard.allows_build_output(&index, entry) } else { guard.allows(&index, entry) };
+                        if allowed {
+                            ready.push(item.clone());
+                        } else {
+                            skipped.push(Skipped { path: item.path.clone(), reason: "it's somewhere Kestrel never cleans up".into() });
+                        }
+                    }
                 }
             }
+        }
+    }
+    // And as it is on disk this moment, read from each item itself: the index hears of a change
+    // a moment after it happens.
+    let mut items = Vec::new();
+    for item in ready {
+        if item.unchanged_on_disk() {
+            items.push((item.path, item.bytes));
+        } else {
+            skipped.push(changed(&item));
         }
     }
     let report = recycle(interactive(&window), &journal, items, skipped, dry_run)?;
@@ -472,10 +490,7 @@ pub fn dupes_scan(app: AppHandle, cleanup: Shared, request: DupeRequest) -> Resu
     let cancel = Arc::new(AtomicBool::new(false));
     *cleanup.cancel.lock() = cancel.clone();
     let request = dupes::Request { roots: request.roots, exclude: request.exclude, min_size: request.min_size.max(1) };
-    let candidates = {
-        let index = cleanup.engine.index().read();
-        dupes::candidates(&index, &request)
-    };
+    let candidates = find_candidates(&cleanup.engine, &request);
     let progress = |progress: Progress| {
         let _ = app.emit("cleanup-dupes-progress", progress);
     };
@@ -489,6 +504,15 @@ pub fn dupes_scan(app: AppHandle, cleanup: Shared, request: DupeRequest) -> Resu
         }
         Err(dupes::Cancelled) => Ok(None),
     }
+}
+
+/// The duplicate finder's candidates, from the index, read in steps that let go of it between
+/// them: a walk of a whole drive takes a quarter of a second, which the thread keeping the
+/// index current, and every reader behind it, would otherwise wait out.
+fn find_candidates(engine: &Engine, request: &dupes::Request) -> dupes::Candidates {
+    let walk = engine.in_steps(|index| dupes::CandidateWalk::new(index, request), |walk, index| walk.step(index, dupes::STEP), |walk, _| walk);
+    // Sorted with the index let go of.
+    walk.finish()
 }
 
 #[tauri::command]
@@ -619,6 +643,21 @@ mod tests {
         assert!(undone.message.starts_with("Undid"), "{}", undone.message);
         assert!(files.iter().all(|f| f.exists()), "both are back from the Recycle Bin");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The search for duplicates walks the whole index for its candidates, which on a real
+    /// drive takes a quarter of a second: the index's writer, and every reader behind it, gets
+    /// in between steps rather than after the walk.
+    #[test]
+    fn the_candidates_walk_lets_the_index_be_written_meanwhile() {
+        let engine = crate::engine::busy::engine(2_000, 300);
+        let request = dupes::Request { roots: vec![r"C:\Users\me".into()], exclude: Vec::new(), min_size: 1 };
+        let (took, worst) = crate::engine::busy::writer_waits(&engine, || {
+            let found = find_candidates(&engine, &request);
+            assert_eq!(found.files.len(), 600_000);
+        });
+        assert!(took > std::time::Duration::from_millis(60), "too quick to tell: {took:?}");
+        assert!(worst < took / 4, "the writer waited {worst:?} of the walk's {took:?}");
     }
 
     #[test]

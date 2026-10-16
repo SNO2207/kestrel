@@ -76,7 +76,9 @@ pub trait Source {
     fn entries(&mut self) -> Result<Vec<Entry>, Failure>;
     /// Reads the entries `wanted` picks out, handing each one's data to `visit`. Entries come
     /// in the order the archive stores their data, which is not always the listing's order.
-    fn read(&mut self, wanted: &dyn Fn(usize) -> bool, visit: &mut Visit<'_>) -> Result<(), Failure>;
+    /// `last` is the position of the last wanted entry: a stream, read from its start, stops
+    /// there rather than going on to its end.
+    fn read(&mut self, wanted: &dyn Fn(usize) -> bool, last: usize, visit: &mut Visit<'_>) -> Result<(), Failure>;
     /// Whether each entry's size is known before its data is read, so producing more than that
     /// means the archive lies.
     fn declares_sizes(&self) -> bool {
@@ -174,9 +176,17 @@ impl<'c, R: Read> Counted<'c, R> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Bytes decompressed by counted readers on this thread, so tests can see what was read.
+    pub(super) static DECOMPRESSED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 impl<R: Read> Read for Counted<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.inner.read(buf)?;
+        #[cfg(test)]
+        DECOMPRESSED.with(|counted| counted.set(counted.get() + n as u64));
         self.read += n as u64;
         if self.read > self.budget {
             return Err(self.halt(Failure::Bomb(bomb_text(self.budget))));
@@ -257,6 +267,50 @@ impl ZipSource {
     }
 }
 
+/// `CP_OEMCP`: the console's code page, which zip names without the UTF-8 flag are in.
+const OEM_CODE_PAGE: u32 = 1;
+
+/// A zip entry's name as Explorer reads it. Names that are UTF-8 are taken as such: those with
+/// the UTF-8 flag, and those with an Info-ZIP Unicode path, which the zip crate puts in place of
+/// the stored name. Others were written in the OEM code page of the machine that made them, and
+/// Explorer reads them in this machine's: Shift-JIS on a Japanese system, CP866 on a Russian
+/// one, CP437 on an American one. Decoding them as CP437 everywhere, as the zip crate does,
+/// turns them into other characters, and Shift-JIS's second bytes 0x5C into backslashes, which
+/// would split one name into folders.
+fn zip_name(raw: &[u8], fallback: impl FnOnce() -> Option<String>) -> String {
+    #[cfg(test)]
+    let code_page = TEST_CODE_PAGE.with(|page| page.get()).unwrap_or(OEM_CODE_PAGE);
+    #[cfg(not(test))]
+    let code_page = OEM_CODE_PAGE;
+    decode_name(raw, code_page).or_else(fallback).unwrap_or_else(|| String::from_utf8_lossy(raw).into_owned())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The code page a test stands in for the OEM one, to read archives made on other systems.
+    pub(super) static TEST_CODE_PAGE: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// `raw` as UTF-8 if it is, or else in `code_page`; `None` if the code page can't read it.
+pub(super) fn decode_name(raw: &[u8], code_page: u32) -> Option<String> {
+    use windows_sys::Win32::Globalization::{MB_ERR_INVALID_CHARS, MultiByteToWideChar};
+    if let Ok(text) = std::str::from_utf8(raw) {
+        return Some(text.to_owned());
+    }
+    let len = i32::try_from(raw.len()).ok()?;
+    // SAFETY: the first call only measures (no output buffer); the second writes at most
+    // `needed` UTF-16 units into a buffer of that length. `raw` outlives both calls.
+    unsafe {
+        let needed = MultiByteToWideChar(code_page, MB_ERR_INVALID_CHARS, raw.as_ptr(), len, std::ptr::null_mut(), 0);
+        if needed <= 0 {
+            return None;
+        }
+        let mut wide = vec![0u16; needed as usize];
+        let written = MultiByteToWideChar(code_page, MB_ERR_INVALID_CHARS, raw.as_ptr(), len, wide.as_mut_ptr(), needed);
+        (written > 0).then(|| String::from_utf16_lossy(&wide[..written as usize]))
+    }
+}
+
 /// A zip's DOS date and time, which is local time, in FILETIME ticks.
 fn zip_time(time: Option<zip::DateTime>) -> i64 {
     time.map_or(0, |t| time::from_local(t.year(), t.month(), t.day(), t.hour(), t.minute(), t.second()))
@@ -267,7 +321,7 @@ impl Source for ZipSource {
         (0..self.zip.len())
             .map(|index| {
                 let file = self.zip.by_index_data(index).map_err(zip_failure)?;
-                let name = file.name().map_err(zip_failure)?.into_owned();
+                let name = zip_name(file.name_raw(), || file.name().ok().map(|name| name.into_owned()));
                 let unix = file.unix_mode();
                 let dos = if unix.is_none() { file.external_attributes() & 0xFFFF } else { 0 };
                 let link = unix.is_some_and(|mode| mode & 0o170000 == 0o120000) || dos & FILE_ATTRIBUTE_REPARSE_POINT != 0;
@@ -290,7 +344,7 @@ impl Source for ZipSource {
             .collect()
     }
 
-    fn read(&mut self, wanted: &dyn Fn(usize) -> bool, visit: &mut Visit<'_>) -> Result<(), Failure> {
+    fn read(&mut self, wanted: &dyn Fn(usize) -> bool, _last: usize, visit: &mut Visit<'_>) -> Result<(), Failure> {
         for index in 0..self.zip.len() {
             if !wanted(index) {
                 continue;
@@ -394,7 +448,7 @@ impl Source for SevenZ<'_> {
             .collect())
     }
 
-    fn read(&mut self, wanted: &dyn Fn(usize) -> bool, visit: &mut Visit<'_>) -> Result<(), Failure> {
+    fn read(&mut self, wanted: &dyn Fn(usize) -> bool, _last: usize, visit: &mut Visit<'_>) -> Result<(), Failure> {
         let encrypted: Vec<bool> = self.entries()?.iter().map(|entry| entry.encrypted).collect();
         // The decoder hands each entry over by reference into the archive's list of files; its
         // position there is its index.
@@ -654,8 +708,9 @@ impl<'c> Stream<'c> {
         Stream { opener, budget, cancelled }
     }
 
-    /// Goes through the stream from the start, handing each entry to `each` with its position.
-    fn walk(&self, each: &mut EachEntry<'_>) -> Result<(), Failure> {
+    /// Goes through the stream from the start, handing each entry to `each` with its position,
+    /// up to the entry at `until` if given, or to the end.
+    fn walk(&self, until: Option<usize>, each: &mut EachEntry<'_>) -> Result<(), Failure> {
         let opened = self.opener.open()?;
         let stop: Stop = Rc::default();
         let mut archive = tar::Archive::new(Counted::new(opened.reader, self.budget, self.cancelled, stop.clone()));
@@ -663,6 +718,11 @@ impl<'c> Stream<'c> {
         for (index, entry) in entries.enumerate() {
             let mut entry = entry.map_err(|error| failure_of(&stop, &error))?;
             each(index, &mut entry).map_err(|failure| explain(&stop, failure))?;
+            if until == Some(index) {
+                // What was wanted has been read; the rest is never decompressed (tar.exe, for
+                // a RAR, is stopped when the converter is dropped).
+                return Ok(());
+            }
         }
         drop(archive);
         match opened.converter {
@@ -699,7 +759,7 @@ impl Source for Stream<'_> {
     fn entries(&mut self) -> Result<Vec<Entry>, Failure> {
         let mut list = Vec::new();
         let cancelled = self.cancelled;
-        self.walk(&mut |_, entry| {
+        self.walk(None, &mut |_, entry| {
             if cancelled() {
                 return Err(Failure::Cancelled);
             }
@@ -709,8 +769,8 @@ impl Source for Stream<'_> {
         Ok(list)
     }
 
-    fn read(&mut self, wanted: &dyn Fn(usize) -> bool, visit: &mut Visit<'_>) -> Result<(), Failure> {
-        self.walk(&mut |index, entry| if wanted(index) { visit(index, entry) } else { Ok(()) })
+    fn read(&mut self, wanted: &dyn Fn(usize) -> bool, last: usize, visit: &mut Visit<'_>) -> Result<(), Failure> {
+        self.walk(Some(last), &mut |index, entry| if wanted(index) { visit(index, entry) } else { Ok(()) })
     }
 }
 
@@ -750,7 +810,7 @@ impl Source for Single<'_> {
         Ok(vec![Entry { name: self.name.clone(), kind: Kind::File, size: self.size, mtime: self.mtime, attrs: 0, encrypted: false }])
     }
 
-    fn read(&mut self, wanted: &dyn Fn(usize) -> bool, visit: &mut Visit<'_>) -> Result<(), Failure> {
+    fn read(&mut self, wanted: &dyn Fn(usize) -> bool, _last: usize, visit: &mut Visit<'_>) -> Result<(), Failure> {
         if !wanted(0) {
             return Ok(());
         }

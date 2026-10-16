@@ -116,23 +116,37 @@ pub struct Progress {
 }
 
 type Report = Box<dyn Fn(Progress) + Send + Sync>;
+type GivenUp = Box<dyn Fn() -> bool + Send + Sync>;
 
 /// One running job: whether it has been asked to stop, and where its progress goes.
 pub struct Job {
     id: u32,
     cancel: AtomicBool,
+    /// Whether whoever wanted the job no longer does, asked as it goes (a preview of an item
+    /// the window has moved on from).
+    given_up: Option<GivenUp>,
     report: Option<Report>,
     last: Mutex<Option<(Instant, &'static str)>>,
 }
 
 impl Job {
     pub fn new(id: u32, report: impl Fn(Progress) + Send + Sync + 'static) -> Self {
-        Job { id, cancel: AtomicBool::new(false), report: Some(Box::new(report)), last: Mutex::new(None) }
+        Job { id, cancel: AtomicBool::new(false), given_up: None, report: Some(Box::new(report)), last: Mutex::new(None) }
     }
 
     /// A job nobody follows, for work done on the window's behalf (a preview, a drag).
     pub fn quiet() -> Self {
-        Job { id: 0, cancel: AtomicBool::new(false), report: None, last: Mutex::new(None) }
+        Job::quiet_with_id(0)
+    }
+
+    /// A job nobody follows that the window can still cancel by `id` (a listing).
+    pub fn quiet_with_id(id: u32) -> Self {
+        Job { id, cancel: AtomicBool::new(false), given_up: None, report: None, last: Mutex::new(None) }
+    }
+
+    /// A job nobody follows that stops once `given_up` says it is no longer wanted.
+    pub fn quiet_until(given_up: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Job { given_up: Some(Box::new(given_up)), ..Job::quiet() }
     }
 
     pub fn cancel(&self) {
@@ -140,7 +154,7 @@ impl Job {
     }
 
     pub fn cancelled(&self) -> bool {
-        self.cancel.load(Ordering::Relaxed)
+        self.cancel.load(Ordering::Relaxed) || self.given_up.as_ref().is_some_and(|given_up| given_up())
     }
 
     /// `Err(Cancelled)` once the job has been asked to stop.
@@ -167,34 +181,37 @@ impl Job {
     }
 }
 
-/// The jobs running now, by the number the window gave each, so it can cancel them.
+/// The jobs running now, by the window that started each and the number it gave the job, so
+/// it can cancel them. Each window numbers its own jobs, so a number alone names nothing: two
+/// windows' first jobs are both 1.
 #[derive(Default)]
 pub struct Jobs {
-    running: Mutex<HashMap<u32, Arc<Job>>>,
+    running: Mutex<HashMap<(String, u32), Arc<Job>>>,
 }
 
 impl Jobs {
-    /// Registers a job until the returned guard is dropped.
-    pub fn begin(&self, job: Arc<Job>) -> Running<'_> {
-        self.running.lock().insert(job.id, job.clone());
-        Running { jobs: self, id: job.id }
+    /// Registers a job of `window`'s until the returned guard is dropped.
+    pub fn begin(&self, window: &str, job: Arc<Job>) -> Running<'_> {
+        let key = (window.to_owned(), job.id);
+        self.running.lock().insert(key.clone(), job);
+        Running { jobs: self, key }
     }
 
-    /// Asks a job to stop; it stops at its next check and removes what it made.
-    pub fn cancel(&self, id: u32) -> bool {
-        self.running.lock().get(&id).map(|job| job.cancel()).is_some()
+    /// Asks a job of `window`'s to stop; it stops at its next check and removes what it made.
+    pub fn cancel(&self, window: &str, id: u32) -> bool {
+        self.running.lock().get(&(window.to_owned(), id)).map(|job| job.cancel()).is_some()
     }
 }
 
 /// Keeps a job registered while it runs.
 pub struct Running<'a> {
     jobs: &'a Jobs,
-    id: u32,
+    key: (String, u32),
 }
 
 impl Drop for Running<'_> {
     fn drop(&mut self) {
-        self.jobs.running.lock().remove(&self.id);
+        self.jobs.running.lock().remove(&self.key);
     }
 }
 
@@ -224,12 +241,41 @@ mod tests {
     fn jobs_can_be_cancelled_while_they_run() {
         let jobs = Jobs::default();
         let job = Arc::new(Job::quiet());
-        assert!(!jobs.cancel(0));
+        assert!(!jobs.cancel("main", 0));
         {
-            let _running = jobs.begin(job.clone());
-            assert!(jobs.cancel(0));
+            let _running = jobs.begin("main", job.clone());
+            assert!(jobs.cancel("main", 0));
             assert_eq!(job.check(), Err(Failure::Cancelled));
         }
-        assert!(!jobs.cancel(0), "a finished job is forgotten");
+        assert!(!jobs.cancel("main", 0), "a finished job is forgotten");
+    }
+
+    /// Each window numbers its jobs from 1: the first job of a second window must neither
+    /// replace the first window's, nor be cancelled for it, nor forget it when it ends.
+    #[test]
+    fn windows_numbering_their_jobs_alike_keep_them_apart() {
+        let jobs = Jobs::default();
+        let extracting = Arc::new(Job::quiet_with_id(1));
+        let compressing = Arc::new(Job::quiet_with_id(1));
+        let _first = jobs.begin("main", extracting.clone());
+        {
+            let _second = jobs.begin("main-2", compressing.clone());
+            assert!(jobs.cancel("main", 1));
+            assert!(extracting.cancelled(), "the first window's job is the one cancelled");
+            assert!(!compressing.cancelled(), "the second window's job runs on");
+        }
+        let again = Arc::new(Job::quiet_with_id(1));
+        let _again = jobs.begin("main-3", again.clone());
+        assert!(jobs.cancel("main", 1), "the second window's job ending forgets only its own");
+    }
+
+    #[test]
+    fn a_job_stops_once_nobody_wants_it() {
+        let wanted = Arc::new(AtomicBool::new(true));
+        let still = wanted.clone();
+        let job = Job::quiet_until(move || !still.load(Ordering::Relaxed));
+        assert_eq!(job.check(), Ok(()));
+        wanted.store(false, Ordering::Relaxed);
+        assert_eq!(job.check(), Err(Failure::Cancelled));
     }
 }

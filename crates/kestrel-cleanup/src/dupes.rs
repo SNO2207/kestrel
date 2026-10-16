@@ -139,53 +139,88 @@ fn volume_of(index: &Index, entry: EntryId) -> String {
 
 /// The files under the roots that share a size with another, read from the index alone.
 pub fn candidates(index: &Index, request: &Request) -> Candidates {
-    let excluded: HashSet<EntryId> = request.exclude.iter().filter_map(|path| find_dir(index, path)).collect();
-    let mut seen: HashSet<EntryId> = HashSet::new();
-    let mut by_size: HashMap<u64, Vec<(EntryId, u32)>> = HashMap::new();
-    let mut placeholders = 0;
-    let mut volumes: HashMap<EntryId, String> = HashMap::new();
-    for root_path in &request.roots {
-        let Some(root) = find_dir(index, root_path) else { continue };
-        if !seen.insert(root) {
-            continue;
-        }
-        let volume = volume_of(index, root);
-        let mut stack = vec![root];
-        while let Some(dir) = stack.pop() {
-            for entry in index.children(dir) {
-                let attrs = index.attrs(entry);
-                if attrs & attr::DIRECTORY != 0 {
-                    // Folders under another root, or left out, are walked once or not at all.
-                    if !excluded.contains(&entry) && seen.insert(entry) {
-                        stack.push(entry);
-                    }
-                    continue;
-                }
-                let size = index.size(entry);
-                if size == 0 || size < request.min_size || attrs & attr::SYSTEM != 0 {
-                    continue;
-                }
-                if is_placeholder(attrs, size, index.alloc(entry)) {
-                    placeholders += 1;
-                    continue;
-                }
-                if attrs & attr::REPARSE_POINT != 0 {
-                    continue;
-                }
-                by_size.entry(size).or_default().push((entry, attrs));
-                volumes.entry(entry).or_insert_with(|| volume.clone());
-            }
+    let mut walk = CandidateWalk::new(index, request);
+    while !walk.step(index, usize::MAX) {}
+    walk.finish()
+}
+
+/// Entries a step of [`CandidateWalk`] looks at, or candidates it names, before it lets its
+/// caller go: a few milliseconds' work.
+pub const STEP: usize = 20_000;
+
+/// [`candidates`] in steps, so whoever holds the index can let go of it between them: the
+/// thread keeping it current takes it to write every 300 ms, and while that writer waits for a
+/// long reader, every other reader (the file lists, the folder tree, searches) waits behind it.
+/// Entries keep their ids while the index changes, so the walk goes on where it was; one
+/// removed meanwhile is passed over.
+pub struct CandidateWalk {
+    min_size: u64,
+    /// The roots, each with its volume, and the next one to walk.
+    roots: Vec<(EntryId, String)>,
+    next_root: usize,
+    /// The volume of the root being walked, by its position in `volumes`.
+    volume: usize,
+    volumes: Vec<String>,
+    stack: Vec<EntryId>,
+    excluded: HashSet<EntryId>,
+    seen: HashSet<EntryId>,
+    by_size: HashMap<u64, Vec<(EntryId, u32, usize)>>,
+    placeholders: u64,
+    /// Once everything is walked: the candidates to name, and those named.
+    naming: Option<Vec<(EntryId, u32, usize, u64)>>,
+    files: Vec<Candidate>,
+}
+
+impl CandidateWalk {
+    pub fn new(index: &Index, request: &Request) -> Self {
+        let excluded = request.exclude.iter().filter_map(|path| find_dir(index, path)).collect();
+        let roots = request.roots.iter().filter_map(|path| find_dir(index, path)).map(|root| (root, volume_of(index, root))).collect();
+        CandidateWalk {
+            min_size: request.min_size,
+            roots,
+            next_root: 0,
+            volume: 0,
+            volumes: Vec::new(),
+            stack: Vec::new(),
+            excluded,
+            seen: HashSet::new(),
+            by_size: HashMap::new(),
+            placeholders: 0,
+            naming: None,
+            files: Vec::new(),
         }
     }
-    let mut files = Vec::new();
-    for (size, entries) in by_size {
-        if entries.len() < 2 {
-            continue;
+
+    /// Goes on through about `budget` entries or candidates; `true` once all is done.
+    pub fn step(&mut self, index: &Index, budget: usize) -> bool {
+        let mut left = budget;
+        while self.naming.is_none() {
+            if left == 0 {
+                return false;
+            }
+            let Some(dir) = self.stack.pop() else {
+                if !self.next_root() {
+                    self.naming = Some(self.sized());
+                }
+                continue;
+            };
+            left = left.saturating_sub(1);
+            if dir >= index.len() || index.is_deleted(dir) {
+                continue;
+            }
+            left = left.saturating_sub(self.visit(index, dir));
         }
-        for (entry, attrs) in entries {
-            files.push(Candidate {
+        let naming = self.naming.as_mut().expect("set above");
+        while left > 0
+            && let Some((entry, attrs, volume, size)) = naming.pop()
+        {
+            left -= 1;
+            if entry >= index.len() || index.is_deleted(entry) {
+                continue;
+            }
+            self.files.push(Candidate {
                 path: index.path(entry),
-                volume: volumes.get(&entry).cloned().unwrap_or_default(),
+                volume: self.volumes[volume].clone(),
                 file_id: index.file_id(entry),
                 size,
                 alloc: index.alloc(entry),
@@ -193,9 +228,72 @@ pub fn candidates(index: &Index, request: &Request) -> Candidates {
                 attrs,
             });
         }
+        naming.is_empty()
     }
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    Candidates { files, placeholders }
+
+    /// The candidates found; call once [`CandidateWalk::step`] has said it is done.
+    pub fn finish(mut self) -> Candidates {
+        self.files.sort_by(|a, b| a.path.cmp(&b.path));
+        Candidates { files: self.files, placeholders: self.placeholders }
+    }
+
+    /// Starts on the next root not walked yet; `false` when there is none.
+    fn next_root(&mut self) -> bool {
+        while let Some((root, volume)) = self.roots.get(self.next_root).cloned() {
+            self.next_root += 1;
+            if !self.seen.insert(root) {
+                continue;
+            }
+            self.volume = match self.volumes.iter().position(|known| *known == volume) {
+                Some(at) => at,
+                None => {
+                    self.volumes.push(volume);
+                    self.volumes.len() - 1
+                }
+            };
+            self.stack.push(root);
+            return true;
+        }
+        false
+    }
+
+    /// Looks at the entries in `dir`; returns how many there were.
+    fn visit(&mut self, index: &Index, dir: EntryId) -> usize {
+        let mut looked = 0;
+        for entry in index.children(dir) {
+            looked += 1;
+            let attrs = index.attrs(entry);
+            if attrs & attr::DIRECTORY != 0 {
+                // Folders under another root, or left out, are walked once or not at all.
+                if !self.excluded.contains(&entry) && self.seen.insert(entry) {
+                    self.stack.push(entry);
+                }
+                continue;
+            }
+            let size = index.size(entry);
+            if size == 0 || size < self.min_size || attrs & attr::SYSTEM != 0 {
+                continue;
+            }
+            // Only the cloud's own marks say a file's contents are elsewhere. A file that is a
+            // reparse point is compared like any other: every file OneDrive keeps on this device
+            // is one, and so is one Windows compresses; links are refused when opened.
+            if is_placeholder(attrs) {
+                self.placeholders += 1;
+                continue;
+            }
+            self.by_size.entry(size).or_default().push((entry, attrs, self.volume));
+        }
+        looked
+    }
+
+    /// The files that share a size with another, to be named.
+    fn sized(&mut self) -> Vec<(EntryId, u32, usize, u64)> {
+        std::mem::take(&mut self.by_size)
+            .into_iter()
+            .filter(|(_, entries)| entries.len() >= 2)
+            .flat_map(|(size, entries)| entries.into_iter().map(move |(entry, attrs, volume)| (entry, attrs, volume, size)))
+            .collect()
+    }
 }
 
 /// Calls the progress callback at most every 100 ms, and always at a phase's end.
@@ -222,8 +320,6 @@ struct Unique {
     links: Vec<String>,
     partial: Option<[u8; 32]>,
     full: Option<[u8; 32]>,
-    /// The hashes were read now, not taken from the cache.
-    fresh: bool,
 }
 
 /// Groups by a key, keeping groups of two or more.
@@ -270,11 +366,11 @@ fn confirm(files: Vec<Candidate>, meter: &Meter, cancel: &AtomicBool) -> Result<
                     gone.fetch_add(1, Ordering::Relaxed);
                     continue;
                 };
-                if is_placeholder(meta.attrs, meta.size, meta.alloc) || is_placeholder(file.attrs, file.size, file.alloc) {
+                if is_placeholder(meta.attrs) || is_placeholder(file.attrs) {
                     placeholders.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
-                if meta.attrs & (attr::REPARSE_POINT | attr::DIRECTORY) != 0 || meta.size == 0 {
+                if meta.attrs & attr::DIRECTORY != 0 || meta.size == 0 {
                     gone.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
@@ -337,7 +433,7 @@ pub fn find(
         if file.file_id != 0 {
             by_id.insert(key, uniques.len());
         }
-        uniques.push(Unique { file, links: Vec::new(), partial: None, full: None, fresh: false });
+        uniques.push(Unique { file, links: Vec::new(), partial: None, full: None });
     }
     let mut all: Vec<Unique> = groups_of(uniques, |u| Some(u.file.size)).into_iter().flatten().collect();
 
@@ -391,7 +487,6 @@ pub fn find(
         if unique.partial.is_none() && partial.is_some() {
             unique.partial = partial;
             unique.full = partial.filter(|_| hash::is_whole(unique.file.size));
-            unique.fresh = true;
         }
     }
 
@@ -437,15 +532,16 @@ pub fn find(
     for (at, full) in fulls {
         if full.is_some() {
             all[at].full = full;
-            all[at].fresh = true;
         }
     }
 
-    // What was read now is kept for next time.
+    // What was read now is kept for next time, and what was taken from the cache is marked seen
+    // again: rows no search has seen for half a year are forgotten, and a file found unchanged
+    // in every search must not be read again for having been reused all that time.
     if let Some(db) = db {
         let rows: Vec<CachedHash> = all
             .iter()
-            .filter(|u| u.fresh && u.file.file_id != 0)
+            .filter(|u| u.file.file_id != 0)
             .filter_map(|u| {
                 Some(CachedHash {
                     volume: u.file.volume.clone(),
@@ -592,6 +688,14 @@ mod tests {
         assert_eq!(files.iter().map(|f| f.links.len()).sum::<usize>(), 1);
     }
 
+    /// Sets an entry's allocation and attributes in the index, as the file table can record
+    /// them.
+    fn set_in_index(index: &mut Index, path: &str, alloc: u64, attrs: u32) {
+        let id = index.lookup(path).unwrap();
+        let meta = kestrel_index::Meta { alloc, size: index.size(id), mtime: index.mtime(id), attrs, file_id: index.file_id(id) };
+        index.update_meta(id, meta);
+    }
+
     #[test]
     fn cloud_placeholders_are_never_opened() {
         use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_OFFLINE};
@@ -601,24 +705,179 @@ mod tests {
             sandbox.write_bytes(&format!(r"Users\me\{name}.bin"), &bytes);
             sandbox.write_bytes(&format!(r"Users\me\Downloads\{name}-copy.bin"), &bytes);
         }
-        // p1 is marked offline on disk, and p2 has nothing allocated, as the index knows them.
+        // p1 is marked offline on disk, as the index knows it.
         set_attributes(&sandbox.path(r"Users\me\p1.bin"), FILE_ATTRIBUTE_OFFLINE);
         let mut index = sandbox.index();
-        let p2 = index.lookup(&sandbox.text(r"Users\me\p2.bin")).unwrap();
-        let meta =
-            kestrel_index::Meta { alloc: 0, size: index.size(p2), mtime: index.mtime(p2), attrs: index.attrs(p2), file_id: index.file_id(p2) };
-        index.update_meta(p2, meta);
+        // p2 has nothing allocated in the index, as a hard link's second name has in one read
+        // from the file table: that is no sign of the cloud, and it is compared.
+        let p2 = sandbox.text(r"Users\me\p2.bin");
+        let attrs = index.attrs(index.lookup(&p2).unwrap());
+        set_in_index(&mut index, &p2, 0, attrs);
         // p3 became a placeholder after the index last saw it: only its folder's listing knows.
         set_attributes(&sandbox.path(r"Users\me\p3.bin"), FILE_ATTRIBUTE_OFFLINE);
 
         let report = search(&sandbox, &index, None);
-        assert!(report.groups.is_empty(), "{:?}", names(&report));
-        assert_eq!(report.placeholders, 3);
-        let opened = opened_in(&sandbox);
-        assert!(opened.is_empty(), "nothing alone in its size is opened, and no placeholder ever: {opened:?}");
+        assert_eq!(names(&report), [vec!["p2-copy.bin", "p2.bin"]]);
+        assert_eq!(report.placeholders, 2);
+        let mut opened: Vec<String> = opened_in(&sandbox).iter().map(|p| p.rsplit('\\').next().unwrap().to_owned()).collect();
+        opened.sort();
+        opened.dedup();
+        assert_eq!(opened, ["p2-copy.bin", "p2.bin"], "nothing alone in its size is opened, and no placeholder ever");
         for name in ["p1", "p3"] {
             set_attributes(&sandbox.path(&format!(r"Users\me\{name}.bin")), FILE_ATTRIBUTE_NORMAL);
         }
+    }
+
+    /// In an index read from the file table a hard link's allocation is charged to its first
+    /// name only, and files with extended attributes carry 0x40000, the bit "recall on open"
+    /// shares: neither is a cloud file. The second name is found as the file's other name, so
+    /// recycling the file takes it too and its space is freed.
+    #[test]
+    fn hard_links_from_the_file_table_and_files_with_extended_attributes_are_compared() {
+        const EA: u32 = 0x4_0000;
+        let sandbox = Sandbox::new("dupes-mft-links");
+        let original = sandbox.write_bytes(r"Users\me\Pictures\a.jpg", &data(MB + 4000, 13, 0));
+        sandbox.dir(r"Users\me\Desktop");
+        std::fs::hard_link(&original, sandbox.path(r"Users\me\Desktop\a.jpg")).unwrap();
+        sandbox.write_bytes(r"Users\me\Downloads\a (1).jpg", &data(MB + 4000, 13, 0));
+        sandbox.write_bytes(r"Users\me\Music\x.bin", &data(MB + 5000, 14, 0));
+        sandbox.write_bytes(r"Users\me\Videos\x.bin", &data(MB + 5000, 14, 0));
+        let mut index = sandbox.index();
+        let link = sandbox.text(r"Users\me\Desktop\a.jpg");
+        let attrs = index.attrs(index.lookup(&link).unwrap());
+        set_in_index(&mut index, &link, 0, attrs);
+        let with_ea = sandbox.text(r"Users\me\Music\x.bin");
+        let attrs = index.attrs(index.lookup(&with_ea).unwrap());
+        let alloc = index.alloc(index.lookup(&with_ea).unwrap());
+        set_in_index(&mut index, &with_ea, alloc, attrs | EA);
+
+        let report = search(&sandbox, &index, None);
+        assert_eq!(report.placeholders, 0);
+        assert_eq!(report.groups.len(), 2, "{:?}", names(&report));
+        let photos = report.groups.iter().find(|g| g.files.iter().any(|f| f.path.ends_with("a (1).jpg"))).unwrap();
+        assert_eq!(photos.files.len(), 2, "the copy, and the file with its two names");
+        let links: Vec<&String> = photos.files.iter().flat_map(|f| &f.links).collect();
+        assert_eq!(links.len(), 1, "{:?}", photos.files);
+        assert!(names(&report).contains(&vec!["x.bin".to_owned(), "x.bin".to_owned()]));
+    }
+
+    /// Compresses a file the way `compact /exe` does (Windows Overlay Filter): it becomes a
+    /// reparse point that isn't a link, its contents kept in a stream of their own.
+    fn compress_with_wof(path: &std::path::Path) {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::IO::DeviceIoControl;
+        const FSCTL_SET_EXTERNAL_BACKING: u32 = 0x0009_030C;
+        // WOF_EXTERNAL_INFO (version 1, the file provider), then FILE_PROVIDER_EXTERNAL_INFO_V1
+        // (version 1, XPRESS 4K, no flags).
+        let input: [u32; 5] = [1, 2, 1, 0, 0];
+        let file = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+        let mut returned = 0u32;
+        // SAFETY: the handle is open for the call; `input` is a valid buffer of the size given
+        // and no output buffer is passed.
+        let ok = unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_SET_EXTERNAL_BACKING,
+                input.as_ptr().cast(),
+                size_of_val(&input) as u32,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(ok, 0, "compressing {}: {}", path.display(), std::io::Error::last_os_error());
+    }
+
+    /// Every file OneDrive keeps on this device is a reparse point (0x420, in listings and the
+    /// file table alike), and so is every file Windows compresses (0x620 in the file table; the
+    /// compression filter hides it from listings): such files are compared like any other,
+    /// their contents read as any program reads them.
+    #[test]
+    fn files_that_are_reparse_points_but_not_links_are_compared() {
+        const SPARSE: u32 = 0x200;
+        let sandbox = Sandbox::new("dupes-reparse");
+        let photo = data(MB + 6000, 15, 0);
+        sandbox.write_bytes(r"Users\me\OneDrive\Pictures\photo.jpg", &photo);
+        let compressed = sandbox.write_bytes(r"Users\me\Downloads\photo copy.jpg", &photo);
+        sandbox.write_bytes(r"Users\me\Downloads\zeros.bin", &vec![0u8; photo.len()]);
+        compress_with_wof(&compressed);
+        // As the file table (the broker's index) records them.
+        let mut index = sandbox.index();
+        for (path, attrs) in [
+            (compressed.to_string_lossy().into_owned(), attr::REPARSE_POINT | SPARSE | 0x20),
+            (sandbox.text(r"Users\me\OneDrive\Pictures\photo.jpg"), attr::REPARSE_POINT | 0x20),
+        ] {
+            let alloc = index.alloc(index.lookup(&path).unwrap());
+            set_in_index(&mut index, &path, alloc, attrs);
+        }
+
+        let report = search(&sandbox, &index, None);
+        assert_eq!(names(&report), [vec!["photo copy.jpg", "photo.jpg"]], "nothing read as zeros");
+        assert_eq!((report.skipped, report.placeholders), (0, 0));
+    }
+
+    /// Hashes taken from the cache are marked seen again, so a file found unchanged in every
+    /// search is not forgotten, and read again, half a year after it was first hashed.
+    #[test]
+    fn reused_hashes_are_marked_seen_again() {
+        let sandbox = Sandbox::new("dupes-seen");
+        let db = Db::open_in_memory().unwrap();
+        let len = MB + 7000;
+        sandbox.write_bytes(r"Users\me\e1.bin", &data(len, 16, 0));
+        sandbox.write_bytes(r"Users\me\Downloads\e2.bin", &data(len, 16, 0));
+        let first = search(&sandbox, &sandbox.index(), Some(&db));
+        assert_eq!((first.hashed_files, first.reused), (2, 0));
+        // As if that search were long ago: every row seen at time 1000.
+        let keys: Vec<(String, u64)> = {
+            let index = sandbox.index();
+            ["e1.bin", r"Downloads\e2.bin"]
+                .iter()
+                .map(|rel| {
+                    let id = index.lookup(&sandbox.text(&format!(r"Users\me\{rel}"))).unwrap();
+                    (volume_of(&index, id), index.file_id(id))
+                })
+                .collect()
+        };
+        let rows = db.cleanup_hashes(&keys).unwrap();
+        assert_eq!(rows.len(), 2);
+        db.cleanup_store_hashes(&rows, 1000).unwrap();
+
+        let second = search(&sandbox, &sandbox.index(), Some(&db));
+        assert_eq!((second.hashed_files, second.reused), (0, 2));
+        // Forgetting what no search has seen since time 2000 keeps what the second search reused.
+        db.cleanup_forget_hashes_before(2000).unwrap();
+        let third = search(&sandbox, &sandbox.index(), Some(&db));
+        assert_eq!((third.hashed_files, third.reused), (0, 2), "nothing is read again");
+    }
+
+    /// Walked in small steps, letting go of the index between them, the search finds what it
+    /// finds in one go, and passes over what was removed between two steps.
+    #[test]
+    fn candidates_are_found_in_steps() {
+        let sandbox = Sandbox::new("dupes-steps");
+        for n in 0..30 {
+            sandbox.write_bytes(&format!(r"Users\me\f{}\a{n}.bin", n % 7), &data(MB + 100 * (n % 5), 17, 0));
+        }
+        let mut index = sandbox.index();
+        let request = request(&sandbox, MB as u64);
+        let whole = candidates(&index, &request);
+        let mut walk = CandidateWalk::new(&index, &request);
+        let mut steps = 0;
+        while !walk.step(&index, 3) {
+            steps += 1;
+            if steps == 2 {
+                // Removed while the walk let go of the index.
+                let gone = index.lookup(&sandbox.text(r"Users\me\f6\a27.bin")).unwrap();
+                index.remove(gone);
+            }
+        }
+        assert!(steps > 5, "{steps} steps");
+        let stepped = walk.finish();
+        let paths = |c: &Candidates| c.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>();
+        let mut expected = paths(&whole);
+        expected.retain(|path| !path.ends_with(r"\a27.bin"));
+        assert_eq!(paths(&stepped), expected);
     }
 
     #[test]

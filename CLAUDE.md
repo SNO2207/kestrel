@@ -521,3 +521,29 @@ Git:
 - When branches each add crates, resolve a `Cargo.lock` conflict by taking one side and letting
   `cargo check` add the rest (it keeps the versions already locked), then compare the new
   crates' versions with the branch's own lock.
+- Each window numbers its own archive jobs and listing tickets from 1 (`nextJobId` in
+  `lib/archivesApi.ts`, one counter for both), so the backend keeps jobs by window label and
+  number (`archive::Jobs`), sends progress with `emit_to(label)`, and the front end listens with
+  its window as target. A command that registers a job takes the `Window`.
+- Listing a compressed tar (or a RAR) means decompressing all of it. `list_dir` takes a `ticket`
+  that the tab cancels when it goes elsewhere (`cancelListing` in `state.ts`); the palette only
+  looks inside archives at hand (`Reading::AtHand`); previews give way per window
+  (`browse::preview_job`, which is why the preview's commands and protocol pass the window's
+  label: `appwindows::owner_of` maps a preview webview to its window). The e2e hook
+  `archive_dev_hold` stands in for another window's long reading.
+- Work that walks the whole index (the duplicate finder's candidates, the disk overview) goes
+  through `Engine::in_steps`, letting go of the read lock between steps of a few milliseconds:
+  parking_lot's `RwLock` is fair, so the live index waiting to write holds up every new reader
+  behind a long one. Entry ids stay valid between steps within one `Engine::generation`, never
+  across `install`. `engine::busy` builds an index and measures how long a writer waits.
+- A share whose server is away takes about 21 s per path to answer, one path after another,
+  and again once Windows forgets the failure. Anything the window waits on that asks the disk
+  about paths that may be remote (UNC, or a mapped drive) goes through `remote::ask_all` with a
+  time limit, or answers by spelling alone (`archive::address::may_be_entry`); custom protocol
+  handlers run on the window's thread, so they never touch the disk there.
+- A dev slot is `tauri dev`: saving any file under `src-tauri` rebuilds and restarts the app (and
+  Vite reloads the page for front-end files), so every suite running then fails. Finish editing
+  before starting the suites, even for test-only code.
+- Windows' compression filter (WOF, `compact /exe`) hides its reparse point from user mode:
+  attributes read 0x20 and `fsutil reparsepoint query` finds none. Only the file table (the
+  broker's index) shows 0x620. Tests of such files set the attributes in the index.

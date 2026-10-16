@@ -250,11 +250,14 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
-    /// Sums the files directly in `dir`, which is at `place`, and hands its folders to `more`.
-    fn visit(&self, dir: EntryId, place: Place, acc: &mut Acc, more: &mut Vec<(EntryId, Place)>) {
+    /// Sums the files directly in `dir`, which is at `place`, and hands its folders to `more`;
+    /// returns how many entries it looked at.
+    fn visit(&self, dir: EntryId, place: Place, acc: &mut Acc, more: &mut Vec<(EntryId, Place)>) -> usize {
         let index = self.index;
         let mut largest_folder = 0;
+        let mut looked = 0;
         for child in index.children(dir) {
+            looked += 1;
             if index.is_dir(child) {
                 acc.totals.folders += 1;
                 largest_folder = largest_folder.max(index.alloc(child));
@@ -267,6 +270,7 @@ impl Walk<'_> {
         if dir != self.root && size > 0 && (largest_folder as f64) < PASS_THROUGH_SHARE * size as f64 {
             acc.folders.offer(size, dir);
         }
+        looked
     }
 
     /// Adds the file `file`, in the folder `dir` at `place`, to the sums.
@@ -307,12 +311,19 @@ impl Walk<'_> {
     }
 
     /// Walks everything beneath the folders in `start`.
-    fn walk(&self, start: Vec<(EntryId, Place)>, acc: &mut Acc) {
-        let mut stack = start;
+    /// Walks on from `stack` through about `budget` entries.
+    fn walk(&self, stack: &mut Vec<(EntryId, Place)>, acc: &mut Acc, budget: usize) {
         let mut more = Vec::new();
-        while let Some((dir, place)) = stack.pop() {
+        let mut left = budget;
+        while left > 0 {
+            let Some((dir, place)) = stack.pop() else { break };
+            left = left.saturating_sub(1);
+            // Removed while the walk let go of the index (see `OverviewWalk`).
+            if dir >= self.index.len() || self.index.is_deleted(dir) {
+                continue;
+            }
             more.clear();
-            self.visit(dir, place, acc, &mut more);
+            left = left.saturating_sub(self.visit(dir, place, acc, &mut more));
             stack.append(&mut more);
         }
     }
@@ -320,38 +331,111 @@ impl Walk<'_> {
 
 /// Analyses the subtree of `root`, a folder (or a single file, which is all it holds).
 pub fn overview(index: &Index, root: EntryId, options: &Options) -> Overview {
-    let walk = Walk { index, classifier: Classifier::new(index), root, now_ms: options.now_ms };
-    let mut acc = Acc::new(options.top);
-    if index.is_dir(root) {
-        // The first levels are walked here until there are enough folders to share out.
-        let mut frontier = vec![(root, walk.classifier.place_of(index, root))];
-        for _ in 0..4 {
-            if frontier.len() >= SPLIT_AT || frontier.is_empty() {
-                break;
-            }
-            let mut next = Vec::new();
-            for (dir, place) in frontier {
-                walk.visit(dir, place, &mut acc, &mut next);
-            }
-            frontier = next;
+    let mut walk = OverviewWalk::new(root, options);
+    while !walk.step(index, usize::MAX) {}
+    walk.finish(index)
+}
+
+/// Entries an [`OverviewWalk`] looks at in one step, its threads together: a few milliseconds.
+pub const STEP: usize = 200_000;
+
+/// [`overview`] in steps, so whoever holds the index can let go of it between them: the thread
+/// keeping it current takes it to write every 300 ms, and while that writer waits for a long
+/// reader, every other reader waits behind it. Entries keep their ids while the index changes,
+/// so the walk goes on where it was; what changed meanwhile is counted as it is when reached.
+pub struct OverviewWalk {
+    root: EntryId,
+    now_ms: i64,
+    top: usize,
+    started: bool,
+    /// What the first levels hold.
+    acc: Acc,
+    /// The folders still to walk below them, shared out afresh among the parts at each step.
+    pending: Vec<(EntryId, Place)>,
+    /// The sums of each part, each walked on a thread of its own.
+    parts: Vec<Acc>,
+}
+
+impl OverviewWalk {
+    pub fn new(root: EntryId, options: &Options) -> Self {
+        OverviewWalk {
+            root,
+            now_ms: options.now_ms,
+            top: options.top,
+            started: false,
+            acc: Acc::new(options.top),
+            pending: Vec::new(),
+            parts: Vec::new(),
         }
-        let parts: Vec<Acc> = frontier
+    }
+
+    /// Walks on through about `budget` entries, shared among threads; `true` once the whole
+    /// subtree has been walked.
+    pub fn step(&mut self, index: &Index, budget: usize) -> bool {
+        let walk = Walk { index, classifier: Classifier::new(index), root: self.root, now_ms: self.now_ms };
+        if !self.started {
+            self.started = true;
+            self.start(&walk);
+            let parts = rayon::current_num_threads().max(1) * 4;
+            self.parts = (0..parts).map(|_| Acc::new(self.top)).collect();
+        }
+        if self.pending.is_empty() {
+            return true;
+        }
+        let count = self.parts.len();
+        let mut stacks: Vec<Vec<(EntryId, Place)>> = (0..count).map(|_| Vec::new()).collect();
+        for (at, folder) in self.pending.drain(..).enumerate() {
+            stacks[at % count].push(folder);
+        }
+        let share = (budget / count).max(1);
+        let left: Vec<Vec<(EntryId, Place)>> = stacks
             .into_par_iter()
-            .map(|start| {
-                let mut part = Acc::new(options.top);
-                walk.walk(vec![start], &mut part);
-                part
+            .zip(self.parts.par_iter_mut())
+            .map(|(mut stack, acc)| {
+                walk.walk(&mut stack, acc, share);
+                stack
             })
             .collect();
-        for part in parts {
-            acc.merge(part);
-        }
-    } else if index.parent(root) != kestrel_index::NO_ENTRY {
-        // A file on its own is all there is.
-        let parent = index.parent(root);
-        walk.file(root, parent, walk.classifier.place_of(index, parent), &mut acc);
+        self.pending = left.into_iter().flatten().collect();
+        self.pending.is_empty()
     }
-    finish(index, acc)
+
+    /// Walks the first levels, until there are enough folders to share out.
+    fn start(&mut self, walk: &Walk) {
+        let (index, root) = (walk.index, self.root);
+        if index.is_dir(root) {
+            let mut frontier = vec![(root, walk.classifier.place_of(index, root))];
+            for _ in 0..4 {
+                if frontier.len() >= SPLIT_AT || frontier.is_empty() {
+                    break;
+                }
+                let mut next = Vec::new();
+                for (dir, place) in frontier {
+                    walk.visit(dir, place, &mut self.acc, &mut next);
+                }
+                frontier = next;
+            }
+            self.pending = frontier;
+        } else if index.parent(root) != kestrel_index::NO_ENTRY {
+            // A file on its own is all there is.
+            let parent = index.parent(root);
+            walk.file(root, parent, walk.classifier.place_of(index, parent), &mut self.acc);
+        }
+    }
+
+    /// The overview, once [`OverviewWalk::step`] has said the walk is done.
+    pub fn finish(self, index: &Index) -> Overview {
+        self.sum().overview(index)
+    }
+
+    /// The overview's figures, once the walk is done; this needs no index, so it can be
+    /// worked out with the index let go of.
+    pub fn sum(mut self) -> Summed {
+        for part in std::mem::take(&mut self.parts) {
+            self.acc.merge(part);
+        }
+        sum(self.acc)
+    }
 }
 
 fn item(index: &Index, classifier: &Classifier, id: EntryId) -> Item {
@@ -371,50 +455,79 @@ fn item(index: &Index, classifier: &Classifier, id: EntryId) -> Item {
     }
 }
 
-fn finish(index: &Index, acc: Acc) -> Overview {
-    let classifier = Classifier::new(index);
-    let categories = Category::ALL
-        .iter()
-        .map(|&category| CategoryRow {
-            category,
-            label: category.label(),
-            amount: acc.categories[category.index()],
-            cloud_files: acc.cloud[category.index()].0,
-            cloud_bytes: acc.cloud[category.index()].1,
-        })
-        .collect();
-    let ages = AGE_BOUNDS
-        .iter()
-        .zip(acc.ages)
-        .map(|(&(max_days, label), amount)| AgeRow { label, max_days, amount })
-        .collect();
-    let recent = acc
-        .recent
+/// An overview's figures, worked out without the index: all that is left is naming the few
+/// items it lists ([`Summed::overview`]), which a caller letting go of the index between steps
+/// does with it held once more, briefly.
+pub struct Summed {
+    acc: Acc,
+    files: Vec<EntryId>,
+    folders: Vec<EntryId>,
+    recent: Vec<RecentWindow>,
+}
+
+/// A window of recent changes as summed: its days, its total, and the folders listed.
+type RecentWindow = (i64, Amount, Vec<(EntryId, Amount)>);
+
+fn sum(mut acc: Acc) -> Summed {
+    let recent = std::mem::take(&mut acc.recent)
         .into_iter()
         .zip(RECENT_DAYS)
         .map(|(window, days)| {
             let mut folders: Vec<(EntryId, Amount)> = window.by_folder.into_iter().collect();
             folders.sort_unstable_by(|a, b| b.1.bytes.cmp(&a.1.bytes).then(a.0.cmp(&b.0)));
             folders.truncate(RECENT_FOLDERS);
-            Recent {
-                days,
-                bytes: window.total.bytes,
-                files: window.total.files,
-                folders: folders
-                    .into_iter()
-                    .map(|(folder, amount)| FolderActivity { path: index.path(folder), bytes: amount.bytes, files: amount.files })
-                    .collect(),
-            }
+            (days, window.total, folders)
         })
         .collect();
-    Overview {
-        totals: acc.totals,
-        categories,
-        ages,
-        undated: acc.undated,
-        largest_files: acc.files.into_sorted().into_iter().map(|id| item(index, &classifier, id)).collect(),
-        largest_folders: acc.folders.into_sorted().into_iter().map(|id| item(index, &classifier, id)).collect(),
-        recent,
+    let files = std::mem::replace(&mut acc.files, Top::new(0)).into_sorted();
+    let folders = std::mem::replace(&mut acc.folders, Top::new(0)).into_sorted();
+    Summed { acc, files, folders, recent }
+}
+
+impl Summed {
+    /// The overview, naming its items from the index the walk read, which must be of the same
+    /// generation (ids stay the same while it changes, not when it is replaced).
+    pub fn overview(self, index: &Index) -> Overview {
+        let (acc, classifier) = (self.acc, Classifier::new(index));
+        let live = |id: &EntryId| *id < index.len();
+        let categories = Category::ALL
+            .iter()
+            .map(|&category| CategoryRow {
+                category,
+                label: category.label(),
+                amount: acc.categories[category.index()],
+                cloud_files: acc.cloud[category.index()].0,
+                cloud_bytes: acc.cloud[category.index()].1,
+            })
+            .collect();
+        let ages = AGE_BOUNDS
+            .iter()
+            .zip(acc.ages)
+            .map(|(&(max_days, label), amount)| AgeRow { label, max_days, amount })
+            .collect();
+        let recent = self
+            .recent
+            .into_iter()
+            .map(|(days, total, folders)| Recent {
+                days,
+                bytes: total.bytes,
+                files: total.files,
+                folders: folders
+                    .into_iter()
+                    .filter(|(folder, _)| live(folder))
+                    .map(|(folder, amount)| FolderActivity { path: index.path(folder), bytes: amount.bytes, files: amount.files })
+                    .collect(),
+            })
+            .collect();
+        Overview {
+            totals: acc.totals,
+            categories,
+            ages,
+            undated: acc.undated,
+            largest_files: self.files.iter().filter(|id| live(id)).map(|&id| item(index, &classifier, id)).collect(),
+            largest_folders: self.folders.iter().filter(|id| live(id)).map(|&id| item(index, &classifier, id)).collect(),
+            recent,
+        }
     }
 }
 
@@ -565,5 +678,34 @@ mod tests {
         assert_eq!(row(&overview, Category::Video).amount.bytes, video);
         let aged: u64 = overview.ages.iter().map(|row| row.amount.bytes).sum();
         assert_eq!(aged, overview.totals.local.bytes);
+    }
+
+    /// Walked a few folders at a time, letting go of the index between steps, the overview is
+    /// the one a single walk gives; a folder removed between two steps is passed over.
+    #[test]
+    fn an_overview_walked_in_steps_is_the_same() {
+        // Deep enough that folders are left to walk below the first levels.
+        let paths: Vec<String> =
+            (0..3_000u64).map(|n| format!(r"top{}\a{}\b{}\c{}\d{}\f{n}.mp4", n % 3, n % 5, n % 7, n % 11, n % 13)).collect();
+        let files: Vec<F> = paths.iter().enumerate().map(|(n, path)| F(path, n as u64 + 1, ago(n as i64 % 400), 0)).collect();
+        let mut index = build(&files, &[]);
+        let root = id(&index, r"C:\");
+        let options = Options { now_ms: NOW, top: 10 };
+        let whole = overview(&index, root, &options);
+        let mut walk = OverviewWalk::new(root, &options);
+        let mut steps = 0;
+        while !walk.step(&index, 1) {
+            steps += 1;
+        }
+        assert!(steps >= 2, "{steps} steps");
+        assert_eq!(format!("{:?}", walk.finish(&index)), format!("{whole:?}"));
+
+        // A folder removed between steps.
+        let mut walk = OverviewWalk::new(root, &options);
+        assert!(!walk.step(&index, 1));
+        index.remove(id(&index, r"C:\top0\a0\b0\c0\d0"));
+        while !walk.step(&index, 1) {}
+        let stepped = walk.finish(&index);
+        assert_eq!(stepped.totals.local.bytes, index.alloc(root), "what is gone isn't counted");
     }
 }

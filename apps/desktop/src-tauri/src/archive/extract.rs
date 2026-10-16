@@ -74,6 +74,9 @@ pub struct Request<'a> {
     /// The archive file on disk: for one inside another, its copy in the cache.
     pub archive: &'a Path,
     pub format: Format,
+    /// The archive's entries when they were read already (a browsed archive's listing), so a
+    /// stream need not be read through once more just to list it; `None` reads them.
+    pub entries: Option<&'a [Entry]>,
     /// The archive's name, for messages.
     pub name: &'a str,
     pub password: Option<&'a str>,
@@ -416,6 +419,14 @@ impl Writer<'_> {
 
 // ---------- moving into place ----------
 
+/// Whether an existing folder is one to merge into item by item: a real folder, including one
+/// that is a reparse point without being a link (every folder OneDrive syncs is one), but not a
+/// junction or folder symbolic link, which leads somewhere else.
+fn merges_item_by_item(target: &Path, meta: &fs::Metadata) -> bool {
+    meta.is_dir()
+        && (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 || !kestrel_index::walk::is_alias(&target.to_string_lossy()))
+}
+
 /// Moves everything in `from` into `into`, folder by folder, collecting what clashes.
 fn merge(from: &Path, into: &Path, staging: &Path, created: &mut Vec<PathBuf>, clashes: &mut Vec<(PathBuf, PathBuf)>) -> Result<(), Failure> {
     let items = fs::read_dir(from).map_err(|error| write_failure(from, &error))?;
@@ -430,17 +441,24 @@ fn merge(from: &Path, into: &Path, staging: &Path, created: &mut Vec<PathBuf>, c
                 fs::rename(&source, &target).map_err(|error| write_failure(&target, &error))?;
                 created.push(target);
             }
-            Ok(meta)
-                if meta.is_dir()
-                    && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
-                    && item.file_type().is_ok_and(|kind| kind.is_dir()) =>
-            {
+            Ok(meta) if merges_item_by_item(&target, &meta) && item.file_type().is_ok_and(|kind| kind.is_dir()) => {
                 merge(&source, &target, staging, created, clashes)?;
             }
             Ok(_) => clashes.push((source, into.to_path_buf())),
         }
     }
     Ok(())
+}
+
+/// What the extraction made, of what the shell reports for the clashes it was given: only
+/// items it put where nothing was. A folder merged into one already there (a junction, say)
+/// holds the owner's own items too, so it was not made by the extraction, and an undo that
+/// recycled it would take them with it.
+fn made_by_shell(done: &Done) -> Option<PathBuf> {
+    match done {
+        Done::Moved { to, merged: false, .. } => Some(PathBuf::from(to)),
+        _ => None,
+    }
 }
 
 /// Puts what was staged into the existing `destination`, asking about clashes as configured.
@@ -459,11 +477,7 @@ fn place(staged: &Path, destination: &Path, conflicts: Conflicts) -> Result<(Vec
                 .map(|(source, folder)| Op::Move { source: text(source), folder: text(folder), name: None })
                 .collect();
             let outcome = fileops::run(ops, false, options).map_err(Failure::Io)?;
-            for done in outcome.results() {
-                if let Done::Moved { to, .. } = done {
-                    created.push(PathBuf::from(to));
-                }
-            }
+            created.extend(outcome.results().filter_map(made_by_shell));
             Ok((created, outcome.completed))
         }
         Conflicts::Replace => {
@@ -487,9 +501,16 @@ pub fn extract(request: &Request, job: &Job) -> Result<Extracted, Failure> {
     let cancelled = || job.cancelled();
     let mut source = reader::open(request.archive, request.format, request.password, budget, &cancelled)?;
     job.tick("reading", 0, 0, request.name);
-    let entries = source.entries()?;
+    let read;
+    let entries = match request.entries {
+        Some(entries) => entries,
+        None => {
+            read = source.entries()?;
+            &read[..]
+        }
+    };
     job.check()?;
-    let plan = plan(&entries, request)?;
+    let plan = plan(entries, request)?;
 
     let destination = request.destination;
     if destination.exists() && !destination.is_dir() {
@@ -522,7 +543,9 @@ pub fn extract(request: &Request, job: &Job) -> Result<Extracted, Failure> {
         space_checked: 0,
         buffer: vec![0; COPY_BUFFER],
     };
-    source.read(&|index| plan.by_entry.contains_key(&index), &mut |index, data| {
+    // Nothing after the last planned entry is needed: a stream stops there.
+    let last = plan.by_entry.keys().copied().max().unwrap_or(0);
+    source.read(&|index| plan.by_entry.contains_key(&index), last, &mut |index, data| {
         let Some(&at) = plan.by_entry.get(&index) else { return Ok(()) };
         let item = &plan.items[at];
         match item.what {

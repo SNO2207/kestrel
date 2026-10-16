@@ -86,12 +86,14 @@ const SANDBOX_POLICY: &str =
 /// The `preview` protocol handler: answers each request on a blocking thread, since it reads
 /// the disk.
 pub fn protocol<R: Runtime>(
-    _context: UriSchemeContext<'_, R>,
+    context: UriSchemeContext<'_, R>,
     request: Request<Vec<u8>>,
     responder: UriSchemeResponder,
 ) {
+    // The window whose preview asks, so an item from an archive it no longer wants gives way.
+    let window = crate::parity::appwindows::owner_of(context.webview_label());
     tauri::async_runtime::spawn_blocking(move || {
-        let response = serve(&request);
+        let response = serve_for(&request, &window);
         #[cfg(debug_assertions)]
         eprintln!(
             "preview: {} {} range={:?} -> {} {:?}",
@@ -363,7 +365,13 @@ audio {{ width: 100%; }}
 }
 
 /// Answers one request to the `preview` protocol.
+#[cfg(test)]
 pub fn serve(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+    serve_for(request, crate::parity::appwindows::MAIN)
+}
+
+/// Answers one request to the `preview` protocol from the preview of the app window `window`.
+pub fn serve_for(request: &Request<Vec<u8>>, window: &str) -> Response<Vec<u8>> {
     let head = match *request.method() {
         Method::GET => false,
         Method::HEAD => true,
@@ -374,7 +382,7 @@ pub fn serve(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     }
     let Some(path) = requested_path(request.uri()) else { return status_only(StatusCode::BAD_REQUEST) };
     // A file inside an archive is served from its copy in the cache (archive::browse).
-    let path = match crate::archive::preview_file(&path) {
+    let path = match crate::archive::preview_file(&path, window) {
         Some(Ok(copy)) => copy,
         Some(Err(_)) => return status_only(StatusCode::NOT_FOUND),
         None => path,
@@ -620,8 +628,8 @@ fn explain(error: &io::Error) -> String {
 }
 
 #[tauri::command(async)]
-pub fn preview_text(path: String) -> Result<TextPreview, String> {
-    let path = match crate::archive::preview_file(&path) {
+pub fn preview_text(window: tauri::Window, path: String) -> Result<TextPreview, String> {
+    let path = match crate::archive::preview_file(&path, window.label()) {
         Some(copy) => copy?,
         None => path,
     };
@@ -783,9 +791,9 @@ fn read_header(path: &str) -> io::Result<Vec<u8>> {
 }
 
 #[tauri::command(async)]
-pub fn preview_details(engine: State<'_, Arc<Engine>>, path: String) -> Result<Details, String> {
+pub fn preview_details(window: tauri::Window, engine: State<'_, Arc<Engine>>, path: String) -> Result<Details, String> {
     // Items inside archives, and archives themselves, with what they hold (archive::browse).
-    if let Some(details) = crate::archive::preview_details(&engine, &path) {
+    if let Some(details) = crate::archive::preview_details(&engine, &path, window.label()) {
         return details;
     }
     describe(&engine, &path).map_err(|error| explain(&error))

@@ -92,11 +92,42 @@ pub fn merge(
         .collect()
 }
 
-/// Whether a path is worth listing: an existing file, not a folder. Returns whether its
-/// contents are in the cloud only, or `None` to leave it out. Only attributes are read.
-fn file_state(path: &str) -> Option<bool> {
-    let attrs = attributes(path)?;
+/// Whether a path, by its attributes (only they are read), is worth listing: an existing file,
+/// not a folder. Returns whether its contents are in the cloud only, or `None` to leave it out.
+fn state_of(attrs: Option<u32>) -> Option<bool> {
+    let attrs = attrs?;
     (attrs & DIRECTORY == 0).then_some(attrs & CLOUD_ONLY != 0)
+}
+
+/// How long Home waits to hear about recent files on shares.
+const REMOTE_WAIT: Duration = Duration::from_millis(500);
+
+/// [`state_of`] for every candidate on a share or a mapped drive, asked of each share on a
+/// thread of its own and waited for no longer than `wait`: a share whose server is away takes
+/// half a minute to answer, and Home asks again whenever the window comes back to the front.
+/// A file not answered for in time is listed as it was recorded (Explorer lists such items
+/// too); one whose share says it is gone is left out.
+fn remote_states(candidates: &[Candidate], probe: fn(&str) -> Option<u32>, wait: Duration) -> HashMap<String, Option<bool>> {
+    let mut remote: Vec<String> = candidates.iter().filter(|c| crate::remote::is_remote(&c.path)).map(|c| c.path.clone()).collect();
+    remote.sort_by_key(|path| fold(path));
+    remote.dedup_by_key(|path| fold(path));
+    let answers = crate::remote::ask_all(&remote, probe, wait);
+    remote
+        .iter()
+        .zip(answers)
+        .map(|(path, answer)| (fold(path), answer.map_or(Some(false), state_of)))
+        .collect()
+}
+
+/// The recent files from `candidates`, newest first: those on shares checked with a time
+/// limit ([`remote_states`]), the rest one by one as needed.
+fn checked(candidates: Vec<Candidate>, hidden: &HashMap<String, i64>, probe: fn(&str) -> Option<u32>, wait: Duration, limit: usize) -> Vec<RecentFile> {
+    let remote = remote_states(&candidates, probe, wait);
+    let keep = |path: &str| match remote.get(&fold(path)) {
+        Some(&state) => state,
+        None => state_of(probe(path)),
+    };
+    merge(candidates, hidden, keep, limit)
 }
 
 /// The shortcuts in Windows' Recent folder, newest first, with their targets.
@@ -143,7 +174,7 @@ pub fn recent_files(db: &Db, limit: usize, with_windows: bool) -> Vec<RecentFile
     let opened = store::opened(db, store::MAX_OPENED).unwrap_or_default();
     let kestrel = opened.into_iter().map(|item| Candidate { path: item.path, used: item.last_opened, source: "kestrel" });
     let windows = if with_windows { windows_recent() } else { Vec::new() };
-    merge(kestrel.chain(windows), &hidden(db), file_state, limit)
+    checked(kestrel.chain(windows).collect(), &hidden(db), attributes, REMOTE_WAIT, limit)
 }
 
 // ---------- commands ----------
@@ -234,6 +265,31 @@ mod tests {
         store::forget_opened(&db, &path).unwrap();
         assert!(recent_files(&db, 10, false).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A recent file on a share whose server is away takes half a minute to ask about, again
+    /// each time Home is shown: Home waits only briefly, and lists such files as recorded.
+    #[test]
+    fn recent_files_on_unreachable_shares_dont_hold_home_up() {
+        fn probe(path: &str) -> Option<u32> {
+            const ARCHIVE: u32 = 0x20;
+            if path.starts_with(r"\\away") {
+                std::thread::sleep(Duration::from_secs(4));
+                return None;
+            }
+            if path.contains("gone") { None } else { Some(ARCHIVE) }
+        }
+        let candidates = vec![
+            candidate(r"\\away\team\budget.xlsx", 300, "windows"),
+            candidate(r"C:\notes.txt", 200, "kestrel"),
+            candidate(r"\\away\team\plan.docx", 150, "windows"),
+            candidate(r"\\near\share\gone.txt", 100, "windows"),
+        ];
+        let started = Instant::now();
+        let list = checked(candidates, &HashMap::new(), probe, Duration::from_millis(300), 10);
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        let paths: Vec<&str> = list.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, [r"\\away\team\budget.xlsx", r"C:\notes.txt", r"\\away\team\plan.docx"]);
     }
 
     #[test]

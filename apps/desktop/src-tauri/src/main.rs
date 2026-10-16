@@ -27,6 +27,7 @@ mod previewview;
 mod projects;
 mod recycle;
 mod recyclebin;
+mod remote;
 mod shellmenu;
 mod shortcuts;
 mod thispc;
@@ -65,7 +66,9 @@ fn index_status(engine: Shared) -> IndexStatus {
 /// is emitted whenever its contents change; the watch is armed before the folder is read, so
 /// no change can fall between the two. Hidden and system items are left out when
 /// `show_hidden` is false, and protected operating system files (hidden and system both) when
-/// `show_protected` is false too. Each window watches its own folder.
+/// `show_protected` is false too. Each window watches its own folder. `ticket` is the number
+/// the window gave the listing, by which it cancels one it no longer wants (`archive_cancel`):
+/// listing a large compressed tar means reading it through.
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 fn list_dir(
@@ -73,15 +76,18 @@ fn list_dir(
     window: Window,
     engine: Shared,
     watcher: State<Watcher>,
+    jobs: State<archive::Jobs>,
     path: String,
     sort: SortSpec,
     watch: bool,
     show_hidden: Option<bool>,
     show_protected: Option<bool>,
+    ticket: Option<u32>,
 ) -> Result<Listing, String> {
     // An archive, or a folder inside one, is listed from the archive; it has nothing to watch.
     let visibility = Visibility::from_request(show_hidden).with_protected(show_protected);
-    if let Some(listing) = archive::list(&engine, &path, sort, visibility) {
+    let ticket = ticket.map(|id| archive::Ticket { jobs: &jobs, window: window.label(), id });
+    if let Some(listing) = archive::list(&engine, &path, sort, visibility, ticket) {
         return listing;
     }
     if watch {
@@ -417,11 +423,25 @@ fn main() {
                 responder.respond(response);
             };
             match parse_icon_request(request.uri()) {
-                // Items inside archives have no file to ask; they get their type's icon.
-                Some((key, size)) => icons.request(archive::icon_key(key), size, move |png| match png {
-                    Some(png) => respond(StatusCode::OK, png.to_vec()),
-                    None => respond(StatusCode::NOT_FOUND, Vec::new()),
-                }),
+                Some((key, size)) => {
+                    let icons = icons.clone();
+                    let needs_disk = archive::icon_key_needs_disk(&key);
+                    // Items inside archives have no file to ask; they get their type's icon.
+                    let ask = move || {
+                        icons.request(archive::icon_key(key), size, move |png| match png {
+                            Some(png) => respond(StatusCode::OK, png.to_vec()),
+                            None => respond(StatusCode::NOT_FOUND, Vec::new()),
+                        })
+                    };
+                    // WebView2 asks for icons on the window's own thread, which must never wait
+                    // for the disk (a share whose server is away takes half a minute to answer):
+                    // telling an item inside an archive from a file does, so it happens elsewhere.
+                    if needs_disk {
+                        tauri::async_runtime::spawn_blocking(ask);
+                    } else {
+                        ask();
+                    }
+                }
                 None => respond(StatusCode::BAD_REQUEST, Vec::new()),
             }
         })
@@ -576,6 +596,7 @@ fn main() {
             archive::archive_preferences,
             archive::archive_set_preferences,
             archive::archive_dev_materialize,
+            archive::archive_dev_hold,
             cleanup::cleanup_scan,
             cleanup::cleanup_recycle,
             cleanup::cleanup_run_tool,
@@ -632,11 +653,13 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while starting Kestrel")
         .run(move |_app, event| {
-            // Saving on the way out means the next start only replays what changed since.
-            if let RunEvent::Exit = event
-                && engine.take_dirty()
-            {
-                indexer::save(&engine, &indexer::snapshot_path());
+            if let RunEvent::Exit = event {
+                // Decrypted copies of password-protected items don't outlast the run.
+                archive::forget_protected_copies();
+                // Saving on the way out means the next start only replays what changed since.
+                if engine.take_dirty() {
+                    indexer::save(&engine, &indexer::snapshot_path());
+                }
             }
         });
 }

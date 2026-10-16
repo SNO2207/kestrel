@@ -10,8 +10,8 @@
 mod history;
 mod volume;
 
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kestrel_analyze::category::SYSTEM_ROOT_FILES;
@@ -22,7 +22,7 @@ use kestrel_db::Db;
 use kestrel_index::{EntryId, Index, NO_ENTRY};
 use parking_lot::Mutex;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State, Window};
+use tauri::{AppHandle, Emitter, Manager, State, Window};
 
 use crate::engine::{Engine, normalize};
 use crate::fileops::{self, Options, Request};
@@ -46,13 +46,42 @@ pub struct Disk {
     engine: Arc<Engine>,
     db: Arc<Db>,
     app: Mutex<Option<AppHandle>>,
-    /// The hub is open: changes to the index are announced.
-    watching: AtomicBool,
+    /// The windows whose hub is open, which changes to the index are announced to.
+    watching: Watchers,
+}
+
+/// The windows whose disk usage hub is open. Each window opens and closes its own, so one
+/// closing its hub must leave another's live.
+#[derive(Default)]
+struct Watchers(Mutex<HashSet<String>>);
+
+impl Watchers {
+    fn set(&self, window: &str, open: bool) {
+        let mut watching = self.0.lock();
+        if open {
+            watching.insert(window.to_owned());
+        } else {
+            watching.remove(window);
+        }
+    }
+
+    /// The windows to tell, forgetting those `exists` says have closed (with their hub open).
+    fn to_tell(&self, exists: impl Fn(&str) -> bool) -> Vec<String> {
+        let mut watching = self.0.lock();
+        watching.retain(|window| exists(window));
+        let mut windows: Vec<String> = watching.iter().cloned().collect();
+        windows.sort();
+        windows
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.lock().is_empty()
+    }
 }
 
 impl Disk {
     pub fn new(engine: Arc<Engine>, db: Arc<Db>) -> Arc<Self> {
-        Arc::new(Self { engine, db, app: Mutex::new(None), watching: AtomicBool::new(false) })
+        Arc::new(Self { engine, db, app: Mutex::new(None), watching: Watchers::default() })
     }
 
     /// Starts the background work: announcing index changes to an open hub, and the daily
@@ -74,7 +103,7 @@ impl Disk {
         loop {
             std::thread::sleep(POLL);
             let revision = self.engine.revision();
-            if !self.watching.load(Ordering::Relaxed) {
+            if self.watching.is_empty() {
                 (seen, first_change) = (revision, None);
                 continue;
             }
@@ -87,7 +116,9 @@ impl Disk {
             if due {
                 first_change = None;
                 if let Some(app) = self.app.lock().as_ref() {
-                    let _ = app.emit("disk-changed", revision);
+                    for window in self.watching.to_tell(|window| app.get_window(window).is_some()) {
+                        let _ = app.emit_to(window.as_str(), "disk-changed", revision);
+                    }
                 }
             }
         }
@@ -166,13 +197,61 @@ fn overview_of(engine: &Engine, path: &str) -> Result<OverviewView, String> {
     let started = Instant::now();
     let revision = engine.revision();
     let indexing = engine.status().state != "ready";
-    let index = engine.index().read();
-    let root = locate(&index, path)?;
-    let analysis = overview::overview(&index, root, &overview::Options { now_ms: now_ms(), top: TOP });
-    let top = top_of(&index, root);
+    let options = overview::Options { now_ms: now_ms(), top: TOP };
+    // The walk lets go of the index between steps, and the figures are added up without it:
+    // the hub asks again every few seconds while the index changes, and nothing else that reads
+    // the index may wait for it each time.
+    let (analysis, facts) = loop {
+        let (walked, generation) = engine.in_steps(
+            |index| locate(index, path).map(|root| (root, overview::OverviewWalk::new(root, &options))),
+            |walk, index| walk.as_mut().map_or(true, |(_, walk)| walk.step(index, overview::STEP)),
+            |walk, _| (walk, engine.generation()),
+        );
+        let (root, walk) = walked?;
+        let summed = walk.sum();
+        let index = engine.index().read();
+        // Replaced meanwhile: the walk's entries are not this index's.
+        if engine.generation() == generation {
+            break (summed.overview(&index), facts_of(&index, root));
+        }
+    };
+    let indexed_files = if facts.top == facts.root { analysis.totals.local.files + analysis.totals.cloud_files } else { 0 };
+    let volume = volume::read(&facts.drive_path).map(|volume| VolumeView {
+        used: volume.total.saturating_sub(volume.free),
+        volume,
+        indexed: facts.indexed,
+        indexed_files,
+        system_files: facts.system_files,
+    });
+    Ok(OverviewView {
+        path: facts.view_path,
+        name: facts.name,
+        is_drive: facts.is_drive,
+        is_dir: facts.is_dir,
+        revision,
+        took_ms: started.elapsed().as_secs_f64() * 1000.0,
+        indexing,
+        analysis,
+        volume,
+    })
+}
+
+/// What the overview says of the item at `root` beyond its analysis: where it is, and its drive.
+struct Facts {
+    root: EntryId,
+    top: EntryId,
+    drive_path: String,
+    indexed: u64,
+    system_files: Vec<SystemFile>,
+    view_path: String,
+    name: String,
+    is_dir: bool,
+    is_drive: bool,
+}
+
+fn facts_of(index: &Index, root: EntryId) -> Facts {
+    let top = top_of(index, root);
     let drive_path = index.path(top);
-    let indexed = index.alloc(top);
-    let indexed_files = if top == root { analysis.totals.local.files + analysis.totals.cloud_files } else { 0 };
     // The page file and its kind, in the index or (held open by Windows, so never re-listed)
     // only on the drive.
     let system_files: Vec<SystemFile> = SYSTEM_ROOT_FILES[..3]
@@ -182,30 +261,17 @@ fn overview_of(engine: &Engine, path: &str) -> Result<OverviewView, String> {
             None => volume::listed_size(&format!("{}{name}", drive_path)).map(|bytes| SystemFile { name, bytes, counted: false }),
         })
         .collect();
-    let view_path = index.path(root);
-    let name = index.name(root).to_owned();
-    let is_dir = index.is_dir(root);
-    let is_drive = root == top && drive_path.ends_with(":\\");
-    drop(index);
-
-    let volume = volume::read(&drive_path).map(|volume| VolumeView {
-        used: volume.total.saturating_sub(volume.free),
-        volume,
-        indexed,
-        indexed_files,
+    Facts {
+        root,
+        top,
+        indexed: index.alloc(top),
         system_files,
-    });
-    Ok(OverviewView {
-        path: view_path,
-        name,
-        is_drive,
-        is_dir,
-        revision,
-        took_ms: started.elapsed().as_secs_f64() * 1000.0,
-        indexing,
-        analysis,
-        volume,
-    })
+        view_path: index.path(root),
+        name: index.name(root).to_owned(),
+        is_dir: index.is_dir(root),
+        is_drive: root == top && drive_path.ends_with(":\\"),
+        drive_path,
+    }
 }
 
 /// The tiles of a treemap, a column per field, which keeps tens of thousands of them small.
@@ -323,10 +389,11 @@ pub fn disk_history_probe(
     history::probe(&disk.engine, &disk.db, action, days_ago, rows.unwrap_or_default())
 }
 
-/// The hub opened or closed: while it is open, index changes are announced as `disk-changed`.
+/// The window's hub opened or closed: while it is open, index changes are announced to the
+/// window as `disk-changed`.
 #[tauri::command(async)]
-pub fn disk_watch(disk: Shared, open: bool) {
-    disk.watching.store(open, Ordering::Relaxed);
+pub fn disk_watch(window: Window, disk: Shared, open: bool) {
+    disk.watching.set(window.label(), open);
 }
 
 /// Sends items to the Recycle Bin as one undoable operation. The hub has asked first. Returns
@@ -362,6 +429,20 @@ mod tests {
         engine
     }
 
+    /// Two windows with the hub open: one closing its hub leaves the other's told of changes,
+    /// and a window that closed with its hub open is forgotten.
+    #[test]
+    fn each_window_watches_for_its_own_hub() {
+        let watchers = Watchers::default();
+        watchers.set("main", true);
+        watchers.set("main-2", true);
+        watchers.set("main", false);
+        assert_eq!(watchers.to_tell(|_| true), ["main-2"]);
+        assert!(!watchers.is_empty());
+        assert_eq!(watchers.to_tell(|window| window != "main-2"), Vec::<String>::new());
+        assert!(watchers.is_empty(), "a closed window is forgotten");
+    }
+
     #[test]
     fn paths_are_found_however_they_are_written() {
         let engine = engine();
@@ -390,6 +471,27 @@ mod tests {
         let folder = overview_of(&engine(), r"C:\Users").unwrap();
         assert!(!folder.is_drive);
         assert_eq!(folder.volume.unwrap().indexed_files, 0, "only a drive's own overview counts its files");
+    }
+
+    /// The hub works its overview out again every few seconds while the index changes: the
+    /// index's writer, and every reader behind it, gets in between steps of the walk.
+    #[test]
+    fn the_overview_lets_the_index_be_written_meanwhile() {
+        let engine = crate::engine::busy::engine(400_000, 4);
+        // What one walk under one lock takes, which is how long the writer waited before.
+        let whole = {
+            let index = engine.index().read();
+            let root = locate(&index, r"C:\Users\me").unwrap();
+            let started = Instant::now();
+            overview::overview(&index, root, &overview::Options { now_ms: now_ms(), top: TOP });
+            started.elapsed()
+        };
+        let (_, worst) = crate::engine::busy::writer_waits(&engine, || {
+            let view = overview_of(&engine, r"C:\Users\me").unwrap();
+            assert_eq!(view.analysis.totals.local.files, 1_600_000);
+        });
+        assert!(whole > std::time::Duration::from_millis(10), "too quick to tell: {whole:?}");
+        assert!(worst < whole / 2, "the writer waited {worst:?}; the whole walk takes {whole:?}");
     }
 
     #[test]

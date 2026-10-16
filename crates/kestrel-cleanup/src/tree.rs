@@ -4,16 +4,19 @@ use kestrel_index::{EntryId, Index, attr};
 
 use crate::{Item, unix_ms};
 
-/// Attributes of a cloud file whose contents are not on this device: opening or reading it
-/// downloads it.
-pub const RECALL_ON_OPEN: u32 = 0x4_0000;
-pub const PLACEHOLDER: u32 = attr::OFFLINE | attr::RECALL_ON_DATA_ACCESS | RECALL_ON_OPEN;
+/// Attributes of a cloud file whose contents are not on this device: reading it downloads it.
+/// OneDrive's online-only files carry both (0x401620), in listings and in the file table alike.
+///
+/// Not `FILE_ATTRIBUTE_RECALL_ON_OPEN` (0x40000), which is also `FILE_ATTRIBUTE_EA`, carried by
+/// thousands of ordinary files with extended attributes; nor nothing allocated, which in an
+/// index read from the file table is true of a hard link's second name (its allocation is
+/// charged to the first), of files small enough to live in the table, and of files Windows
+/// keeps compressed in a stream of their own (`kestrel_analyze::is_cloud_only` says the same).
+pub const PLACEHOLDER: u32 = attr::OFFLINE | attr::RECALL_ON_DATA_ACCESS;
 
-/// Whether attributes and sizes describe a file whose contents may be only in the cloud: one
-/// marked so, or one with a size but nothing allocated on disk. (Tiny files kept inside the file
-/// table also have nothing allocated; the duplicate finder never looks at files that small.)
-pub fn is_placeholder(attrs: u32, size: u64, alloc: u64) -> bool {
-    attrs & PLACEHOLDER != 0 || (attrs & attr::DIRECTORY == 0 && size > 0 && alloc == 0)
+/// Whether attributes describe a file whose contents are only in the cloud.
+pub fn is_placeholder(attrs: u32) -> bool {
+    attrs & PLACEHOLDER != 0
 }
 
 /// The live entry at `path`.
@@ -60,7 +63,7 @@ pub fn newest(index: &Index, id: EntryId) -> i64 {
 
 /// The item for an entry whose newest change is `modified` (a FILETIME).
 pub fn item(index: &Index, id: EntryId, modified: i64) -> Item {
-    Item { path: index.path(id), dir: index.is_dir(id), bytes: index.alloc(id), modified: unix_ms(modified) }
+    Item { path: index.path(id), dir: index.is_dir(id), bytes: index.alloc(id), modified: unix_ms(modified), file_id: index.file_id(id) }
 }
 
 /// The item for an entry, with its newest change worked out.

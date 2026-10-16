@@ -18,7 +18,15 @@ pub struct Guard {
     protected: Vec<String>,
     /// Folded project roots: only build output inside them, through the build rule.
     projects: Vec<String>,
+    /// The folded folder of every account's profile, and the owner's in it: only the owner's
+    /// own is ever looked in. An index read from the drive's file table holds the others too.
+    users: String,
+    profile: String,
 }
+
+/// Folders, by folded name, that are Windows' wherever they are: every drive's Recycle Bin
+/// (and Windows XP's), and the system's own folder at a drive's root.
+const SYSTEM_NAMES: &[&str] = &["$recycle.bin", "recycler", "system volume information"];
 
 /// Whether recommending the entry would mean deleting a link, a placeholder or what it leads to.
 fn is_link_or_placeholder(attrs: u32) -> bool {
@@ -32,7 +40,9 @@ impl Guard {
         let mut protected: Vec<String> = locations.protected().iter().chain(extra).map(|p| fold_path(p)).collect();
         protected.retain(|p| !p.is_empty());
         let projects = projects.iter().map(|p| fold_path(p)).filter(|p| !p.is_empty()).collect();
-        Guard { protected, projects }
+        let profile = fold_path(&locations.profile);
+        let users = profile.rsplit_once('\\').map(|(users, _)| users.to_owned()).unwrap_or_default();
+        Guard { protected, projects, users, profile }
     }
 
     /// Whether `path` lies in a protected folder, or is one. String-only: see [`Guard::allows`]
@@ -40,7 +50,12 @@ impl Guard {
     pub fn protects(&self, path: &str) -> bool {
         let folded = fold_path(path);
         // A drive root, or anything too short to be a real path, is never acted on.
-        folded.len() <= 3 || self.protected.iter().any(|folder| within(&folded, folder))
+        if folded.len() <= 3 || self.protected.iter().any(|folder| within(&folded, folder)) {
+            return true;
+        }
+        // Another account's profile (and Public, and Default): theirs, not the owner's.
+        let others = self.users.len() > 3 && within(&folded, &self.users) && !within(&folded, &self.profile);
+        others || folded.split('\\').any(|part| SYSTEM_NAMES.contains(&part))
     }
 
     /// Whether `path` is a project's root or inside one.

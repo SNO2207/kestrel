@@ -109,14 +109,29 @@ pub fn split(path: &str) -> Option<(String, Vec<String>)> {
     }
 }
 
+/// The parts of a path that are named like archives, by position, and how many parts it has.
+fn archive_named_parts(path: &str) -> (Vec<usize>, usize) {
+    let parts: Vec<&str> = path.split(['\\', '/']).filter(|part| !part.is_empty()).collect();
+    let named = parts.iter().enumerate().filter(|(_, part)| Format::of(part).is_some()).map(|(at, _)| at).collect();
+    (named, parts.len())
+}
+
+/// Whether `path` could name something inside an archive, judged from its spelling alone: a
+/// folder on its way is named like an archive. Most paths aren't, and are told apart without
+/// asking the disk, which for a share whose server is away takes half a minute to answer.
+pub fn may_be_entry(path: &str) -> bool {
+    let (named, parts) = archive_named_parts(path);
+    named.iter().any(|&at| at + 1 < parts)
+}
+
 /// Whether `path` names something inside an archive (not the archive file itself).
 pub fn is_entry(path: &str) -> bool {
-    split(path).is_some_and(|(_, inner)| !inner.is_empty())
+    may_be_entry(path) && split(path).is_some_and(|(_, inner)| !inner.is_empty())
 }
 
 /// Whether `path` is listed as a folder inside an archive: the archive itself, or a folder in it.
 pub fn is_location(path: &str) -> bool {
-    split(path).is_some()
+    !archive_named_parts(path).0.is_empty() && split(path).is_some()
 }
 
 #[cfg(test)]
@@ -168,5 +183,21 @@ mod tests {
         assert_eq!(split(base), None);
         assert_eq!(split(r"\\?\C:\x.zip\y"), None);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Paths whose spelling rules out an archive are answered without the disk: a file on a
+    /// share whose server is away (as for an installer's icon on a NAS) would otherwise hold
+    /// whoever asked for half a minute.
+    #[test]
+    fn paths_that_cant_be_inside_an_archive_are_told_without_the_disk() {
+        let unreachable = r"\\10.255.255.1\share\tools\setup.exe";
+        assert!(!may_be_entry(unreachable));
+        let started = std::time::Instant::now();
+        assert!(!is_entry(unreachable));
+        assert!(!is_location(r"\\10.255.255.1\share\tools"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "the disk was asked: {:?}", started.elapsed());
+        assert!(may_be_entry(r"C:\x\photos.zip\2024\beach.jpg"));
+        assert!(may_be_entry("C:/x/photos.zip/a"));
+        assert!(!may_be_entry(r"C:\x\photos.zip"), "an archive itself is a file on disk");
     }
 }

@@ -51,6 +51,17 @@ pub fn preview_label(window: &str) -> String {
     }
 }
 
+/// The app window a webview belongs to: its page's, or the preview's beside it.
+pub fn owner_of(webview: &str) -> String {
+    if webview == PREVIEW {
+        return MAIN.to_owned();
+    }
+    match webview.strip_prefix(PREVIEW).and_then(|rest| rest.strip_prefix('-')) {
+        Some(number) if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) => format!("{PREFIX}{number}"),
+        _ => webview.to_owned(),
+    }
+}
+
 /// Whether `label` names a preview webview, which may only show the preview protocol.
 pub fn is_preview_label(label: &str) -> bool {
     label == PREVIEW || numbered(label, &format!("{PREVIEW}-"))
@@ -164,5 +175,10 @@ mod tests {
         assert_eq!(preview_label("main-3"), "preview-3");
         assert!(is_preview_label("preview") && is_preview_label("preview-3"));
         assert!(!is_preview_label("main") && !is_preview_label("preview-") && !is_preview_label("previews"));
+        // A preview's window, and a page's own.
+        for (webview, window) in [("preview", "main"), ("preview-3", "main-3"), ("main-3", "main-3"), ("main", "main")] {
+            assert_eq!(owner_of(webview), window, "{webview}");
+            assert_eq!(owner_of(&preview_label(window)), window);
+        }
     }
 }

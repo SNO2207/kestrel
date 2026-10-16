@@ -11,7 +11,7 @@ import { createSignal } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 
 import type { Listing, Row } from "./lib/api";
-import { archiveApi, asProblem, type ArchiveKind, type ArchiveLevel, type ArchivePreferences, type ArchiveProgress } from "./lib/archivesApi";
+import { archiveApi, asProblem, nextJobId, type ArchiveKind, type ArchiveLevel, type ArchivePreferences, type ArchiveProgress } from "./lib/archivesApi";
 import { baseName, parentPath } from "./lib/format";
 import type { MenuEntry } from "./components/ContextMenu";
 import { isSearch, notify, openTab, refresh, renameWhenListed, selectInFolder, selectedRows, tabs } from "./state";
@@ -76,7 +76,6 @@ const SHOW_AFTER_MS = 350;
 
 const [jobs, setJobs] = createStore<JobView[]>([]);
 export { jobs };
-let nextJob = 1;
 
 function updateJob(progress: ArchiveProgress) {
   setJobs(
@@ -134,7 +133,7 @@ function askPassword(name: string, wrong: boolean): Promise<string | null> {
 async function runJob<T>(title: string, archiveName: string, start: (job: number, password: string | null) => Promise<T>): Promise<T | null> {
   /** One attempt, with its panel, which goes as soon as the attempt ends. */
   const attempt = async (password: string | null) => {
-    const id = nextJob++;
+    const id = nextJobId();
     setJobs(jobs.length, { id, title, phase: "starting", done: 0, total: 0, item: "", shown: false, cancelling: false });
     const timer = window.setTimeout(() => setJobs((job) => job.id === id, "shown", true), SHOW_AFTER_MS);
     try {
@@ -323,7 +322,7 @@ export async function compressTo(tabId: number) {
 /** Opens a file inside an archive from a copy in the temp folder, asking for a password if needed. */
 export async function openEntry(tabId: number, row: Row) {
   const archive = tabOf(tabId)?.listing?.archive ?? "";
-  await runJob(`Opening ${row.name}`, baseName(archive), (_job, password) => archiveApi.open(row.path, password));
+  await runJob(`Opening ${row.name}`, baseName(archive), (job, password) => archiveApi.open(job, row.path, password));
 }
 
 /** Copies items inside an archive to the clipboard, as files copied out of it. */

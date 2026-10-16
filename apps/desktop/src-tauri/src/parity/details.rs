@@ -46,8 +46,8 @@ const PROPERTIES: &[&str] = &[
 const PATIENCE: Duration = Duration::from_secs(3);
 /// Selections larger than this are counted, but their sizes and dates are not added up.
 const MAX_SUMMED: u64 = 200_000;
-/// Rows read at a time while adding up a selection.
-const CHUNK: u32 = 4096;
+/// Rows added up at a time, each time with the index held: about a quarter of a millisecond.
+const CHUNK: u32 = 65_536;
 
 /// One property, as Windows labels and formats it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -145,22 +145,20 @@ pub fn summarise(engine: &Engine, set: u32, ranges: &[(u32, u32)]) -> Result<Sum
                 summary.items += u64::from(end - at) + 1;
                 break;
             }
-            let count = (end - at + 1).min(CHUNK);
-            let rows = engine.rows(set, at, count)?;
-            if rows.is_empty() {
-                break;
-            }
-            for row in &rows {
+            let count = (end - at + 1).min(CHUNK).min(u32::try_from(MAX_SUMMED - summary.items).unwrap_or(u32::MAX));
+            // Only what is added up is read: no row is made, nor any path, which for a large
+            // selection, asked again at every change of it, cost a hundred times as much.
+            let read = engine.row_facts(set, at, count, |dir, size, mtime| {
                 summary.items += 1;
-                if row.dir { summary.folders += 1 } else { summary.files += 1 }
-                summary.bytes += row.size;
-                if row.mtime > 0 {
-                    summary.modified_from = summary.modified_from.min(row.mtime);
-                    summary.modified_to = summary.modified_to.max(row.mtime);
+                if dir { summary.folders += 1 } else { summary.files += 1 }
+                summary.bytes += size;
+                if mtime > 0 {
+                    summary.modified_from = summary.modified_from.min(mtime);
+                    summary.modified_to = summary.modified_to.max(mtime);
                 }
-            }
-            at = at.saturating_add(rows.len() as u32);
-            if rows.len() < count as usize {
+            })?;
+            at = at.saturating_add(read);
+            if read < count {
                 break;
             }
         }
@@ -208,6 +206,23 @@ mod tests {
         assert_eq!((two.items, two.files, two.bytes), (2, 2, 8));
         assert_eq!(summarise(&engine, listing.set, &[]).unwrap().items, 0);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The status bar adds a selection up again at every change of it: two hundred thousand
+    /// search results take a few milliseconds, as many as the index's own figures take to read,
+    /// not the hundred and fifty that making a row (with two paths) of each took.
+    #[test]
+    fn a_large_selection_is_added_up_without_making_rows() {
+        let engine = crate::engine::busy::engine(1_000, 300);
+        let listing = engine.search("file", None, SortSpec { key: SortField::Name, desc: false }).unwrap();
+        assert_eq!(listing.total, 300_000);
+        let started = std::time::Instant::now();
+        let summary = summarise(&engine, listing.set, &[(0, 299_999)]).unwrap();
+        let took = started.elapsed();
+        assert_eq!((summary.items, summary.files, summary.complete), (300_000, MAX_SUMMED, false));
+        let rows = engine.rows(listing.set, 0, MAX_SUMMED as u32).unwrap();
+        assert_eq!(summary.bytes, rows.iter().map(|row| row.size).sum::<u64>());
+        assert!(took < std::time::Duration::from_millis(40), "{took:?}");
     }
 
     #[test]

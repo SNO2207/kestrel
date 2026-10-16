@@ -26,3 +26,7 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Threading",
     "Win32_UI_Shell",
 ] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Tests compress a file as `compact /exe` does, to compare a reparse point that isn't a link.
+windows-sys = { workspace = true, features = ["Win32_System_IO"] }

@@ -87,7 +87,11 @@ impl Tracker {
             .filter(|&parent| seen.insert(parent))
             .collect();
         let (listed, stats) = refresh(index, folders, self.volume.as_ref());
-        index.write().advance_journal(&self.root, state.id, next);
+        // Nothing new in the journal: the index is left alone. Taking it to write on every poll
+        // made every reader wait behind this writer, itself waiting for any long reader.
+        if next != cursor.next_usn || !changes.is_empty() {
+            index.write().advance_journal(&self.root, state.id, next);
+        }
         Ok(Outcome::Current { changes: changes.len(), folders: listed, stats })
     }
 }
@@ -160,6 +164,10 @@ fn refresh(index: &RwLock<Index>, mut waiting: Vec<u64>, volume: Option<&walk::V
                 waiting.push(file_id);
             }
         }
+    }
+    // Nothing was read, so there is nothing to apply: the index is left alone.
+    if read.is_empty() {
+        return (0, SyncStats::default());
     }
     (read.len(), sync.finish(&mut index.write()))
 }

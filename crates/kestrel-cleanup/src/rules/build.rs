@@ -177,7 +177,11 @@ pub fn recommend(index: &Index, context: &Context, guard: &Guard, claims: &mut C
             claims.claim(entry);
             if output == Output::Cargo && context.tools.has("cargo") {
                 let folder = index.path(index.parent(entry));
-                let tool = Tool::new("cargo", &["clean"], Some(&folder));
+                // Told which folder to clean: otherwise Cargo cleans the one its environment or
+                // configuration names (CARGO_TARGET_DIR, `build.target-dir`), which may be a
+                // build folder shared by every project, and leaves the one shown.
+                let target = index.path(entry);
+                let tool = Tool::new("cargo", &["clean", "--target-dir", &target], Some(&folder)).shown_as("cargo clean");
                 recs.push(
                     Recommendation::new(
                         format!("cargo:{}", fold_path(&folder)),
@@ -269,10 +273,11 @@ mod tests {
                 "users/me/code/rusty/web/node_modules",
             ]
         );
-        // Cargo's own tool for `target`, run in the project.
+        // Cargo's own tool for `target`, run in the project and told which folder to clean.
         let cargo = build.iter().find(|r| r.id.starts_with("cargo:")).unwrap();
         let Action::Tool(tool) = &cargo.action else { panic!("{cargo:?}") };
         assert_eq!(tool.command, "cargo clean");
+        assert_eq!(tool.args, ["clean", "--target-dir", sandbox.text(r"Users\me\code\rusty\target").as_str()]);
         assert_eq!(tool.dir.as_deref(), Some(sandbox.text(r"Users\me\code\rusty").as_str()));
         assert!(cargo.reason.contains("120 days"), "{}", cargo.reason);
         let web = build.iter().find(|r| r.title == "Build output in rusty").unwrap();
@@ -288,6 +293,40 @@ mod tests {
         // Sources never appear, whatever rule.
         let all = item_paths(&sandbox, &recs);
         assert!(!all.iter().any(|p| p.ends_with(".rs") || p.ends_with(".cs") || p.ends_with("/build")), "{all:?}");
+    }
+
+    /// The project's own configuration (or the environment, or the owner's) can point Cargo at
+    /// another build folder, one shared by every project: run as offered, `cargo clean` still
+    /// removes the `target` folder shown, and nothing else.
+    #[test]
+    fn cargo_clean_removes_the_target_folder_shown_whatever_cargo_is_configured_with() {
+        let sandbox = Sandbox::new("build-cargo-clean");
+        let project = r"Users\me\code\stale";
+        sandbox.write_bytes(&format!(r"{project}\Cargo.toml"), b"[package]\nname = \"stale\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+        sandbox.write_bytes(&format!(r"{project}\src\main.rs"), b"fn main() {}\n");
+        sandbox.write(&format!(r"{project}\target\debug\stale.exe"), 9000, 1);
+        let shared = sandbox.write(r"shared-target\debug\other-project.exe", 9000, 2);
+        let config = format!("[build]\ntarget-dir = '{}'\n", sandbox.text("shared-target"));
+        sandbox.write_bytes(&format!(r"{project}\.cargo\config.toml"), config.as_bytes());
+        sandbox.age_tree("Users", 120);
+        let mut context = sandbox.context();
+        context.projects = vec![Project { root: sandbox.text(project), dismissed: false }];
+        context.tools = Tools::with(&["cargo"]);
+        let recs = scan(&sandbox.index(), &context);
+        let cargo = recs.iter().find(|r| r.id.starts_with("cargo:")).unwrap();
+        let Action::Tool(tool) = &cargo.action else { panic!("{cargo:?}") };
+
+        let program = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        let ran = std::process::Command::new(program)
+            .args(&tool.args)
+            .current_dir(tool.dir.as_deref().unwrap())
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .output()
+            .unwrap();
+        assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+        assert!(!sandbox.path(&format!(r"{project}\target")).exists(), "the folder shown is removed");
+        assert!(shared.exists(), "the build folder Cargo is configured with is left alone");
     }
 
     #[test]

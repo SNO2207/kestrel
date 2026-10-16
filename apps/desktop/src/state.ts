@@ -13,6 +13,7 @@ import {
   type SortKey,
   type SortSpec,
 } from "./lib/api";
+import { CANCELLED, archiveApi, nextJobId } from "./lib/archivesApi";
 import { layoutApi, type GroupSpec } from "./lib/layoutApi";
 import { locationOf, parentOf, resolveLocation } from "./lib/locations";
 import { Selection } from "./lib/selection";
@@ -225,7 +226,27 @@ async function arrange(tabId: number, listing: Listing, sort: SortSpec): Promise
  */
 async function listFolder(tabId: number, path: string, sort: SortSpec): Promise<Listing> {
   if (tabId !== activeId() && onScreen(tabId)) await layoutApi.watchOtherPane(path).catch(() => {});
-  return api.listDir(path, sort, tabId === activeId());
+  const ticket = nextJobId();
+  listings.set(tabId, { ticket, path });
+  try {
+    return await api.listDir(path, sort, tabId === activeId(), undefined, ticket);
+  } finally {
+    if (listings.get(tabId)?.ticket === ticket) listings.delete(tabId);
+  }
+}
+
+/**
+ * Each tab's listing in progress. Listing a large compressed archive means reading it through,
+ * which takes minutes, and the tab's other loads wait behind it: going elsewhere cancels it.
+ */
+const listings = new Map<number, { ticket: number; path: string }>();
+
+/** Cancels the tab's listing in progress, unless it is of `unless`, which is wanted again. */
+function cancelListing(tabId: number, unless?: string) {
+  const listing = listings.get(tabId);
+  if (!listing || (unless !== undefined && samePath(listing.path, unless))) return;
+  listings.delete(tabId);
+  void archiveApi.cancel(listing.ticket).catch(() => {});
 }
 
 type NavigateMode = "push" | "keep";
@@ -264,6 +285,8 @@ function showLocation(tabId: number, address: string, mode: NavigateMode) {
 
 /** Shows `path` in the tab. `push` records it in the tab's history; `keep` leaves history alone. */
 export function navigate(tabId: number, path: string, mode: NavigateMode = "push") {
+  // A listing still running for somewhere else is no longer wanted.
+  cancelListing(tabId, path);
   enqueue(tabId, async () => {
     const tab = find(tabId);
     if (!tab) return;
@@ -294,6 +317,8 @@ export function navigate(tabId: number, path: string, mode: NavigateMode = "push
         tab.query = "";
       });
     } catch (error) {
+      // Cancelled because the tab went elsewhere, which is loading next.
+      if (String(error) === CANCELLED) return;
       patch(tabId, (tab) => {
         tab.error = String(error);
         tab.failed = samePath(path, tab.path) ? null : path;
@@ -727,6 +752,7 @@ function forget(tabId: number) {
   const tab = find(tabId);
   const sets = [tab?.listing?.set, tab?.unfiltered?.set];
   setTabs((all) => all.filter((each) => each.id !== tabId));
+  cancelListing(tabId);
   queues.delete(tabId);
   selections.delete(tabId);
   for (const set of sets) if (set !== undefined) void api.releaseSet(set);
