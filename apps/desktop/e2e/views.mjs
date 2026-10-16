@@ -90,6 +90,10 @@ const STORAGE_KEYS = ["kestrel.views", "kestrel.view-options", "search-scope"];
 const savedStorage = await page.evaluate((keys) => keys.map((key) => [key, localStorage.getItem(key)]), STORAGE_KEYS);
 // Start from the defaults: every folder in details, hidden items hidden, extensions shown.
 await page.evaluate((keys) => keys.forEach((key) => localStorage.removeItem(key)), STORAGE_KEYS);
+// The suite measures the list at full width: no preview or details pane beside it, whatever an
+// earlier suite (or one killed before it could close its pane) left behind. They stay closed,
+// which is how every suite expects to find the window.
+await page.evaluate(() => ["preview-open", "details-open"].forEach((key) => localStorage.setItem(key, "0")));
 await page.reload();
 
 const panel = page.locator(".tab-panel.active");

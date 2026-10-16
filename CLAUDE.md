@@ -418,8 +418,10 @@ Git:
   (`document.styleSheets[0].cssRules.length`) or look at the screenshots.
 - The e2e suites assume the details view and a closed preview pane. `views.mjs`,
   `preview.mjs` and `integration.mjs` change them and put them back in their `finally`
-  blocks; if one of them is killed, reset the slot's `kestrel.views` and `preview-open` local
-  storage entries.
+  blocks; if one of them is killed, reset the slot's `kestrel.views`, `preview-open` and
+  `details-open` local storage entries (`views.mjs` closes both panes when it starts). A pane
+  left open narrows the list, so the largest icon views draw fewer items and waits for items
+  beyond the fold never end.
 - `pnpm dev` (and so `tauri dev` and every e2e slot) builds `kestrel-shellhost` before the
   app, but the dev watcher does not rebuild it when its code changes: run
   `cargo build -p kestrel-shellhost` (with the slot's `CARGO_TARGET_DIR`) yourself.

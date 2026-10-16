@@ -145,6 +145,11 @@ try {
   await step("sorting keeps the selection on its file", async () => {
     await panel.locator(".column-header.name").click();
     await page.waitForFunction(() => document.querySelector(".tab-panel.active .column-header.name")?.getAttribute("aria-sort") === "descending");
+    // The header shows the new order at once; the rows follow a moment later, briefly unnamed
+    // while they are fetched again in that order. The selection is checked once they are in.
+    await page
+      .waitForFunction(() => document.querySelector(".tab-panel.active .row.selected .label")?.textContent === "beta.txt", null, { timeout: 5_000 })
+      .catch(() => {});
     assert.deepEqual(await selectedNames(), ["beta.txt"]);
     await panel.locator(".column-header.name").click();
     await page.waitForFunction(() => document.querySelector(".tab-panel.active .column-header.name")?.getAttribute("aria-sort") === "ascending");
