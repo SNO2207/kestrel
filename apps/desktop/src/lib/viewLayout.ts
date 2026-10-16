@@ -41,14 +41,29 @@ const SPECS: Record<ViewMode, Spec> = {
   content: { axis: "y", width: 0, height: 66, visual: 48 },
 };
 
+/**
+ * Explorer's "Compact view" (parity2.ts): the same views with less space around each item,
+ * matched by `.filelist.compact` in parity2.css.
+ */
+const COMPACT: Record<ViewMode, Spec> = {
+  details: { axis: "y", width: 0, height: 22, visual: 16 },
+  list: { axis: "x", width: 264, height: 20, visual: 16 },
+  tiles: { axis: "y", width: 264, height: 58, visual: 48 },
+  small: { axis: "y", width: 84, height: 76, visual: 32 },
+  medium: { axis: "y", width: 104, height: 106, visual: 64 },
+  large: { axis: "y", width: 160, height: 172, visual: 128 },
+  xl: { axis: "y", width: 288, height: 300, visual: 256 },
+  content: { axis: "y", width: 0, height: 56, visual: 48 },
+};
+
 /** Views with one item per line, spanning the view: details and content. */
 export const oneItemPerLine = (mode: ViewMode) => mode === "details" || mode === "content";
 
 /** Space between the edges of the view and its items. */
 export const GRID_PADDING = 8;
 
-export function geometry(mode: ViewMode, width: number, height: number): Geometry {
-  const spec = SPECS[mode];
+export function geometry(mode: ViewMode, width: number, height: number, compact = false): Geometry {
+  const spec = (compact ? COMPACT : SPECS)[mode];
   // Details and content rows span the view; their columns are laid out by CSS.
   if (oneItemPerLine(mode)) return { mode, axis: "y", perLine: 1, lineSize: spec.height, itemSize: 0, visual: spec.visual };
   if (spec.axis === "x") {

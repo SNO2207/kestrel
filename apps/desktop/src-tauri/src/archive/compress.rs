@@ -54,17 +54,17 @@ pub enum Level {
 
 /// One thing to put in the archive.
 #[derive(Debug)]
-struct Item {
-    path: PathBuf,
+pub(super) struct Item {
+    pub(super) path: PathBuf,
     /// Its path in the archive, with `/` between parts.
-    name: String,
-    dir: bool,
-    size: u64,
-    mtime: i64,
+    pub(super) name: String,
+    pub(super) dir: bool,
+    pub(super) size: u64,
+    pub(super) mtime: i64,
 }
 
 /// Lists `sources` and everything beneath them, folders before what they hold.
-fn gather(sources: &[PathBuf], skip: &[&Path], job: &Job) -> Result<Vec<Item>, Failure> {
+pub(super) fn gather(sources: &[PathBuf], skip: &[&Path], job: &Job) -> Result<Vec<Item>, Failure> {
     let mut items = Vec::new();
     for source in sources {
         let meta = fs::symlink_metadata(source).map_err(|error| read_failure(source, &error))?;
@@ -137,9 +137,9 @@ impl Read for Progressed<'_> {
 }
 
 /// The archive being written, removed unless finished.
-struct Partial {
-    path: PathBuf,
-    keep: bool,
+pub(super) struct Partial {
+    pub(super) path: PathBuf,
+    pub(super) keep: bool,
 }
 
 impl Drop for Partial {
@@ -150,7 +150,7 @@ impl Drop for Partial {
     }
 }
 
-static NEXT_PARTIAL: AtomicU32 = AtomicU32::new(1);
+pub(super) static NEXT_PARTIAL: AtomicU32 = AtomicU32::new(1);
 
 /// The first of `name`, `name (2)`, `name (3)`… free in `folder`, numbered before the archive's
 /// whole extension (`photos (2).tar.gz`).
@@ -204,11 +204,11 @@ pub fn compress(request: &Request, job: &Job) -> Result<PathBuf, Failure> {
     Ok(target)
 }
 
-fn hide(path: &Path) {
+pub(super) fn hide(path: &Path) {
     set_hidden(path, true);
 }
 
-fn show(path: &Path) {
+pub(super) fn show(path: &Path) {
     set_hidden(path, false);
 }
 
@@ -242,14 +242,25 @@ fn zip_date(ticks: i64) -> zip::DateTime {
 }
 
 fn write_zip(file: File, items: &[Item], level: Level, job: &Job, done: &mut u64, total: u64) -> Result<(), Failure> {
+    let mut zip = ZipWriter::new(BufWriter::new(file));
+    zip_items(&mut zip, items, level, job, done, total)?;
+    let out = zip.finish().map_err(zip_error)?;
+    finish_file(out)
+}
+
+pub(super) fn zip_error(error: zip::result::ZipError) -> Failure {
+    Failure::Io(format!("Couldn't write the archive: {error}"))
+}
+
+/// Writes `items` into a zip being made, folders as folder entries, files read in turn. Also
+/// what adding files to a zip writes after the entries it keeps (`add.rs`).
+pub(super) fn zip_items<W: io::Write + io::Seek>(zip: &mut ZipWriter<W>, items: &[Item], level: Level, job: &Job, done: &mut u64, total: u64) -> Result<(), Failure> {
     let (method, level) = match level {
         Level::Store => (CompressionMethod::Stored, None),
         Level::Fast => (CompressionMethod::Deflated, Some(1)),
         Level::Normal => (CompressionMethod::Deflated, Some(6)),
         Level::Maximum => (CompressionMethod::Deflated, Some(9)),
     };
-    let zip_error = |error: zip::result::ZipError| Failure::Io(format!("Couldn't write the archive: {error}"));
-    let mut zip = ZipWriter::new(BufWriter::new(file));
     for item in items {
         job.check()?;
         let options = SimpleFileOptions::default()
@@ -262,11 +273,10 @@ fn write_zip(file: File, items: &[Item], level: Level, job: &Job, done: &mut u64
         } else {
             zip.start_file(item.name.as_str(), options).map_err(zip_error)?;
             let mut reader = Progressed { file: open(item)?, job, done, total, name: &item.name };
-            io::copy(&mut reader, &mut zip).map_err(|error| copy_failure(item, &error, job))?;
+            io::copy(&mut reader, zip).map_err(|error| copy_failure(item, &error, job))?;
         }
     }
-    let out = zip.finish().map_err(zip_error)?;
-    finish_file(out)
+    Ok(())
 }
 
 /// A failed copy into an archive: the cancel that stopped it, or a read or write error.
@@ -275,7 +285,7 @@ fn copy_failure(item: &Item, error: &io::Error, job: &Job) -> Failure {
 }
 
 /// Flushes the finished archive to the disk.
-fn finish_file(out: BufWriter<File>) -> Result<(), Failure> {
+pub(super) fn finish_file(out: BufWriter<File>) -> Result<(), Failure> {
     let file = out
         .into_inner()
         .map_err(|error| Failure::Io(format!("Couldn't write the archive: {}", io_text(error.error()))))?;

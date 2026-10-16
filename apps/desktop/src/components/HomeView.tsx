@@ -5,6 +5,7 @@ import { baseName, formatDate, parentPath } from "../lib/format";
 import { parityApi, type RecentFile } from "../lib/parityApi";
 import { shortcutsApi, type Pin } from "../lib/shortcutsApi";
 import { openNewWindow, revealInFolder } from "../parity";
+import { parity2Options } from "../parity2";
 import { setFocusedRow } from "../previewState";
 import { board, changePins, folderName, forgetFolder, openPin, pinName } from "../shortcuts";
 import { navigate, notify, openTab, tabs } from "../state";
@@ -113,7 +114,11 @@ export function HomeView(props: { tabId: number; focusRef: (focus: () => void) =
       used: file.used,
       cloud: file.cloud,
     }));
-  const all = () => [...quickItems(), ...favoriteItems(), ...recentItems()];
+  const all = () => [
+    ...(parity2Options().showFrequent ? quickItems() : []),
+    ...favoriteItems(),
+    ...(parity2Options().showRecent ? recentItems() : []),
+  ];
   const find = (key: string | null) => all().find((item) => item.key === key);
 
   onMount(() => {
@@ -269,17 +274,20 @@ export function HomeView(props: { tabId: number; focusRef: (focus: () => void) =
       }}
       onContextMenu={(event) => event.preventDefault()}
     >
-      <section class="home-section" aria-label="Quick access">
-        <h2>
-          <ParityIcon name="folder" size={14} />
-          Quick access
-        </h2>
-        <Show when={quickItems().length > 0} fallback={<p class="home-empty">The folders you open most often will be here.</p>}>
-          <div class="home-tiles">
-            <For each={quickItems()}>{(item) => <Item value={item} tile />}</For>
-          </div>
-        </Show>
-      </section>
+      {/* Folder Options' privacy switches (parity2.ts) hide frequent folders and recent files. */}
+      <Show when={parity2Options().showFrequent}>
+        <section class="home-section" aria-label="Quick access">
+          <h2>
+            <ParityIcon name="folder" size={14} />
+            Quick access
+          </h2>
+          <Show when={quickItems().length > 0} fallback={<p class="home-empty">The folders you open most often will be here.</p>}>
+            <div class="home-tiles">
+              <For each={quickItems()}>{(item) => <Item value={item} tile />}</For>
+            </div>
+          </Show>
+        </section>
+      </Show>
       <section class="home-section" aria-label="Favorites">
         <h2>
           <ParityIcon name="star" size={14} />
@@ -291,22 +299,24 @@ export function HomeView(props: { tabId: number; focusRef: (focus: () => void) =
           </div>
         </Show>
       </section>
-      <section class="home-section" aria-label="Recent">
-        <h2>
-          <ParityIcon name="clock" size={14} />
-          Recent
-        </h2>
-        <Show when={recentItems().length > 0} fallback={<p class="home-empty">Files you open will be here.</p>}>
-          <div class="home-list">
-            <div class="home-columns" aria-hidden="true">
-              <span>Name</span>
-              <span>Date opened</span>
-              <span>Location</span>
+      <Show when={parity2Options().showRecent}>
+        <section class="home-section" aria-label="Recent">
+          <h2>
+            <ParityIcon name="clock" size={14} />
+            Recent
+          </h2>
+          <Show when={recentItems().length > 0} fallback={<p class="home-empty">Files you open will be here.</p>}>
+            <div class="home-list">
+              <div class="home-columns" aria-hidden="true">
+                <span>Name</span>
+                <span>Date opened</span>
+                <span>Location</span>
+              </div>
+              <For each={recentItems()}>{(item) => <Item value={item} />}</For>
             </div>
-            <For each={recentItems()}>{(item) => <Item value={item} />}</For>
-          </div>
-        </Show>
-      </section>
+          </Show>
+        </section>
+      </Show>
       <Show when={menu()}>
         {(at) => (
           <ContextMenu

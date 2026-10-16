@@ -32,6 +32,10 @@ const PATHS = {
   "network-drive": "M2.5 2.5h11v5h-11ZM8 7.5v4M3 13.5h10M11 5h.01",
   "restore-item": "M5.5 3.5 2.5 6.5l3 3M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7",
   eject: "M3 9.5 8 4l5 5.5ZM3 12.5h10",
+  // Explorer parity, second round: Libraries, the Network and its computers and shares.
+  library: "M3 2.5h2.5v11H3ZM6.5 2.5H9v11H6.5ZM10 3.2l2.3-.6 1.7 10.6-2.3.6Z",
+  network: "M6 2.5h4v3.5H6ZM8 6v2.5M3.5 8.5h9M3.5 8.5V10M12.5 8.5V10M2 10h3v3.5H2ZM11 10h3v3.5h-3Z",
+  share: "M2.5 4.5h4L8 6h5.5v6.5h-11ZM5 12.5v1.5M11 12.5v1.5M4 14h8",
 } as const;
 
 export type IconName = keyof typeof PATHS;

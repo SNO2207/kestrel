@@ -10,6 +10,7 @@ import { closeDiskUsage, diskOpen } from "../disk";
 import { DiskEntry } from "./DiskEntry";
 import { FolderTree } from "./FolderTree";
 import { HomeEntry } from "./HomeEntry";
+import { LibrariesSection } from "./LibrariesSection";
 import { Icon, hasIcon } from "./Icon";
 import { PinnedPlaces } from "./PinnedPlaces";
 import { ParityIcon } from "./ParityIcon";
@@ -101,6 +102,8 @@ export function Sidebar() {
             <span>Recycle Bin</span>
           </button>
         </section>
+        {/* Folder Options' "Show libraries in the navigation pane" (parity2.ts). */}
+        <LibrariesSection />
         <ShortcutLists />
       </div>
       <FolderTree />

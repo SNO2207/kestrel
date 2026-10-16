@@ -63,6 +63,12 @@ export interface SpecialLocation {
   adopts?: (path: string) => boolean;
   /** The name of a root it adopts, for the breadcrumb and tab titles ("OS (C:)"); null if unknown. */
   rootTitle?: (root: string) => string | null;
+  /**
+   * The breadcrumb for an address below the location that is listed as a folder, not shown as a
+   * page (a library's `shell:Libraries\Documents`, a share's `\\server\share\folder`); null for
+   * any other address.
+   */
+  descendantCrumbs?: (address: string) => Crumb[] | null;
   /** Listed by the palette; true unless it says otherwise. */
   inPalette?: boolean;
   /** More words the palette matches it by. */
@@ -141,6 +147,10 @@ export function crumbsOf(path: string): Crumb[] {
   const location = locationOf(path);
   if (location) {
     return location.crumbs?.(path) ?? [{ label: locationTitle(path) ?? path, path: location.address, icon: location.icon }];
+  }
+  for (const candidate of locations()) {
+    const below = candidate.descendantCrumbs?.(path);
+    if (below) return below;
   }
   const crumbs: Crumb[] = breadcrumbs(path);
   const root = crumbs[0]?.path;

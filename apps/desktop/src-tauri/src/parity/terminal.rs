@@ -10,6 +10,7 @@ use crate::projects::launch;
 /// Opens Windows Terminal in `folder`.
 #[tauri::command(async)]
 pub fn open_in_terminal(folder: String) -> Result<(), String> {
+    let folder = crate::parity2::libraries::folder_for(&folder);
     if !Path::new(&folder).is_dir() {
         return Err(format!("{folder} is not a folder"));
     }

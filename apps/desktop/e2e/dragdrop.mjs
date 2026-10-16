@@ -233,32 +233,42 @@ try {
   });
 
   await step("a drop on a folder row while the list refreshes still lands in that folder", async () => {
-    // A refreshed list fetches its rows again, and for a few milliseconds they carry no path.
-    // A drop in that moment used to be taken for one on empty space, which sent the file into
-    // the open folder instead of the row's. Here the drop happens exactly then.
+    // A refreshed list used to fetch its rows again and, for a few milliseconds, draw them with
+    // no path; a drop then was taken for one on empty space and sent the file into the open
+    // folder instead. The list now keeps its rows until the new ones are in (FileList.tsx), so
+    // the row stays a folder row throughout: none goes blank, and the drop, made as the refresh
+    // starts, lands in it. (Rows scrolled into view still load; dragdrop.ts's LOADING waits.)
     const late = join(outside, "late.txt");
     await hook.keys({ ctrl: false, shift: true });
     const at = await centre(row("Archive"));
     await hook.enter([late], at);
-    const { result, loading } = await page.evaluate(
+    const { result, blank, swapped } = await page.evaluate(
       ([paths, at]) =>
         new Promise((resolve) => {
+          let blank = 0;
           const rows = document.querySelector(".tab-panel.active .list-rows");
           const observer = new MutationObserver(() => {
-            if (!document.querySelector(".tab-panel.active .row[data-index]:not([data-path])")) return;
-            observer.disconnect();
-            window.__kestrelDragDrop.drop(paths, at.x, at.y).then((result) => resolve({ result, loading: true }));
+            if (document.querySelector(".tab-panel.active .row[data-index]:not([data-path])")) blank++;
           });
           observer.observe(rows, { subtree: true, childList: true, attributes: true });
+          const swaps = window.__kestrelSwaps.length;
           document.querySelector('.toolbar button[aria-label="Refresh"]').click();
-          setTimeout(() => {
-            observer.disconnect();
-            resolve({ result: null, loading: false });
-          }, 3000);
+          window.__kestrelDragDrop.drop(paths, at.x, at.y).then((result) => {
+            // The refresh's own swap, and the one the drop's selection asks for.
+            const settle = () => {
+              if (window.__kestrelSwaps.length > swaps) {
+                observer.disconnect();
+                resolve({ result, blank, swapped: true });
+              } else setTimeout(settle, 20);
+            };
+            settle();
+            setTimeout(() => resolve({ result, blank, swapped: false }), 5000);
+          });
         }),
       [[late], at],
     );
-    assert(loading, "the drop came while the refreshed rows were loading");
+    assert(swapped, "the refreshed rows were swapped in");
+    assert.equal(blank, 0, "no row went blank while the list refreshed");
     assert.deepEqual(result, { effect: "move", names: ["late.txt"] });
     assert(onDisk(archive, "late.txt") && !onDisk(late) && !onDisk(inbox, "late.txt"), "the file is in Archive");
     await hook.keys({ ctrl: false, shift: false });

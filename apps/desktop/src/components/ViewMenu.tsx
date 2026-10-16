@@ -12,6 +12,9 @@ import {
   type ViewMode,
 } from "../lib/views";
 import { activeTab, refresh, setSortSpec, startsDescending, tabs } from "../state";
+import { detailsOpen, toggleDetails } from "../parity";
+import { parity2Options, toggleOption } from "../parity2";
+import { paneOpen, setPaneOpen } from "../previewState";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import { groupByEntry } from "./GroupMenu";
 import { Icon, type IconName } from "./Icon";
@@ -65,6 +68,20 @@ export function ViewMenu(props: { focusList: () => void }) {
         checked: mode() === info.mode,
         run: () => setViewMode(where, info.mode),
       })),
+      "separator",
+      // Explorer parity, second round (parity2.ts): Compact view, and View > Show.
+      { label: "Compact view", checked: parity2Options().compact, run: () => toggleOption("compact") },
+      {
+        label: "Show",
+        run: () => {},
+        submenu: [
+          { label: "Navigation pane", checked: parity2Options().navPane, run: () => toggleOption("navPane") },
+          { label: "Details pane", hint: "Alt+Shift+P", checked: detailsOpen(), run: toggleDetails },
+          { label: "Preview pane", hint: "Alt+P", checked: paneOpen(), run: () => setPaneOpen(!paneOpen()) },
+          "separator",
+          { label: "Item check boxes", checked: parity2Options().checkboxes, run: () => toggleOption("checkboxes") },
+        ],
+      },
       "separator",
       ...SORT_KEYS.map(({ key, label }) => ({
         label: `Sort by ${label.toLowerCase()}`,

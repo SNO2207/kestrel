@@ -350,6 +350,12 @@ impl Palette {
         Ok(())
     }
 
+    /// Reads what was used recently again at the next query, as after the history was cleared
+    /// (`parity2::privacy`).
+    pub fn reread_recents(&self) {
+        *self.recents.lock() = None;
+    }
+
     /// Runs a query against every provider it concerns and ranks the results together.
     pub fn query(&self, request: Request) -> Result<Results, String> {
         let started = Instant::now();

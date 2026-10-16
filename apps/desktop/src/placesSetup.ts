@@ -9,6 +9,7 @@ import { ThisPcPage } from "./components/ThisPC";
 import { HOME_ALIASES, HOME_PATH } from "./lib/home";
 import { registerLocation } from "./lib/locations";
 import { RECYCLE_BIN, THIS_PC, driveTitle, isDriveRoot } from "./places";
+import { registerParity2Locations } from "./parity2Setup";
 
 // Explorer's start page: quick access, favorites and recent files (HomeView.tsx).
 registerLocation({
@@ -47,5 +48,8 @@ registerLocation({
   aliases: ["Recycle Bin", "::{645FF040-5081-101B-9F08-00AA002F954E}", "shell:::{645FF040-5081-101B-9F08-00AA002F954E}"],
   keywords: "trash deleted restore",
 });
+
+// Libraries and the Network (Explorer parity, second round), after the places above.
+registerParity2Locations();
 
 export { startPlaces } from "./places";

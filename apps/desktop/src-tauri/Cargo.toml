@@ -21,7 +21,9 @@ flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] 
 lzma-rust2 = { version = "0.16", default-features = false, features = ["std", "xz"] }
 sevenz-rust2 = { version = "0.20.2", default-features = false, features = ["aes256", "bzip2", "compress", "deflate", "ppmd", "util"] }
 tar = { version = "0.4.46", default-features = false }
-zip = { version = "9.0.3", default-features = false, features = ["aes-crypto", "bzip2", "deflate-flate2-zlib-rs", "deflate64", "lzma", "ppmd", "xz"] }
+# `unreserved`: adding files to a zip (archive/add.rs) copies its entries across as they are
+# stored, with whatever extra fields they carry (Info-ZIP's Unix ones, from Windows' own tar).
+zip = { version = "9.0.3", default-features = false, features = ["aes-crypto", "bzip2", "deflate-flate2-zlib-rs", "deflate64", "lzma", "ppmd", "unreserved", "xz"] }
 kestrel-analyze = { workspace = true }
 # Cleanup recommendations and the duplicate finder (cleanup/).
 kestrel-cleanup = { workspace = true }

@@ -21,6 +21,7 @@ pub mod disk;
 pub mod layout;
 pub mod palette;
 pub mod parity;
+pub mod parity2;
 pub mod places;
 pub mod projects;
 pub mod shortcuts;

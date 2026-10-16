@@ -5,9 +5,9 @@ instant search, instant folder listings with folder sizes, a command palette tha
 every folder and file, the projects on the drive with their git status, a folder tree in the
 sidebar, and a disk usage hub that shows what uses the disk, what could be cleaned up and which
 files are duplicates. Around it sits what File Explorer does: Home, This PC and the Recycle
-Bin, tabs and a second pane, Group by, columns and a filter box, the command bar and details
-pane, archives that open like folders, and more windows (`docs/explorer-parity.md` lists
-Explorer's features one by one).
+Bin, Libraries and the Network, tabs and a second pane, Group by, columns and a filter box, the
+command bar and details pane, archives that open like folders (and zips that take files dropped
+on them), and more windows (`docs/explorer-parity.md` lists Explorer's features one by one).
 
 *Kestrel is a working name.*
 
@@ -123,6 +123,8 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | F6, Shift+F6 | Move between the address bar, the search box, the sidebar and the files |
 | F5, Ctrl+R | Refresh (folders also refresh themselves when their contents change) |
 | Type letters | Jump to a name |
+| Ctrl+Space | Select or deselect the focused item, leaving the rest of the selection as it is |
+| Ctrl+arrow keys (and Ctrl+Home, End, Page Up, Page Down) | Move the focus without changing the selection |
 | F2 | Rename; with several items selected, batch rename |
 | Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) | Undo / redo the last file operation |
 | Del / Shift+Del | Move to the Recycle Bin / delete permanently |
@@ -149,6 +151,7 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Mouse back / forward buttons | Back / forward |
 | Middle-click a folder | Open it in a new tab |
 | Ctrl+Shift+E | Expand the folder tree to the open folder and give the tree the keyboard |
+| Num Lock+plus / Num Lock+minus (the keypad's) | In the folder tree, expand / collapse the folder |
 
 Every view (details, list, tiles, content and icons) has the same mouse and keyboard handling:
 click, Ctrl+click and Shift+click to select, a rectangle drawn from empty space (Ctrl adds to the
@@ -617,6 +620,42 @@ left out and why, is `docs/explorer-parity.md`):
   read from its attributes, so nothing is downloaded.
 - The status bar adds up the selection's size and has Explorer's Details and Large icons buttons.
 
+And in a second round:
+
+- **Lists that never go blank**: a folder refreshed or re-sorted (Downloads during a download)
+  keeps its rows on screen until the new rows for the view have arrived, then shows them all at
+  once with the selection carried, in every view. The wait is a few milliseconds.
+- **View menu**: Compact view (tighter rows and cells in every view, remembered) and Show, with
+  the navigation pane (hide the sidebar), the details and preview panes, and item check boxes:
+  a check box on the item under the pointer and on selected items, in every view, which adds the
+  item to the selection or takes it out. Ctrl+Space and Ctrl+arrows select and move as in
+  Explorer (see Keyboard).
+- **Folder Options** add: always show icons, never thumbnails; compact view; hide empty drives
+  (on, as in Explorer); compressed and encrypted NTFS files in colour (blue and green, on); check
+  boxes; the navigation pane; show libraries in it (off); and Privacy: show recently used files
+  and frequently used folders (Home and the sidebar), and Clear, which forgets Kestrel's own
+  history (folders visited, files opened through Kestrel, what the palette remembers) and leaves
+  Windows' Recent items alone (Home leaves out those from before the clearing).
+- **Tabs**: right-click a tab for Duplicate tab (with its history), Open in new window, Close
+  tab, Close other tabs and Close tabs to the right. Drag a tab out of its strip and let go: it
+  opens in a window of its own there, or, let go over another Kestrel window's tab strip (the
+  title bar's, or a pane's), moves into that window. A window whose last tab leaves closes.
+- **Libraries** ("Libraries" in the address bar, or the sidebar with "Show libraries"): Documents,
+  Music, Pictures, Videos and your own, read from their `.library-ms` files; a library lists the
+  items of all its folders as one folder, and New, Paste and drops go to its save folder.
+- **Network** ("Network" in the address bar): the computers Windows' network browsing finds (it
+  is asked on a thread of its own and waited for three seconds at most; most home networks
+  without SMB 1 answer with nothing, and the page says so), the network locations, and a
+  computer's page (`\\name`) of its shares, each opening as a folder. This PC's "..." menu, its
+  page's menu and the folder tree's This PC have Map network drive…, Disconnect network drive…
+  and Add a network location, which are Windows' own dialogs and wizard; a mapped drive's menu
+  has Disconnect.
+- **Zips take files**: drop files on a zip, or into a zip open in a tab, or paste there, and they
+  are added, as in Explorer. The new archive is written beside the old one and swapped in only
+  when complete; the old one goes to the Recycle Bin, so Ctrl+Z brings it back. An item of the
+  same name inside is replaced; zips with a password, and other kinds of archive, are not
+  changed.
+
 ## Cleanup recommendations and duplicate files
 
 The disk usage hub's Cleanup and Duplicates tabs work on the drive or folder the hub shows.
@@ -714,6 +753,7 @@ node e2e/archives.mjs       # compress, browse inside a zip, preview, Extract al
 node e2e/disk.mjs           # the disk usage hub on a scratch folder of known composition
 node e2e/cleanup.mjs        # cleanup recommendations and duplicates, in a scratch machine
 node e2e/navigation.mjs     # locations and archives in either pane, history, tabs, a window, the palette
+node e2e/parity2.mjs        # Explorer parity, second round: rows that never go blank, views, tabs, libraries, network, privacy, zips
 node e2e/dev.mjs stop
 ```
 
@@ -723,7 +763,7 @@ instead: it runs `tauri build` (no installer) with the slot's identity and start
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
 `shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`, `integration.mjs`,
 `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs`, `places.mjs`, `layout.mjs`,
-`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs` and `navigation.mjs` need a dev build,
+`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs`, `navigation.mjs` and `parity2.mjs` need a dev build,
 whose test hooks they use. A release build has the Windows menu's test hook only when started with
 `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
@@ -748,6 +788,20 @@ than performed, so nothing is ever dropped on another program. `shellmenu.mjs` a
 `integration.mjs` switch the app's development hook on, which makes the Windows menu helper
 list the menu instead of showing it; showing the real menu and the Open With dialog are manual
 checks.
+
+`parity2.mjs` needs a dev build. It samples the list on every animation frame, and watches every
+change to its rows in between, through refreshes, changes made by another program and re-sorts
+in four views, and fails on any row drawn without its item; it times a folder of 10,000 files,
+a key in the list and a search, against the plan's targets. Its libraries are `.library-ms`
+files it writes in its scratch folder (a development hook points the app at them), its network
+computers come from a development hook, and Map network drive, Disconnect network drive and Add
+a network location are recorded by a hook instead of shown (seeing Windows' own dialogs is a
+manual check, as is dragging a tab out with the real mouse: the suite lets a tab go through the
+same code with the pointer stood in for). It turns a scratch file compressed with `compact /c`.
+Clear history empties the slot's own database's history; Windows' Recent folder is only read,
+before and after. A zip of its own passes through the Recycle Bin (the original, and the
+additions an undo takes back) and is deleted from the bin at the end; the bin's other items are
+compared before and after.
 
 `navigation.mjs` is where the merged features meet in navigation: Home, This PC, the Recycle
 Bin and a zip it makes with `Compress-Archive` in either pane, Back, Forward and Up, Copy to
@@ -790,7 +844,9 @@ rename) and `locked.mjs` (a folder the account can't open) leave the clipboard a
 `KESTREL_E2E_RECYCLE=1`, `undo.mjs` also undoes a new folder and a deletion, which passes two
 items from a scratch folder named `kestrel-test-*` through the Recycle Bin and brings both
 back. The unit test `undo::tests::restores_recycled_items_from_the_recycle_bin` does the same
-with two tiny files named `kestrel-test-*` and runs by default, and the helper's CLI test
+with two tiny files named `kestrel-test-*` and runs by default (as do `archive::add`'s tests,
+which pass tiny zips named `kestrel-zip-test-*` through the bin, undo and redo an addition, and
+delete what is theirs from the bin when they end, passed or failed), and the helper's CLI test
 `invoking_copy_leaves_the_file_on_the_clipboard` replaces the clipboard's contents.
 `locked.mjs` and `integration.mjs` use `icacls` to remove, then restore, the permissions of
 one scratch folder.

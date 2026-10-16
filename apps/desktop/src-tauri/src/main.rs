@@ -21,6 +21,7 @@ mod lru;
 mod navigation;
 mod palette;
 mod parity;
+mod parity2;
 mod places;
 mod preview;
 mod previewview;
@@ -88,6 +89,10 @@ fn list_dir(
     let visibility = Visibility::from_request(show_hidden).with_protected(show_protected);
     let ticket = ticket.map(|id| archive::Ticket { jobs: &jobs, window: window.label(), id });
     if let Some(listing) = archive::list(&engine, &path, sort, visibility, ticket) {
+        return listing;
+    }
+    // A library (`shell:Libraries\Documents`) lists the folders it includes as one (parity2).
+    if let Some(listing) = parity2::libraries::list(&app, &window, &engine, &watcher, &path, sort, visibility, watch) {
         return listing;
     }
     if watch {
@@ -193,6 +198,8 @@ fn rename_item(window: Window, journal: State<Journal>, path: String, new_name: 
 /// Creates a folder with the first unused "New folder" name and returns the name it got.
 #[tauri::command(async)]
 fn new_folder(window: Window, journal: State<Journal>, parent: String) -> Result<String, String> {
+    // A library makes new things in its save folder, as in Explorer (parity2).
+    let parent = parity2::libraries::folder_for(&parent);
     archive::refuse_location(&parent)?;
     let name = fileops::unused_name(&parent, "New folder");
     let outcome = fileops::execute(Request::NewFolder { parent, name: name.clone() }, interactive(&window))?;
@@ -237,6 +244,13 @@ fn can_paste() -> bool {
 /// if there was nothing to paste or the user cancelled.
 #[tauri::command(async)]
 fn paste_items(window: Window, journal: State<Journal>, destination: String) -> Result<Vec<String>, String> {
+    let destination = parity2::libraries::folder_for(&destination);
+    // Files pasted into a zip open in a tab are added to it, as in Explorer (archive/add.rs);
+    // cut files are copied in, and stay where they were.
+    if archive::adds_to_zip(&destination) {
+        let Some(clip) = clipboard::files(owner(&window))? else { return Ok(Vec::new()) };
+        return archive::add_to(&window, &journal, &destination, clip.paths).map(|added| added.names);
+    }
     archive::refuse_location(&destination)?;
     let Some(clip) = clipboard::files(owner(&window))? else { return Ok(Vec::new()) };
     let kind = if clip.cut { Transfer::Move } else { Transfer::Copy };
@@ -262,6 +276,8 @@ fn show_properties(window: Window, path: String) -> Result<(), String> {
     if archive::is_entry(&path) {
         return Err("Items inside an archive have no Windows properties. The preview pane (Alt+P) shows their details.".into());
     }
+    // A library's properties are its own file's (parity2).
+    let path = parity2::libraries::properties_target(&path);
     let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
     let owner = owner(&window).map_or(std::ptr::null_mut(), |hwnd| hwnd as _);
     // SAFETY: `wide` is NUL-terminated and outlives the call; the shell shows the dialog on a
@@ -408,6 +424,9 @@ fn main() {
         .manage(palette)
         // This PC's drives, each asked about on a thread of its own (thispc.rs).
         .manage(Arc::new(thispc::Drives::default()))
+        // The Network location's computers, and tabs moving between windows (parity2).
+        .manage(Arc::new(parity2::network::Network::default()))
+        .manage(parity2::tabs::Handoffs::default())
         // `http://thumb.localhost/?p=<path>&s=<pixels>&m=<mtime>`: see thumbs.rs.
         .register_asynchronous_uri_scheme_protocol("thumb", move |_context, request, responder| {
             thumbs.handle(&request, responder)
@@ -587,6 +606,21 @@ fn main() {
             parity::appwindows::new_window,
             parity::appwindows::window_start,
             parity::appwindows::app_windows_dev,
+            parity2::libraries::libraries_list,
+            parity2::libraries::libraries_dev_folder,
+            parity2::network::network_map_drive,
+            parity2::network::network_disconnect_drive,
+            parity2::network::network_add_location,
+            parity2::network::network_computers,
+            parity2::network::network_shares,
+            parity2::network::network_places,
+            parity2::network::network_dev_record,
+            parity2::network::network_dev_take,
+            parity2::network::network_dev_computers,
+            parity2::tabs::tab_drop,
+            parity2::tabs::tab_arrival,
+            parity2::privacy::privacy_clear_history,
+            archive::archive_add,
             archive::archive_extract,
             archive::archive_compress,
             archive::archive_cancel,

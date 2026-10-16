@@ -10,5 +10,6 @@ import "./parity.css";
 import "./archives.css";
 import "./disk.css";
 import "./cleanup.css";
+import "./parity2.css";
 
 render(() => <App />, document.getElementById("root")!);

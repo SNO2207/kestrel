@@ -4,6 +4,7 @@ import { folderOptions, setFolderOptions, type StartLocation } from "../lib/fold
 import { setOption, showExtensions, showHidden } from "../lib/views";
 import { optionsOpen, setOptionsOpen } from "../parity";
 import { refresh, tabs } from "../state";
+import { PrivacyOptions, ViewOptions2 } from "./Parity2Options";
 
 /** Lists every tab's folder again, for options the engine applies (what is listed). */
 const relist = () => tabs.forEach((tab) => refresh(tab.id));
@@ -112,7 +113,9 @@ function Dialog(props: { onClose: () => void }) {
             }, "Files marked both hidden and system stay out even while hidden files are shown.")}
             {check("Hide extensions for known file types", () => !showExtensions(), (on) => setOption("extensions", !on))}
             {check("Show sync status", () => folderOptions().syncStatus, (on) => setFolderOptions({ syncStatus: on }), "In OneDrive and other synced folders.")}
+            <ViewOptions2 />
           </section>
+          <PrivacyOptions />
         </div>
         <div class="dialog-footer">
           <span class="options-spacer" />

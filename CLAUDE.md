@@ -118,6 +118,18 @@ Done and verified:
   disk usage hub's Cleanup and Duplicates tabs, on the hub's drive or folder; the palette's
   "Cleanup recommendations" and "Find duplicate files" open the hub there.
 
+- **Explorer parity, second round** (`src-tauri/src/parity2/`, `archive/add.rs`,
+  `kestrel_db::parity2`, `parity2.ts`, `parity2Setup.ts`, `lib/parity2Api.ts`, `Parity2Layer.tsx`,
+  `Parity2Options.tsx`, `LibrariesPage.tsx`, `LibrariesSection.tsx`, `NetworkPage.tsx`,
+  `TilePage.tsx`, `ItemCheck.tsx`, `TabMenu.ts`, `parity2.css`; `e2e/parity2.mjs`): lists that keep
+  their rows through a refresh or re-sort (`FileList.tsx` `stage`, no row drawn empty in 36
+  sampled swaps, the wait about 8 to 11 ms), compact view, item check boxes, Ctrl+Space and
+  Ctrl+arrows, icons instead of thumbnails, compressed and encrypted files in colour, hide empty
+  drives, the navigation pane hidden, Num Lock+plus and minus in the tree; Duplicate tab and the
+  tab menu, tabs dragged out to a new window or into another window's strip; Libraries and the
+  Network as special locations, Map and Disconnect network drive and Add a network location
+  (Windows' own dialogs); the privacy switches and Clear history; files dropped or pasted on a zip.
+
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette, then places, layout, parity, archives, disk and
 cleanup (integrated 2026-10-15). Every unit test and all 23 e2e suites pass there in a dev build
@@ -186,7 +198,25 @@ see README); what else Explorer does that Kestrel does not is listed in
   3.6 M entries), the git pool and cache, and the commands; `project-git` and
   `projects-changed` events tell the UI. The hub's styles live in `src/projects.css`.
 - Result sets: a listing or search produces a set id; the UI fetches rows by range. The UI
-  releases a set only after switching to its replacement (`show` in `state.ts`).
+  releases a set only once the tab's list draws its replacement: `show` in `state.ts` retires
+  the old set and `listShows` (the list's `onShows`) releases it.
+- What a list draws (`FileList.tsx`): the list keeps its own `shown` snapshot (listing,
+  revision, restore, groups, sort, query) and takes a new one from its props only once the rows
+  for the view, and the names of the groups in view, have been fetched (`stage`, `planFor`, which
+  reckons where the list will scroll to as the effect on `contentKey` does), then swaps all at
+  once. Inside the list, read `shown()`/`shownListing()`, never `props.listing`. The selection it
+  reports carries the set it belongs to (`reportSelection`'s `set`), and `state.ts` acts on that
+  set (`selected`, `carryMarks`), which stays alive until the swap. A selection made on the rows
+  drawn while the new ones load (a right-click as a refresh arrives) is carried into the new
+  listing before the swap (`api.carryMarks` from the set drawn); a re-sort keeps its set, whose
+  old order is gone, so its marks stand as `sort_set` gave them.
+- `src-tauri/src/parity2/`: `libraries.rs` (the `.library-ms` files, the `list_dir` hook for
+  `shell:Libraries\<name>`, `folder_for` used by every command given a folder: New, Paste, drops,
+  Open in Terminal; `properties_target`), `network.rs` (the dialogs, `Network::browse` with a
+  `Provider` trait, shares, network places, development hooks), `tabs.rs` (`tab_drop`: the
+  pointer's window by `WindowFromPoint`, `kestrel:tab-arrive` asked of that window, answered by
+  `tab_arrival`; `appwindows::open_window` places a new window), `privacy.rs`. Adding to a zip is
+  `archive/add.rs` (`archive::add_to`, `adds_to_zip` used by `paste_items`).
 - Layout: every tab belongs to a pane (`Tab.pane`); each pane shows one of its tabs
   (`shownTab`), the active tab is the one the pane with the keyboard shows, and while two panes
   are shown both shown panels carry `.tab-panel.current` (only one `.active`). The active
@@ -218,8 +248,10 @@ see README); what else Explorer does that Kestrel does not is listed in
   address)` in `state.ts`, from every entry point (address bar, breadcrumb, sidebar, folder
   tree, palette, history, new tabs, new windows, the saved layout, workspaces, drops):
   - `resolveLocation(address)` (`lib/locations.ts`) first: a *special location* (Home, This PC,
-    the Recycle Bin; registered with `registerLocation` in `placesSetup.ts`) under any of its
-    spellings. `showLocation` keeps its canonical address in `Tab.path` and the history, with
+    the Recycle Bin; registered with `registerLocation` in `placesSetup.ts`; Libraries and the
+    Network, with a computer's page `\\NAME`, in `parity2Setup.ts`) under any of its
+    spellings. A location's `descendantCrumbs` gives the breadcrumb of addresses below it that
+    are listed as folders (a library, a share's folders). `showLocation` keeps its canonical address in `Tab.path` and the history, with
     `listing` null, and the tab's panel in App.tsx draws the location's `page` (given
     `LocationPageProps`: tab id, address, whether active, a revision bumped by Refresh, and
     `focusRef`) over the hidden file list, in whichever pane the tab is.
@@ -360,8 +392,9 @@ Git:
   (`Tab.failed` in `state.ts`), and Back shows that folder again rather than stepping through
   the history; tests that check a failed address should wait for the message to go.
 - Result sets live in the backend and the UI holds handles to them. A set is released only
-  after the tab has switched to its replacement (`show` in `src/state.ts`); releasing earlier
-  makes in-flight row requests look like a stale index.
+  after the tab's list draws its replacement (`show` retires it, `listShows` releases it, in
+  `src/state.ts`); releasing earlier makes in-flight row requests look like a stale index, and a
+  command on the selection the list still draws would find its set gone.
 - The folder watcher is armed before the folder is listed (`list_dir` in `main.rs`), so no
   change can fall between the two. Keep that order.
 - Avoid a CSS class named after a generic word on more than one component; `.search` on both
@@ -402,8 +435,11 @@ Git:
   above has moved in the same batch, and a listing that fails silently loses the change. A
   folder that turns up as new is listed too (`Sync::take_new_dirs`): it may have arrived with
   contents nothing else names.
-- A drop target read from the DOM must ignore rows still loading: a refreshed list fetches its
-  rows again, and for a few milliseconds they carry no `data-path` (`dragdrop.ts`, `LOADING`).
+- A drop target read from the DOM must ignore rows still loading: a row scrolled into view has
+  no `data-path` until its page arrives (`dragdrop.ts`, `LOADING`). A refreshed or re-sorted list
+  no longer blanks its rows (it keeps them until the new ones are in, `FileList.tsx` `stage`),
+  but a new listing reaches the DOM a few milliseconds after `tab.listing` changes: a test that
+  needs the new rows waits for them (`window.__kestrelSwaps` counts the swaps in dev builds).
 - WebView2 leaves `document.visibilityState` alone when a webview is hidden; e2e checks of the
   preview webview's visibility ask Windows (`e2e/windows.mjs`).
 - `dev.mjs stop` kills the app, so a setting saved in local storage just before may be lost;
@@ -546,6 +582,25 @@ Git:
 - A dev slot is `tauri dev`: saving any file under `src-tauri` rebuilds and restarts the app (and
   Vite reloads the page for front-end files), so every suite running then fails. Finish editing
   before starting the suites, even for test-only code.
+- The Recycle Bin keeps deletion times to the whole second, so an item recycled moments ago from
+  a path looks like an older one from the same path. An operation that recycles an item and
+  restores another to the same path (undoing a zip replaced in place, `archive/add.rs`) must find
+  the one to restore first: `fileops::run_in_turn` does, then runs the two as separate shell
+  operations (one doing both asks to confirm deleting "multiple items", even with confirmations
+  off). `undo.rs` sorts removals first and calls it.
+- The zip crate refuses to copy an entry whose extra fields it doesn't know (Windows' tar writes
+  Info-ZIP's Unix ones) unless built with `unreserved`, which `Cargo.toml` turns on for adding to
+  zips (`ZipWriter::raw_copy_file`).
+- A library's address (`shell:Libraries\Documents`) is listed like a folder but is none: commands
+  that take a folder map it with `parity2::libraries::folder_for` (its save folder), Properties
+  with `properties_target`. A new command that puts things in a folder given by the front end
+  does the same. Its rows carry their real paths.
+- A window asked to take a dragged tab (`kestrel:tab-arrive`) must answer with `tab_arrival`
+  within two seconds; the backend brings it forward (the page has no `set_focus` permission).
+  The e2e hook `__kestrelParity2.dropTab(id, { label, x, y })` stands in for the pointer.
+- Windows' computer browsing (`WNetOpenEnum`) finds nothing on most home networks (no SMB 1) and
+  may take many seconds to say so: the Network page waits three seconds at most
+  (`network::Network::browse`), and tests give it computers with `network_dev_computers`.
 - Windows' compression filter (WOF, `compact /exe`) hides its reparse point from user mode:
   attributes read 0x20 and `fsutil reparsepoint query` finds none. Only the file table (the
   broker's index) shows 0x620. Tests of such files set the attributes in the index.

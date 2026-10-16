@@ -537,21 +537,85 @@ fn forget_restored(ops: &[Op], done: &[(usize, Done)], bin_items: &HashMap<usize
     }
 }
 
+/// Performs `ops[..first]`, then the rest, as two shell operations, one after the other: what
+/// takes items away before what puts others back (undoing an archive replaced in place,
+/// `archive::add`, recycles the new one and restores the old one to the same path). Items to
+/// restore are found in the Recycle Bin before either runs: the bin keeps deletion times to
+/// the second, and an item recycled by the first moments before would look like the one wanted.
+/// One operation doing both asks to confirm the deletion of "multiple items". The second runs
+/// only if the first completed.
+pub fn run_in_turn(ops: Vec<Op>, first: usize, options: Options) -> Result<Outcome, String> {
+    if first == 0 || first >= ops.len() {
+        return run(ops, false, options);
+    }
+    std::thread::Builder::new()
+        .name("kestrel-fileop".into())
+        .spawn(move || run_phases(&ops, &[0..first, first..ops.len()], false, options))
+        .map_err(|e| e.to_string())?
+        .join()
+        .map_err(|_| "The file operation crashed".to_owned())?
+}
+
 fn run_on_this_thread(ops: &[Op], rename_on_collision: bool, options: Options) -> Result<Outcome, String> {
+    run_phases(ops, &[0..ops.len()], rename_on_collision, options)
+}
+
+/// Performs each range of `ops` as a shell operation of its own, in turn, stopping after one
+/// that was cancelled or skipped something; see [`run_in_turn`].
+fn run_phases(ops: &[Op], phases: &[std::ops::Range<usize>], rename_on_collision: bool, options: Options) -> Result<Outcome, String> {
     let describe = |e: windows::core::Error| e.message();
-    let erase = ops.iter().any(|op| matches!(op, Op::Erase { .. }));
-    let recycle = ops.iter().any(|op| matches!(op, Op::Recycle { .. }));
+    // SAFETY: COM is initialised for this thread before any COM call and uninitialised by
+    // `Apartment` after the last interface pointer is dropped.
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().map_err(describe)?;
+        let _apartment = Apartment;
+        // Items being restored are found in the Recycle Bin all at once, before anything runs.
+        let restores: Vec<usize> = (0..ops.len()).filter(|&at| matches!(ops[at], Op::Restore { .. })).collect();
+        let wanted: Vec<(String, Window)> = restores
+            .iter()
+            .filter_map(|&at| match &ops[at] {
+                Op::Restore { path, deleted } => Some((path.clone(), *deleted)),
+                _ => None,
+            })
+            .collect();
+        let found = if wanted.is_empty() { Vec::new() } else { recycle::find(&wanted).map_err(describe)? };
+        let mut found: HashMap<usize, Option<IShellItem>> = restores.into_iter().zip(found).collect();
+        let mut outcome = Outcome { completed: true, ..Outcome::default() };
+        for phase in phases {
+            let done = perform(ops, phase.clone(), &mut found, rename_on_collision, options)?;
+            outcome.done.extend(done.done);
+            outcome.missing.extend(done.missing);
+            outcome.completed = done.completed;
+            if !done.completed {
+                break;
+            }
+        }
+        Ok(outcome)
+    }
+}
+
+/// Performs `ops[phase]` as one shell operation, with the Recycle Bin items `found` for its
+/// restores, and reports exactly what happened.
+///
+/// # Safety
+/// COM must be initialised on the calling thread, as a single-threaded apartment.
+unsafe fn perform(
+    ops: &[Op],
+    phase: std::ops::Range<usize>,
+    found: &mut HashMap<usize, Option<IShellItem>>,
+    rename_on_collision: bool,
+    options: Options,
+) -> Result<Outcome, String> {
+    let describe = |e: windows::core::Error| e.message();
+    let erase = ops[phase.clone()].iter().any(|op| matches!(op, Op::Erase { .. }));
+    let recycle = ops[phase.clone()].iter().any(|op| matches!(op, Op::Recycle { .. }));
     if erase && recycle {
         return Err("An operation can't both recycle and erase items".into());
     }
     let started = now();
-    // SAFETY: COM is initialised for this thread before any COM call and uninitialised by
-    // `Apartment` after the last interface pointer is dropped; every pointer passed to the
-    // shell below outlives the call it is passed to.
+    // SAFETY: COM is initialised (guaranteed by the caller); every pointer passed to the shell
+    // below outlives the call it is passed to.
     unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().map_err(describe)?;
-        let _apartment = Apartment;
-
         let operation: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL).map_err(describe)?;
         let mut flags: FILEOPERATION_FLAGS = FOF_NOCONFIRMMKDIR | FOFX_ADDUNDORECORD;
         flags |= if erase { FOF_WANTNUKEWARNING } else { FOF_ALLOWUNDO };
@@ -572,17 +636,8 @@ fn run_on_this_thread(ops: &[Op], rename_on_collision: bool, options: Options) -
         let mut missing = Vec::new();
         // Where each item being restored sits in the Recycle Bin, by op.
         let mut bin_items: HashMap<usize, String> = HashMap::new();
-        // Items being restored are found in the Recycle Bin all at once.
-        let wanted: Vec<(String, Window)> = ops
-            .iter()
-            .filter_map(|op| match op {
-                Op::Restore { path, deleted } => Some((path.clone(), *deleted)),
-                _ => None,
-            })
-            .collect();
-        let mut found = if wanted.is_empty() { Vec::new() } else { recycle::find(&wanted).map_err(describe)? }.into_iter();
 
-        for (index, op) in ops.iter().enumerate() {
+        for (index, op) in ops.iter().enumerate().skip(phase.start).take(phase.len()) {
             let mut target_existed = None;
             let item = match op {
                 Op::Copy { source, folder, name } | Op::Move { source, folder, name } => {
@@ -624,7 +679,7 @@ fn run_on_this_thread(ops: &[Op], rename_on_collision: bool, options: Options) -
                     item
                 }
                 Op::Restore { path, .. } => {
-                    let Some(Some(entry)) = found.next() else {
+                    let Some(Some(entry)) = found.remove(&index) else {
                         missing.push(index);
                         continue;
                     };

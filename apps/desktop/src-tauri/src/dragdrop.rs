@@ -198,6 +198,8 @@ impl Dropped {
 /// The front end shows it while files are dragged over a folder.
 #[tauri::command(async)]
 pub fn drop_effect(paths: Vec<String>, destination: String, keys: Option<Keys>) -> &'static str {
+    // A library takes drops into its save folder (parity2).
+    let destination = crate::parity2::libraries::folder_for(&destination);
     let keys = test_keys(keys).unwrap_or_else(Keys::now);
     if keys.link() {
         return if paths.is_empty() || !Path::new(&destination).is_dir() { "none" } else { "link" };
@@ -216,6 +218,7 @@ pub fn drop_items(
     destination: String,
     keys: Option<Keys>,
 ) -> Result<Dropped, String> {
+    let destination = crate::parity2::libraries::folder_for(&destination);
     let keys = test_keys(keys).unwrap_or_else(keys_at_drop);
     if keys.link() {
         // Shortcuts to the items, wherever they are, even in the folder they are in.

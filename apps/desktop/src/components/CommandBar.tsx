@@ -17,6 +17,7 @@ import {
   toggleDetails,
   toggleFullScreen,
 } from "../parity";
+import { isZipListing, networkEntries, showsNetworkCommands } from "../parity2";
 import { focusedItem } from "../previewState";
 import { activeId, activeTab, setSortSpec, startsDescending } from "../state";
 import { redoLast, undoLast } from "../undo";
@@ -115,7 +116,10 @@ export function CommandBar(props: { runCommand: (command: ListCommand) => void; 
     if (!current) return [];
     const browsing = folder();
     const listed = current.listing !== null;
+    // This PC and the Network offer the network's commands first, as Explorer's "..." does (parity2.ts).
+    const network: MenuEntry[] = showsNetworkCommands(current.path) ? [...networkEntries(), "separator"] : [];
     return [
+      ...network,
       { label: "Undo", hint: "Ctrl+Z", run: () => undoLast(current.id) },
       { label: "Redo", hint: "Ctrl+Y", run: () => redoLast(current.id) },
       "separator",
@@ -185,7 +189,7 @@ export function CommandBar(props: { runCommand: (command: ListCommand) => void; 
       <span class="command-gap" />
       <Button icon="cut" label="Cut" title="Cut (Ctrl+X)" disabled={!changeable()} onClick={run("cut")} />
       <Button icon="copy" label="Copy" title="Copy (Ctrl+C)" disabled={selected() === 0} onClick={run("copy")} />
-      <Button icon="paste" label="Paste" title="Paste (Ctrl+V)" disabled={!folder() || !canPaste()} onClick={run("paste")} />
+      <Button icon="paste" label="Paste" title="Paste (Ctrl+V)" disabled={!(folder() || isZipListing(tab()?.listing)) || !canPaste()} onClick={run("paste")} />
       <Button icon="rename" label="Rename" title="Rename (F2)" disabled={!changeable()} onClick={() => renameSelection(activeId())} />
       <Button icon="delete" label="Delete" title="Delete (Del); Shift+Del deletes permanently" disabled={!changeable()} onClick={run("delete")} />
       <span class="command-gap" />

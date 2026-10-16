@@ -5,6 +5,7 @@ import { locationTitle } from "../lib/locations";
 import { MAX_SPLIT, MIN_SPLIT, focusPane, openFilter, resetSplit, setSplit, split, toggleSecondPane } from "../panes";
 import { activeId, activePane, activeTab, closePane, closeTab, dual, isSearch, openTab, revealTab, shownTab, tabsIn } from "../state";
 import { Icon } from "./Icon";
+import { openTabMenu, startTabDrag, tabDragClasses } from "./TabMenu";
 import { tabTitle } from "./TitleBar";
 
 const KEY_STEP = 0.02;
@@ -23,7 +24,7 @@ export function PaneBar(props: { pane: number }) {
           {(tab) => (
             <div
               class="tab pane-tab"
-              classList={{ active: tab.id === activeId(), shown: tab.id === shownTab(props.pane), "drop-target": isDropTab(tab.id) }}
+              classList={{ active: tab.id === activeId(), shown: tab.id === shownTab(props.pane), "drop-target": isDropTab(tab.id), ...tabDragClasses(tab.id) }}
               role="tab"
               data-tab-id={tab.id}
               aria-selected={tab.id === shownTab(props.pane)}
@@ -36,6 +37,9 @@ export function PaneBar(props: { pane: number }) {
                 // Middle-click closes, as in a browser.
                 if (event.button === 1) closeTab(tab.id);
               }}
+              // Explorer parity (parity2.ts): the tab's menu, and dragging it out of the strip.
+              onPointerDown={(event) => startTabDrag(tab.id, event)}
+              onContextMenu={(event) => openTabMenu(tab.id, event)}
             >
               <span class="tab-title">{tabTitle(tab)}</span>
               <button class="tab-close" aria-label="Close tab" onMouseDown={(event) => event.stopPropagation()} onClick={() => closeTab(tab.id)}>

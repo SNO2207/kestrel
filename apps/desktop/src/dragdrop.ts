@@ -20,6 +20,7 @@ import { baseName, parentPath } from "./lib/format";
 import { locationOf } from "./lib/locations";
 import { activateTab, activeTab, isSearch, navigate, notify, selectInFolder, tabs } from "./state";
 import { pinPaths } from "./shortcuts";
+import { addToZip } from "./parity2";
 
 export type DropTarget =
   /** A folder row in the list on screen; `tabId` is the tab whose list it is in. */
@@ -31,7 +32,12 @@ export type DropTarget =
   /** A tab, standing for the folder it shows. */
   | { kind: "tab"; path: string; tabId: number }
   /** The sidebar's pinned places, or one of their groups: a drop there pins the items. */
-  | { kind: "pin"; path: ""; group: number | null; name: string };
+  | { kind: "pin"; path: ""; group: number | null; name: string }
+  /**
+   * A zip: its row, or a zip (or a folder of one) open in a tab. A drop adds the files to it, as
+   * Explorer does (parity2.ts, `archive/add.rs`).
+   */
+  | { kind: "zip"; path: string; tabId?: number };
 
 export interface Dropped {
   effect: DropEffect;
@@ -102,10 +108,11 @@ function accepts(path: string): boolean {
 }
 
 /**
- * Stands for a row or item under the cursor whose data has not arrived yet. A refreshed list
- * fetches its rows again, and in the few milliseconds that takes they carry no path. Such a row
- * is not empty space: taking it for the open folder once sent files dropped on a folder row
- * into the folder around it instead.
+ * Stands for a row or item under the cursor whose data has not arrived yet: one just scrolled
+ * into view, whose page of rows is on its way, carries no path for a few milliseconds. (A
+ * refreshed or re-sorted list no longer does: it keeps its rows until the new ones are in,
+ * FileList.tsx.) Such a row is not empty space: taking it for the open folder once sent files
+ * dropped on a folder row into the folder around it instead.
  */
 const LOADING = Symbol("loading");
 /** How long a drop waits for the row under it to arrive before giving up. */
@@ -139,10 +146,20 @@ function targetAt(x: number, y: number): DropTarget | null | typeof LOADING {
   const panel = element.closest<HTMLElement>(".tab-panel.active, .tab-panel.current");
   if (!panel || !element.closest(".filelist")) return null;
   const tab = tabs.find((each) => each.id === Number(panel.dataset.panelTab)) ?? activeTab();
-  if (inArchive(tab?.listing)) return null;
   // A details row, or an item of the icon, list and tile views.
   const row = element.closest<HTMLElement>(".row[data-index], .view-item[data-index]");
   if (row && row.dataset.path === undefined) return LOADING;
+  // Inside an archive only a zip takes files, which are added to it (parity2.ts); the rest is
+  // read-only.
+  if (inArchive(tab?.listing)) {
+    if (!tab || !/\.zip$/i.test(tab.listing?.archive ?? "")) return null;
+    const path = row?.dataset.folder !== undefined && row?.dataset.path ? row.dataset.path : tab.path;
+    return accepts(path) ? { kind: "zip", path, tabId: tab.id } : null;
+  }
+  if (row && row.dataset.zip !== undefined && row.dataset.path) {
+    const path = row.dataset.path;
+    return accepts(path) ? { kind: "zip", path, tabId: tab?.id } : null;
+  }
   if (row && row.dataset.folder !== undefined) {
     // A folder that can't take the drop (one being dragged, say) doesn't pass it on to the
     // folder around it, as in Explorer.
@@ -179,7 +196,8 @@ function retarget() {
   clearTimeout(session.spring);
   // Hovering a folder, place or tab opens it; the open folder itself and the pinned places
   // as a whole have nothing to open.
-  const opens = next && next.kind !== "folder" && next.kind !== "pin";
+  // A zip takes files without opening (parity2.ts), as in Explorer.
+  const opens = next && next.kind !== "folder" && next.kind !== "pin" && next.kind !== "zip";
   session.spring = opens ? window.setTimeout(() => springOpen(next), SPRING_MS) : undefined;
 }
 
@@ -233,6 +251,8 @@ function refreshHint() {
   const current = target();
   if (!session || !current || current.kind === "pin") return;
   session.hintAt = performance.now();
+  // Files dropped on a zip are always copied into it.
+  if (current.kind === "zip") return void setEffect("copy");
   api
     .dropEffect(session.paths, current.path, testKeys)
     .then((next) => {
@@ -297,6 +317,10 @@ async function drop(paths: string[], x: number, y: number): Promise<Dropped> {
     await pinPaths(paths, destination.group);
     return { effect: "link", names: [] };
   }
+  if (destination.kind === "zip") {
+    const added = await addToZip(destination.path, paths);
+    return added ? { effect: "copy", names: added.names } : NOTHING;
+  }
   try {
     const result = await api.dropItems(paths, destination.path, testKeys);
     if (result.effect !== "none") selectInFolder(destination.path, result.names);
@@ -336,7 +360,7 @@ export function dropHint(): { verb: string; name: string; to?: string } | null {
 
 export const isDropRow = (path: string | undefined) => {
   const current = target();
-  return current?.kind === "row" && path !== undefined && comparable(current.path) === comparable(path);
+  return (current?.kind === "row" || current?.kind === "zip") && path !== undefined && comparable(current.path) === comparable(path);
 };
 export const isDropPlace = (path: string) => {
   const current = target();

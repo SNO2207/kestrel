@@ -1,4 +1,4 @@
-import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
+import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
 
 import { api, iconUrl, type Listing, type Marks, type Row, type RowRange, type SortKey, type SortSpec } from "../lib/api";
 import { LOCKED_MESSAGE, checkFolders, foldersOf, isLocked } from "../lib/access";
@@ -18,7 +18,7 @@ import {
   type ColumnId,
   type ColumnKind,
 } from "../lib/columns";
-import { VIEW_MODES, displayName, listingLocation, setViewMode, showExtensions, viewModeAt } from "../lib/views";
+import { VIEW_MODES, displayName, listingLocation, setViewMode, showExtensions, viewModeAt, type ViewMode } from "../lib/views";
 import { archiveMenu, inArchive, notifyReadOnly, type ArchiveCommand } from "../archives";
 import { ColumnHeaders } from "./ColumnHeaders";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
@@ -33,6 +33,8 @@ import { folderOptions } from "../lib/folderOptions";
 import { inverted, type SelectControl } from "../lib/selectionOps";
 import { activeId } from "../state";
 import { newEntries, openInTerminal, openNewWindow, revealInFolder } from "../parity";
+import { compactView, isZipListing, isZipRow, itemCheckBoxes, ntfsTint } from "../parity2";
+import { ItemCheck } from "./ItemCheck";
 import { SyncGlyph } from "./SyncGlyph";
 
 const PAGE_SIZE = 128;
@@ -108,7 +110,10 @@ interface Props {
   onSort: (key: SortKey) => void;
   onOpen: (row: Row, inNewTab: boolean) => void;
   onStale: () => void;
-  onSelectionChange: (selection: Selection, focus: number) => void;
+  /** The selection and focused row, and the set of the rows drawn, which they are rows of. */
+  onSelectionChange: (selection: Selection, focus: number, set: number | undefined) => void;
+  /** The list draws the rows of `set` now (none: no listing): the sets drawn before can go. */
+  onShows?: (set: number | undefined) => void;
   onPendingDone: () => void;
   onRenaming: (active: boolean) => void;
   onRename: (row: Row, name: string) => void;
@@ -128,6 +133,27 @@ interface Props {
 }
 
 const sameRows = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((value, i) => value === b[i]);
+
+/**
+ * What the list draws: a listing and what came with it. A new listing (a refresh, a re-sort, a
+ * new folder) takes this place only once its rows for the view have arrived, so the rows on
+ * screen never go blank while it loads (see `stage`).
+ */
+interface Shown {
+  listing: Listing | null;
+  revision: number;
+  restore: Marks | null;
+  groups: number[] | null;
+  sort: SortSpec;
+  query: string;
+}
+
+/** The longest a new listing waits for its rows before it is drawn as rows still loading. */
+const STAGE_LIMIT_MS = 400;
+
+/** Development builds keep how long each new listing waited for its rows, for the tests. */
+const swaps: { kind: string; waited: number; at: number }[] = [];
+if (import.meta.env.DEV) Object.assign(window, { __kestrelSwaps: swaps });
 
 export function FileList(props: Props) {
   let viewport!: HTMLDivElement;
@@ -164,18 +190,30 @@ export function FileList(props: Props) {
   let viewId = "";
   let sortId = "";
 
-  const total = () => props.listing?.total ?? 0;
-  const isSearch = () => props.listing?.path === "";
+  /** What the props say the list should draw, read now. */
+  const wanted = (): Shown => ({
+    listing: props.listing,
+    revision: props.revision,
+    restore: props.restore,
+    groups: props.groups ?? null,
+    sort: props.sort,
+    query: props.query,
+  });
+  /** What the list draws (see `stage`). */
+  const [shown, setShown] = createSignal<Shown>(untrack(wanted));
+  const shownListing = () => shown().listing;
+
+  const total = () => shownListing()?.total ?? 0;
+  const isSearch = () => shownListing()?.path === "";
   const columnKind = (): ColumnKind => (isSearch() ? "search" : "folder");
   const columnOrder = () => columnSet(columnKind()).order;
   /** The view mode remembered for the folder, or the search, on screen. */
-  const mode = () => viewModeAt(listingLocation(props.listing));
-  const grouped = () => (props.groups?.length ?? 0) > 0;
-  const layout = createMemo(
-    () => geometry(mode(), width(), grouped() && mode() === "list" ? height() - GROUP_BAND : height()),
-    undefined,
-    { equals: sameGeometry },
-  );
+  const mode = () => viewModeAt(listingLocation(shownListing()));
+  const grouped = () => (shown().groups?.length ?? 0) > 0;
+  /** The geometry of a view in this list's size: compact view packs every view tighter. */
+  const geometryOf = (viewMode: ViewMode, groupedNow: boolean) =>
+    geometry(viewMode, width(), groupedNow && viewMode === "list" ? height() - GROUP_BAND : height(), compactView());
+  const layout = createMemo(() => geometryOf(mode(), grouped()), undefined, { equals: sameGeometry });
   const vertical = () => layout().axis === "y";
   /** The viewport's extent along the scroll axis. */
   const extent = () => (vertical() ? height() : width());
@@ -209,7 +247,7 @@ export function FileList(props: Props) {
 
   const list = createMemo(
     () =>
-      new ListLayout(layout(), total(), grouped() ? props.groups! : null, isCollapsed, {
+      new ListLayout(layout(), total(), grouped() ? shown().groups! : null, isCollapsed, {
         header: vertical() ? GROUP_HEADER : 0,
         gap: vertical() ? GROUP_GAP : 3 * GROUP_GAP,
       }),
@@ -222,7 +260,7 @@ export function FileList(props: Props) {
   };
   const maxOffset = () => Math.max(0, listExtent() - extent());
   /** Identifies the rows currently behind the list; responses for anything else are dropped. */
-  const contentKey = () => `${props.listing?.set}:${props.revision}`;
+  const contentKey = () => `${shownListing()?.set}:${shown().revision}`;
   /**
    * The loaded pages for the current content. The cache empties itself the first time it is
    * read after the content changes, so no reader can see rows from a previous listing no
@@ -300,7 +338,7 @@ export function FileList(props: Props) {
   createEffect(
     on(layout, (_next, previous) => {
       if (!previous) return;
-      const before = new ListLayout(previous, total(), grouped() ? props.groups! : null, isCollapsed, {
+      const before = new ListLayout(previous, total(), grouped() ? shown().groups! : null, isCollapsed, {
         header: previous.axis === "y" ? GROUP_HEADER : 0,
         gap: previous.axis === "y" ? GROUP_GAP : 3 * GROUP_GAP,
       });
@@ -321,7 +359,7 @@ export function FileList(props: Props) {
   /** Selects the items an operation just created, once the listing that contains them is in. */
   const selectPending = async () => {
     const pending = props.pending;
-    const listing = props.listing;
+    const listing = shownListing();
     if (!pending || !listing) return;
     const key = contentKey();
     const ranges = await api.locateNames(listing.set, pending.names);
@@ -340,15 +378,15 @@ export function FileList(props: Props) {
     on(contentKey, () => {
       resetTypeAhead();
       setRenaming(-1);
-      const restore = props.restore;
+      const restore = shown().restore;
       setSelection(restore ? Selection.of(restore.ranges) : Selection.empty);
       setFocused(restore?.focus ?? -1);
       anchor = restore?.focus ?? -1;
 
       // A refresh of the same folder or query keeps its place. A re-sort follows the focused
       // item, since its old position is meaningless. Anything else starts at the top.
-      const view = isSearch() ? `query:${props.query}` : `folder:${props.listing?.path}`;
-      const order = `${props.sort.key}:${props.sort.desc}`;
+      const view = isSearch() ? `query:${shown().query}` : `folder:${shownListing()?.path}`;
+      const order = `${shown().sort.key}:${shown().sort.desc}`;
       const refreshed = view === viewId;
       // An open menu acts on the selection, which a refresh preserves, so it only needs to
       // close when the view itself changes.
@@ -364,8 +402,172 @@ export function FileList(props: Props) {
     }),
   );
 
-  createEffect(() => props.onSelectionChange(selection(), focused()));
+  createEffect(() => props.onSelectionChange(selection(), focused(), shownListing()?.set));
   createEffect(() => props.onRenaming(renaming() >= 0));
+
+  // ---------- a new listing takes the place of the one drawn ----------
+
+  /**
+   * Bumped for every listing staged; a staging that finds it moved on has been overtaken by a
+   * newer listing and draws nothing.
+   */
+  let staging = 0;
+
+  /**
+   * Where the list will be scrolled to, and the rows it will draw, once `next` is drawn: the
+   * same reckoning as the effect on `contentKey` makes after the swap. A refresh keeps its place,
+   * a re-sort follows the focused item, anything else starts at the top.
+   */
+  const planFor = (next: Shown, listing: Listing, labels: Map<number, GroupInfo>): { offset: number; rows: number[]; groups: number[] } => {
+    const nextGrouped = (next.groups?.length ?? 0) > 0;
+    const g = geometryOf(viewModeAt(listingLocation(listing)), nextGrouped);
+    const along = g.axis === "y";
+    const span = along ? height() : width();
+    const view = listing.path === "" ? `query:${next.query}` : `folder:${listing.path}`;
+    const refreshed = view === viewId;
+    const shut = refreshed ? collapsed() : new Set<string>();
+    const shutAt = (index: number) => {
+      const label = labels.get(index)?.label;
+      return label !== undefined && shut.has(label);
+    };
+    const planned = new ListLayout(g, listing.total, nextGrouped ? next.groups : null, shutAt, {
+      header: along ? GROUP_HEADER : 0,
+      gap: along ? GROUP_GAP : 3 * GROUP_GAP,
+    });
+    const most = Math.max(0, planned.extent - span);
+    const order = `${next.sort.key}:${next.sort.desc}`;
+    const focus = next.restore?.focus ?? -1;
+    let at = refreshed && (order === sortId || focus >= 0) ? Math.min(offset(), most) : 0;
+    if (refreshed && order !== sortId && focus >= 0 && focus < listing.total) {
+      let start = planned.lineStart(focus);
+      const slot = planned.slotOfRow(focus);
+      if (nextGrouped && along && start === slot.items) start = slot.start;
+      const end = planned.lineStart(focus) + (slot.collapsed ? GROUP_HEADER : g.lineSize);
+      if (start < at) at = start;
+      else if (end > at + span) at = end - span;
+      at = Math.min(Math.max(0, at), most);
+    }
+    // A margin beyond what is drawn, in case the place comes out a little different.
+    const blocks = planned.blocks(at - OVERSCAN_PX - span, at + 2 * span + OVERSCAN_PX);
+    return {
+      offset: at,
+      rows: blocks.flatMap((block) => planned.rowsOf(block.slot, block.firstLine, block.lastLine)),
+      groups: blocks.map((block) => block.slot.index),
+    };
+  };
+
+  /** Draws `next`, with the rows and group names fetched for it, all at once. */
+  const commit = (next: Shown, fetched: Map<number, Row[]> | null, labels: Map<number, GroupInfo> | null, kind: string, began: number) => {
+    const key = `${next.listing?.set}:${next.revision}`;
+    batch(() => {
+      if (fetched) {
+        cachedFor = key;
+        loadedPages.clear();
+        requested.clear();
+        reportedStale = false;
+        fetched.forEach((rows, page) => loadedPages.set(page, rows));
+      }
+      if (labels) {
+        headersFor = key;
+        headers.clear();
+        headersAsked.clear();
+        labels.forEach((header, index) => {
+          headers.set(index, header);
+          headersAsked.add(index);
+        });
+      }
+      setShown(next);
+      setLoadedTick((tick) => tick + 1);
+      setHeaderTick((tick) => tick + 1);
+    });
+    props.onShows?.(next.listing?.set);
+    if (import.meta.env.DEV) {
+      swaps.push({ kind, waited: performance.now() - began, at: Date.now() });
+      if (swaps.length > 200) swaps.splice(0, swaps.length - 200);
+    }
+  };
+
+  /**
+   * A new listing for the list: drawn once its rows for the view, and the names of the groups in
+   * view, have arrived, and until then the rows drawn stay as they are. A refreshed folder that
+   * changes often (Downloads during a download) so never flashes blank rows. A list that is not
+   * on screen has nothing to keep up and draws the listing at once.
+   */
+  const stage = (next: Shown) => {
+    const generation = ++staging;
+    const began = performance.now();
+    const before = untrack(shown);
+    const kind = next.listing?.set === before.listing?.set ? "re-sort" : before.listing?.path === next.listing?.path ? "refresh" : "new";
+    const listing = next.listing;
+    if (!listing || listing.total === 0 || height() === 0 || width() === 0) return commit(next, null, null, kind, began);
+    const current = () => generation === staging;
+    // The selection the new listing's marks were carried from; one made on the rows drawn while
+    // the new rows load is carried over again before the swap.
+    const drawnSet = before.listing?.set;
+    let seen = { selection: untrack(selection), focus: untrack(focused) };
+    const giveUp = window.setTimeout(() => {
+      // A listing whose rows don't come in time is drawn with rows still loading.
+      if (current()) {
+        staging++;
+        commit(next, null, null, `${kind} (late)`, began);
+      }
+    }, STAGE_LIMIT_MS);
+    void (async () => {
+      const labels = new Map<number, GroupInfo>();
+      const nextGrouped = (next.groups?.length ?? 0) > 0;
+      try {
+        // With groups folded away, where everything goes depends on the groups' names.
+        if (nextGrouped && untrack(collapsed).size > 0) {
+          const found = await layoutApi.groupHeaders(listing.set, 0, HEADER_BATCH);
+          found.forEach((header, index) => labels.set(index, header));
+        }
+        if (!current()) return;
+        const plan = untrack(() => planFor(next, listing, labels));
+        // The rows drawn now too: the swap redraws them with the new listing's rows at those
+        // places for the moment before the list scrolls to where it goes (a re-sort follows the
+        // focused item), and none of them must come up empty even then.
+        const drawnNow = untrack(visibleRows).filter((row) => row < listing.total);
+        const wantedPages = [...new Set([...plan.rows, ...drawnNow].map((row) => Math.floor(row / PAGE_SIZE)))];
+        const missingGroups = nextGrouped ? plan.groups.filter((index) => !labels.has(index)) : [];
+        const [fetched] = await Promise.all([
+          Promise.all(wantedPages.map((page) => api.rows(listing.set, page * PAGE_SIZE, PAGE_SIZE).then((rows) => [page, rows] as const))),
+          missingGroups.length > 0
+            ? layoutApi
+                .groupHeaders(listing.set, Math.min(...missingGroups), Math.max(...missingGroups) - Math.min(...missingGroups) + 1)
+                .then((found) => found.forEach((header, i) => labels.set(Math.min(...missingGroups) + i, header)))
+            : Promise.resolve(),
+        ]);
+        if (!current()) return;
+        // A click or key on the rows drawn meanwhile changed the selection: it follows its items
+        // into the new listing (a re-sort keeps its set, whose old order is gone, so not then).
+        let restore = next.restore;
+        while (drawnSet !== undefined && drawnSet !== listing.set && (untrack(selection) !== seen.selection || untrack(focused) !== seen.focus)) {
+          seen = { selection: untrack(selection), focus: untrack(focused) };
+          const marks = { ranges: seen.selection.ranges as RowRange[], focus: seen.focus >= 0 ? seen.focus : null };
+          const carried = await api.carryMarks(drawnSet, listing.set, marks).catch(() => null);
+          if (!current()) return;
+          if (!carried) break;
+          restore = carried;
+        }
+        clearTimeout(giveUp);
+        commit({ ...next, restore }, new Map(fetched), nextGrouped ? labels : null, kind, began);
+      } catch {
+        // The set is gone already (the index was replaced): drawn as it is, the rows report it.
+        if (!current()) return;
+        clearTimeout(giveUp);
+        commit(next, null, null, kind, began);
+      }
+    })();
+  };
+
+  createEffect(
+    on([() => props.listing, () => props.revision], ([listing, revision]) => {
+      const now = untrack(shown);
+      if (listing === now.listing && revision === now.revision) return;
+      stage(untrack(wanted));
+    }),
+  );
+  onCleanup(() => void staging++);
 
   /** The groups that reach into the view, with the lines of each in it. */
   const blocks = createMemo(() => list().blocks(offset() - OVERSCAN_PX, offset() + extent() + OVERSCAN_PX));
@@ -417,11 +619,11 @@ export function FileList(props: Props) {
   // by type sends a few dozen names, not thousands. With any group collapsed, every name is
   // needed to place the groups, and all are asked for.
   createEffect(() => {
-    const listing = props.listing;
+    const listing = shownListing();
     if (!listing || !grouped()) return;
     const key = contentKey();
     const cache = groupCache();
-    const count = props.groups!.length;
+    const count = shown().groups!.length;
     const wanted = collapsed().size > 0 ? Array.from({ length: Math.min(count, HEADER_BATCH) }, (_, i) => i) : shownGroups();
     const missing = wanted.filter((index) => !cache.has(index) && !headersAsked.has(index));
     if (missing.length === 0) return;
@@ -451,7 +653,7 @@ export function FileList(props: Props) {
 
   // Git badges, in a folder inside a repository, are likewise asked for the rows on screen only.
   createEffect(() => {
-    const listing = props.listing;
+    const listing = shownListing();
     // Search results span repositories; items inside an archive are not git's.
     if (!listing || isSearch() || inArchive(listing)) return;
     const shown: Row[] = [];
@@ -465,7 +667,7 @@ export function FileList(props: Props) {
   const badgeOf = (row: Row | undefined) => (isSearch() ? undefined : gitBadge(row));
 
   createEffect(() => {
-    const listing = props.listing;
+    const listing = shownListing();
     if (!listing || total() === 0) return;
     const key = contentKey();
     const loaded = pages();
@@ -536,7 +738,7 @@ export function FileList(props: Props) {
   /** Ctrl+wheel steps through the view sizes, as in Explorer: up for larger, down for smaller. */
   const zoom = (event: WheelEvent) => {
     event.preventDefault();
-    const location = listingLocation(props.listing);
+    const location = listingLocation(shownListing());
     zoomTravel += event.deltaY;
     if (location === null || Math.abs(zoomTravel) < ZOOM_STEP) return;
     const at = VIEW_MODES.findIndex((info) => info.mode === mode());
@@ -596,7 +798,7 @@ export function FileList(props: Props) {
   let renameWhenLoaded: { row: number; key: string } | null = null;
 
   const startRename = () => {
-    if (inArchive(props.listing)) return notifyReadOnly();
+    if (inArchive(shownListing())) return notifyReadOnly();
     const row = soleRow();
     if (row < 0) return;
     reveal(row);
@@ -626,7 +828,7 @@ export function FileList(props: Props) {
   };
 
   const jumpToTyped = async (char: string) => {
-    const listing = props.listing;
+    const listing = shownListing();
     if (!listing || total() === 0) return;
     const now = performance.now();
     const letter = char.toLowerCase();
@@ -683,7 +885,7 @@ export function FileList(props: Props) {
     // Inside an archive the menus are its own read-only ones; elsewhere extract and compress
     // entries join the item menu (archives.ts).
     const archive = archiveMenu({
-      listing: props.listing,
+      listing: shownListing(),
       sole,
       count,
       run: command,
@@ -725,7 +927,9 @@ export function FileList(props: Props) {
       ...moreOptions(true),
     ];
     const folderExtras: MenuEntry[] = [...extraFolder, ...(extraFolder.length > 0 ? (["separator"] as MenuEntry[]) : [])];
-    const forFolder: MenuEntry[] = archive.folder ? [...folderExtras, ...archive.folder] : [
+    // A zip takes what is pasted into it, as in Explorer (parity2.ts).
+    const zipPaste: MenuEntry[] = isZipListing(shownListing()) ? [{ label: "Paste", hint: "Ctrl+V", disabled: !canPaste, run: command("paste") }, "separator"] : [];
+    const forFolder: MenuEntry[] = archive.folder ? [...folderExtras, ...zipPaste, ...archive.folder] : [
       ...folderExtras,
       { label: "New folder", hint: "Ctrl+Shift+N", disabled: !browsing, run: command("new-folder") },
       // Every other type Windows offers, in a menu of its own, as Explorer's New submenu.
@@ -742,7 +946,14 @@ export function FileList(props: Props) {
       ...redo,
       "separator",
       { label: "Refresh", hint: "F5", run: command("refresh") },
-      { label: "Open in Terminal", disabled: !browsing, run: () => props.listing && openInTerminal(props.listing.path) },
+      {
+        label: "Open in Terminal",
+        disabled: !browsing,
+        run: () => {
+          const listing = shownListing();
+          if (listing) openInTerminal(listing.path);
+        },
+      },
       "separator",
       { label: "Properties", hint: "Alt+Enter", disabled: !browsing, run: command("folder-properties") },
       ...moreOptions(false),
@@ -800,6 +1011,34 @@ export function FileList(props: Props) {
       if (total() > 0) setSelection(Selection.range(0, total() - 1));
       return;
     }
+    // Ctrl+Space selects or deselects the focused item, and Ctrl with the arrow keys (or Home,
+    // End, Page Up and Page Down) moves the focus without touching the selection, as in Explorer.
+    if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+      if (event.key === " ") {
+        event.preventDefault();
+        const at = current >= 0 ? current : total() > 0 ? 0 : -1;
+        if (at < 0) return;
+        if (props.pending) props.onPendingDone();
+        setSelection(selection().toggle(at));
+        setFocused(at);
+        anchor = at;
+        reveal(at);
+        return;
+      }
+      const { perLine, lineSize } = layout();
+      const pageLines = Math.max(1, Math.floor(extent() / lineSize) - 1);
+      const moved = grouped()
+        ? groupedKeyTarget(event.key, current, list(), pageLines)
+        : keyTarget(event.key, current, total(), layout(), pageLines * perLine);
+      if (moved !== null) {
+        event.preventDefault();
+        if (moved >= 0) {
+          setFocused(moved);
+          reveal(moved);
+        }
+        return;
+      }
+    }
     if (event.ctrlKey || event.altKey || event.metaKey) return;
     const isCharacter = event.key.length === 1 && event.key !== " ";
     if (!isCharacter) resetTypeAhead();
@@ -829,7 +1068,7 @@ export function FileList(props: Props) {
   };
 
   const sizeBar = (row: Row) => {
-    const max = props.listing?.max_size ?? 0;
+    const max = shownListing()?.max_size ?? 0;
     if (max <= 0) return 0;
     // Strictly proportional: an item too small to register gets no bar rather than a tick.
     const share = (row.size / max) * 100;
@@ -852,6 +1091,17 @@ export function FileList(props: Props) {
     }
     if (event.button !== 0 || event.target instanceof HTMLInputElement) return;
     resetTypeAhead();
+    // An item's check box (View > Show > Item check boxes) adds it to the selection or takes it
+    // out, as Ctrl+click does, and never opens or drags it.
+    if ((event.target as Element).closest?.(".item-check")) {
+      event.preventDefault();
+      if (props.pending) props.onPendingDone();
+      setSelection(selection().toggle(index));
+      setFocused(index);
+      anchor = index;
+      viewport.focus();
+      return;
+    }
     const mode = { extend: event.shiftKey, toggle: event.ctrlKey };
     // A press on a selected item may start a drag of the whole selection, so narrowing the
     // selection to that item, or toggling it off, waits until the button comes up without a drag.
@@ -861,7 +1111,7 @@ export function FileList(props: Props) {
     const opens = folderOptions().singleClick && !event.shiftKey && !event.ctrlKey;
     followPress(event, {
       drag: () => {
-        const listing = props.listing;
+        const listing = shownListing();
         if (listing && selection().count > 0) void dragOut(listing.set, selection().ranges as RowRange[]);
       },
       click: () => {
@@ -871,7 +1121,7 @@ export function FileList(props: Props) {
     });
   };
   const onItemDblClick = (index: number, event: MouseEvent) => {
-    if (!(event.target instanceof HTMLInputElement)) open(index);
+    if (!(event.target instanceof HTMLInputElement) && !(event.target as Element).closest?.(".item-check")) open(index);
   };
   const onItemContextMenu = (index: number, event: MouseEvent) => {
     event.preventDefault();
@@ -910,7 +1160,7 @@ export function FileList(props: Props) {
     event.stopPropagation();
     const shut = isCollapsed(index);
     const setAll = async (close: boolean) => {
-      const listing = props.listing;
+      const listing = shownListing();
       if (!listing || !close) return setCollapsed(new Set<string>());
       const all = await layoutApi.groupHeaders(listing.set, 0, HEADER_BATCH).catch(() => []);
       setCollapsed(new Set(all.map((header) => header.label)));
@@ -1041,6 +1291,9 @@ export function FileList(props: Props) {
       case "name":
         return (
           <div class="cell name">
+            <Show when={itemCheckBoxes()}>
+              <ItemCheck checked={selection().has(index)} />
+            </Show>
             <img src={iconUrl(data())} width="16" height="16" alt="" draggable={false} />
             <Show when={renaming() === index} fallback={<span class="label">{displayName(data(), showExtensions())}</span>}>
               <input
@@ -1106,7 +1359,13 @@ export function FileList(props: Props) {
   return (
     <div
       class="filelist"
-      classList={{ results: isSearch(), grouped: grouped(), "single-click": folderOptions().singleClick }}
+      classList={{
+        results: isSearch(),
+        grouped: grouped(),
+        "single-click": folderOptions().singleClick,
+        compact: compactView(),
+        checkboxes: itemCheckBoxes(),
+      }}
       data-view={mode()}
       style={{ "--columns": columnTemplate(columnKind()) }}
     >
@@ -1207,6 +1466,8 @@ export function FileList(props: Props) {
                                 dimmed: row()?.hidden || locked() || badgeOf(row())?.ignored,
                                 locked: locked(),
                                 "drop-target": isDropRow(row()?.path),
+                                "ntfs-compressed": ntfsTint(row()?.attrs) === "compressed",
+                                "ntfs-encrypted": ntfsTint(row()?.attrs) === "encrypted",
                               }}
                               title={locked() ? LOCKED_MESSAGE : undefined}
                               role="row"
@@ -1215,6 +1476,7 @@ export function FileList(props: Props) {
                               data-index={index}
                               data-path={row()?.path}
                               data-folder={row()?.dir ? "" : undefined}
+                              data-zip={isZipRow(row()) ? "" : undefined}
                               onMouseDown={(event) => onItemMouseDown(index, event)}
                               onDblClick={(event) => onItemDblClick(index, event)}
                               onContextMenu={(event) => onItemContextMenu(index, event)}
@@ -1242,6 +1504,7 @@ export function FileList(props: Props) {
                             dropTarget={isDropRow(rowAt(index)?.path)}
                             git={badgeOf(rowAt(index))}
                             loadThumbs={!scrolling()}
+                            checkbox={itemCheckBoxes()}
                             onMouseDown={(event) => onItemMouseDown(index, event)}
                             onDblClick={(event) => onItemDblClick(index, event)}
                             onContextMenu={(event) => onItemContextMenu(index, event)}
@@ -1271,13 +1534,13 @@ export function FileList(props: Props) {
           )}
         </Show>
 
-        <Show when={props.listing && total() === 0 && !props.error}>
+        <Show when={shownListing() && total() === 0 && !props.error}>
           <div class="list-empty">
             <Show
               when={(props.filter ?? "").trim() !== ""}
               fallback={
                 <Show when={isSearch()} fallback={<p>This folder is empty.</p>}>
-                  <p>Nothing matches “{props.query}”.</p>
+                  <p>Nothing matches “{shown().query}”.</p>
                   <p class="hint">
                     Try fewer words, or filters such as <code>ext:pdf</code>, <code>size:&gt;100mb</code> or{" "}
                     <code>dm:thisweek</code>.

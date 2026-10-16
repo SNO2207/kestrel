@@ -122,6 +122,7 @@ pub fn make_shortcut(target: &str, folder: &str, name: &str) -> Result<std::path
 /// target), records it for undo, and returns the name of the `.lnk` file.
 #[tauri::command(async)]
 pub fn new_shortcut(journal: State<Journal>, folder: String, target: String, name: Option<String>) -> Result<String, String> {
+    let folder = crate::parity2::libraries::folder_for(&folder);
     let link = make_shortcut(&target, &folder, name.as_deref().unwrap_or(""))?;
     journal.record(&created(&link));
     Ok(fileops::file_name(&link.display().to_string()).to_owned())

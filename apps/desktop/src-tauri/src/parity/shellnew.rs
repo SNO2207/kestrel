@@ -417,6 +417,8 @@ pub fn new_menu() -> Vec<NewKind> {
 /// for undo, and returns the name it got, which the front end then lets the user edit.
 #[tauri::command(async)]
 pub fn new_file(journal: State<Journal>, parent: String, kind: String) -> Result<String, String> {
+    // A library makes new things in its save folder (parity2).
+    let parent = crate::parity2::libraries::folder_for(&parent);
     let kinds = kinds();
     let kind = kinds
         .iter()
