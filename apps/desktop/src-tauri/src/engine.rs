@@ -105,8 +105,10 @@ pub struct Row {
     pub mtime: i64,
     pub ext: String,
     pub hidden: bool,
-    /// Bytes allocated on disk, and the attribute bits: the details view's extra columns.
+    /// Bytes allocated on disk: the details view's Allocated size column.
     pub alloc: u64,
+    /// The file attributes: the details view's Attributes column, and a cloud file's sync
+    /// status (`parity::syncroots`).
     pub attrs: u32,
 }
 
@@ -362,7 +364,7 @@ impl Engine {
         resolve(&mut query, &index)?;
         let compiled = compile(&query, &index).map_err(|e| e.to_string())?;
         let mut ids = search(&index, &compiled, &cancel).ok_or("Superseded by a newer search")?;
-        if !visibility.hidden {
+        if visibility != Visibility::ALL {
             ids.retain(|&id| visibility.shows(index.attrs(id)));
         }
         sort(&index, &mut ids, spec.resolve(false));
@@ -464,7 +466,7 @@ impl Engine {
                         ext: index.ext_name(index.ext(id)).to_owned(),
                         hidden: is_hidden(index.attrs(id)),
                         alloc: index.alloc(id),
-                        attrs: index.attrs(id),
+                        attrs: index.attrs(id) & !attr::DELETED,
                     }
                 })
                 .collect(),

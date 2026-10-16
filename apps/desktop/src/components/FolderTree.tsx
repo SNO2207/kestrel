@@ -20,6 +20,7 @@ import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMou
 
 import { isDropPlace } from "../dragdrop";
 import { placesApi, type DriveInfo, type TreeFolder, type TreeListing } from "../lib/placesApi";
+import { showProtected } from "../lib/folderOptions";
 import { showHidden } from "../lib/views";
 import {
   THIS_PC,
@@ -346,10 +347,13 @@ export function FolderTree() {
   });
 
   let revealing = 0;
-  /** Expands the tree down to the open folder and marks it, scrolling it into view if asked. */
-  const revealCurrent = async (scroll: boolean) => {
+  /**
+   * Expands the tree down to the open folder and marks it, scrolling it into view if asked.
+   * `always` does so even with "Expand to open folder" off, as Ctrl+Shift+E does.
+   */
+  const revealCurrent = async (scroll: boolean, always = false) => {
     const path = currentPath();
-    if (!path || !expandToOpen()) return;
+    if (!path || (!expandToOpen() && !always)) return;
     const request = ++revealing;
     if (path !== THIS_PC && /^[a-z]:\\/i.test(path)) {
       const listings = await placesApi.treeReveal(path, showHidden()).catch(() => [] as TreeListing[]);
@@ -368,9 +372,17 @@ export function FolderTree() {
     }
     const target = nodeAt(path);
     if (!target) return;
-    if (!hasFocus()) setFocusNode(target);
+    if (!hasFocus() || always) setFocusNode(target);
     if (scroll) reveal(indexOf(target), true);
   };
+
+  /** Ctrl+Shift+E (ParityLayer.tsx): Explorer's "Expand to current folder", which takes the keyboard. */
+  const onRevealRequest = () =>
+    void revealCurrent(true, true).then(() => {
+      const target = nodeAt(currentPath() ?? THIS_PC);
+      if (target) setFocusNode(target);
+      tree.focus();
+    });
 
   createEffect(on([currentPath, expandToOpen], () => void revealCurrent(true)));
 
@@ -420,7 +432,8 @@ export function FolderTree() {
     loaded.filter((node) => !node.expanded).forEach((node) => (node.children = null));
     void load(shown);
   };
-  createEffect(on(showHidden, reloadAll, { defer: true }));
+  // "Show hidden items" and "Hide protected operating system files" (Folder Options).
+  createEffect(on([showHidden, showProtected], reloadAll, { defer: true }));
 
   // ---------- the view ----------
 
@@ -450,6 +463,7 @@ export function FolderTree() {
     const observer = new ResizeObserver(measure);
     observer.observe(scroller);
     scroller.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("kestrel:reveal-in-tree", onRevealRequest);
     measure();
     const stopChanges = placesApi.onFoldersChanged((next) => {
       revision = next;
@@ -461,6 +475,7 @@ export function FolderTree() {
     onCleanup(() => {
       observer.disconnect();
       scroller.removeEventListener("scroll", measure);
+      window.removeEventListener("kestrel:reveal-in-tree", onRevealRequest);
       clearTimeout(followTimer);
       void stopChanges.then((stop) => stop());
     });

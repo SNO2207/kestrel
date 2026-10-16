@@ -37,7 +37,8 @@ export function PreviewPane() {
 
   onMount(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === "p") {
+      // Alt+Shift+P is the details pane's (ParityLayer).
+      if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === "p") {
         event.preventDefault();
         togglePane();
       }

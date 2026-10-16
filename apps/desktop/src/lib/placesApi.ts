@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { Folder } from "./api";
+import { showProtected } from "./folderOptions";
 
 export type DriveKind = "fixed" | "removable" | "optical" | "network" | "ram";
 export type DriveState = "ready" | "reading" | "no-media" | "disconnected" | "unavailable";
@@ -117,9 +118,9 @@ export const placesApi = {
   /** Empties the whole bin. Ask first. */
   binEmpty: () => invoke<void>("recycle_bin_empty"),
 
-  treeChildren: (paths: string[], showHidden: boolean) => invoke<TreeListing[]>("tree_children", { paths, showHidden }),
-  treeReveal: (path: string, showHidden: boolean) => invoke<TreeListing[]>("tree_reveal", { path, showHidden }),
-  treeSubtree: (path: string, showHidden: boolean) => invoke<string>("tree_subtree", { path, showHidden }),
+  treeChildren: (paths: string[], showHidden: boolean) => invoke<TreeListing[]>("tree_children", { paths, showHidden, showProtected: showProtected() }),
+  treeReveal: (path: string, showHidden: boolean) => invoke<TreeListing[]>("tree_reveal", { path, showHidden, showProtected: showProtected() }),
+  treeSubtree: (path: string, showHidden: boolean) => invoke<string>("tree_subtree", { path, showHidden, showProtected: showProtected() }),
   onFoldersChanged: (handler: (revision: number) => void): Promise<UnlistenFn> =>
     listen<number>("folders-changed", (event) => handler(event.payload)),
   sidebarState: () => invoke<SidebarState>("sidebar_state"),
@@ -128,5 +129,5 @@ export const placesApi = {
 
   addressResolve: (text: string, base: string | null) => invoke<Resolved>("address_resolve", { text, base }),
   addressSuggest: (text: string, base: string | null, showHidden: boolean) =>
-    invoke<Suggestions>("address_suggest", { text, base, showHidden }),
+    invoke<Suggestions>("address_suggest", { text, base, showHidden, showProtected: showProtected() }),
 };

@@ -65,8 +65,9 @@ export function QuickLauncher() {
       if (provider?.runsAnywhere?.(hit, mode)) {
         await provider.run(hit, mode);
       } else {
-        await paletteApi.showMainWindow();
-        await paletteApi.runInMain({ hit, mode });
+        // The window used last, which Ctrl+N's windows may be rather than `main`.
+        const shown = await paletteApi.showMainWindow();
+        await paletteApi.runInMain({ hit, mode }, shown ?? "main");
       }
       setFailure(null);
       await paletteApi.hideQuickWindow();

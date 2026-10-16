@@ -319,13 +319,14 @@ export function listenForDrops() {
 }
 
 /** What a drop would do and where, for the hint shown during a drag. */
-export function dropHint(): { verb: string; name: string } | null {
+export function dropHint(): { verb: string; name: string; to?: string } | null {
   const current = target();
   if (current?.kind === "pin") return { verb: "Pin", name: current.name };
-  const verb = { copy: "Copy", move: "Move", link: null, none: null }[effect()];
+  // Alt (or Ctrl and Shift) makes shortcuts, as in Explorer.
+  const verb = { copy: "Copy", move: "Move", link: "Create shortcuts", none: null }[effect()];
   if (!current || !verb) return null;
   const name = (current.kind === "place" && current.name) || baseName(current.path) || current.path;
-  return { verb, name };
+  return { verb, name, to: effect() === "link" ? "in" : undefined };
 }
 
 export const isDropRow = (path: string | undefined) => {

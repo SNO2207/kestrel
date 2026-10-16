@@ -122,7 +122,7 @@ fn hit(path: String, title: String, subtitle: Option<String>, dir: bool, matched
 fn children(dir: &str, rest: &str, query: &Query) -> Vec<Hit> {
     let dir = normalize(dir);
     let Ok(mut items) = walk::list(&dir) else { return Vec::new() };
-    let visibility = Visibility { hidden: query.show_hidden };
+    let visibility = Visibility { hidden: query.show_hidden, ..Visibility::ALL };
     items.retain(|item| visibility.shows(item.meta.attrs));
     let is_dir = |attrs: u32| attrs & attr::DIRECTORY != 0;
     let join = |name: &str| if dir.ends_with('\\') { format!("{dir}{name}") } else { format!("{dir}\\{name}") };

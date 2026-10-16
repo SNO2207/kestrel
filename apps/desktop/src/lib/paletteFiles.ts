@@ -6,17 +6,12 @@
  * folder in a new tab; Shift+Enter shows either in the folder that holds it, selected. Tab puts
  * the item's path in the input after `/`, so a folder's contents can be listed and narrowed.
  */
-import { createEffect, createRoot, on } from "solid-js";
-
-import { activeId, activeTab, isSearch, navigate, notify, openTab, selectInFolder } from "../state";
+import { activeTab, isSearch, navigate, notify, openTab, selectInFolder } from "../state";
 import { api } from "./api";
 import { baseName, parentPath } from "./format";
 import type { PaletteHit, PaletteProvider } from "./palette";
-import { paletteApi } from "./paletteApi";
 
 const ID = "files";
-/** How long a folder must stay on screen to count as visited. */
-const VISIT_MS = 1500;
 /** How long showing an item in its folder waits for the folder to be listed. */
 const REVEAL_WAIT_MS = 5000;
 
@@ -61,31 +56,5 @@ export const filesProvider: PaletteProvider = {
   complete: completion,
 };
 
-/**
- * Remembers each folder the active tab stays in for a moment, so folders visited often rank
- * higher in the palette. Call once, in the main window.
- */
-export function rememberVisits() {
-  createRoot(() => {
-    let timer: number | undefined;
-    createEffect(
-      on(
-        () => {
-          const tab = activeTab();
-          return tab?.listing && !isSearch(tab) ? `${activeId()}|${tab.listing.path}` : "";
-        },
-        (key) => {
-          window.clearTimeout(timer);
-          const path = key.slice(key.indexOf("|") + 1);
-          if (!key || !path) return;
-          timer = window.setTimeout(() => {
-            const parent = parentPath(path);
-            void paletteApi
-              .record({ provider: ID, id: path, title: baseName(path) || path, subtitle: parent, path, dir: true })
-              .catch(() => {});
-          }, VISIT_MS);
-        },
-      ),
-    );
-  });
-}
+// Folder visits are not recorded here: the shortcuts feature records each one once
+// (`frecency_visit`), and the palette reads them from there (`kestrel_db::parity`).

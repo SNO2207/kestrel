@@ -12,7 +12,7 @@ mod badges;
 mod discover;
 mod facts;
 mod git;
-mod launch;
+pub(crate) mod launch;
 mod provider;
 mod scripts;
 

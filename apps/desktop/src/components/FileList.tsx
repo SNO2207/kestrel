@@ -28,6 +28,11 @@ import { LockGlyph } from "./LockGlyph";
 import type { ShortcutCommand } from "./ShortcutsLayer";
 import { TagDots } from "./TagDots";
 import { ViewItem } from "./ViewItem";
+import { folderOptions } from "../lib/folderOptions";
+import { inverted, type SelectControl } from "../lib/selectionOps";
+import { activeId } from "../state";
+import { newEntries, openInTerminal, openNewWindow, revealInFolder } from "../parity";
+import { SyncGlyph } from "./SyncGlyph";
 
 const PAGE_SIZE = 128;
 /** Pixels rendered beyond each edge of the view, so short scrolls never show a gap. */
@@ -115,6 +120,8 @@ interface Props {
   onFocusRow?: (row: Row | null) => void;
   /** Hands the owner a way to move the focus by some rows, for Quick Look. */
   stepRef?: (step: (delta: number) => void) => void;
+  /** Hands the owner Select all, Select none, Invert selection and Rename (`lib/selectionOps.ts`). */
+  selectRef?: (control: SelectControl) => void;
 }
 
 const sameRows = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((value, i) => value === b[i]);
@@ -562,6 +569,12 @@ export function FileList(props: Props) {
   props.stepRef?.((delta) => {
     if (total() > 0) select(Math.min(Math.max(0, focused() + delta), total() - 1));
   });
+  props.selectRef?.({
+    all: () => total() > 0 && setSelection(Selection.range(0, total() - 1)),
+    none: () => setSelection(Selection.empty),
+    invert: () => setSelection(inverted(selection(), total())),
+    rename: () => (selection().count > 1 ? props.onCommand("batch-rename") : startRename()),
+  });
 
   const open = (row: number, inNewTab = false) => {
     const data = rowAt(row);
@@ -646,6 +659,14 @@ export function FileList(props: Props) {
     const forItems: MenuEntry[] = [
       { label: "Open", hint: "Enter", disabled: !sole, run: () => open(soleRow()) },
       ...(sole?.dir ? [{ label: "Open in new tab", run: () => open(soleRow(), true) }] : []),
+      // Explorer parity (parity.ts): another window, the terminal, and where a result lives.
+      ...(sole?.dir
+        ? [
+            { label: "Open in new window", run: () => openNewWindow(sole.path) },
+            { label: "Open in Terminal", run: () => openInTerminal(sole.path) },
+          ]
+        : []),
+      ...(sole && !browsing ? [{ label: "Open file location", run: () => revealInFolder(sole.path) }] : []),
       ...(sole && !sole.dir ? [{ label: "Open with…", run: command("open-with") }] : []),
       { label: "Pin to sidebar", hint: "Ctrl+D", run: command("pin") },
       { label: "Tags…", run: command("tags") },
@@ -667,6 +688,12 @@ export function FileList(props: Props) {
       ...extraFolder,
       ...(extraFolder.length > 0 ? (["separator"] as MenuEntry[]) : []),
       { label: "New folder", hint: "Ctrl+Shift+N", disabled: !browsing, run: command("new-folder") },
+      // Every other type Windows offers, in a menu of its own, as Explorer's New submenu.
+      {
+        label: "New",
+        disabled: !browsing,
+        run: () => setMenu({ x, y, entries: newEntries(activeId(), command("new-folder")) }),
+      },
       { label: "Paste", hint: "Ctrl+V", disabled: !canPaste, run: command("paste") },
       { label: "Pin this folder", hint: "Ctrl+D", disabled: !browsing, run: command("pin-folder") },
       "separator",
@@ -674,8 +701,9 @@ export function FileList(props: Props) {
       ...redo,
       "separator",
       { label: "Refresh", hint: "F5", run: command("refresh") },
+      { label: "Open in Terminal", disabled: !browsing, run: () => props.listing && openInTerminal(props.listing.path) },
       "separator",
-      { label: "Properties", disabled: !browsing, run: command("folder-properties") },
+      { label: "Properties", hint: "Alt+Enter", disabled: !browsing, run: command("folder-properties") },
       ...moreOptions(false),
     ];
     setMenu({ x, y, entries: onItems && count > 0 ? forItems : forFolder });
@@ -696,7 +724,8 @@ export function FileList(props: Props) {
     if (event.ctrlKey && key === "c") return has && run("copy");
     if (event.ctrlKey && key === "x") return has && run("cut");
     if (event.ctrlKey && key === "v") return run("paste");
-    if (event.altKey && key === "enter") return has && run("properties");
+    // With nothing selected, Alt+Enter shows the folder's own properties, as in Explorer.
+    if (event.altKey && key === "enter") return has ? run("properties") : !isSearch() && run("folder-properties");
     if (key === "delete") return has && run(event.shiftKey ? "erase" : "delete");
     if (key === "f2") return selection().count > 1 ? run("batch-rename") : (startRename(), true);
     if (key === "contextmenu" || (event.shiftKey && key === "f10")) {
@@ -775,6 +804,11 @@ export function FileList(props: Props) {
 
   // Mouse handling for an item in any view: a details row, or a cell of the other views.
   const onItemMouseDown = (index: number, event: MouseEvent) => {
+    // Middle-click opens a folder in a new tab, as in Explorer.
+    if (event.button === 1 && rowAt(index)?.dir) {
+      event.preventDefault();
+      return open(index, true);
+    }
     if (event.button !== 0 || event.target instanceof HTMLInputElement) return;
     resetTypeAhead();
     const mode = { extend: event.shiftKey, toggle: event.ctrlKey };
@@ -782,12 +816,17 @@ export function FileList(props: Props) {
     // selection to that item, or toggling it off, waits until the button comes up without a drag.
     const deferred = selection().has(index) && !event.shiftKey;
     if (!deferred) select(index, mode);
+    // Folder Options' "Single-click to open an item": a plain click opens it.
+    const opens = folderOptions().singleClick && !event.shiftKey && !event.ctrlKey;
     followPress(event, {
       drag: () => {
         const listing = props.listing;
         if (listing && selection().count > 0) void dragOut(listing.set, selection().ranges as RowRange[]);
       },
-      click: () => deferred && select(index, mode),
+      click: () => {
+        if (deferred) select(index, mode);
+        if (opens) open(index);
+      },
     });
   };
   const onItemDblClick = (index: number, event: MouseEvent) => {
@@ -987,6 +1026,7 @@ export function FileList(props: Props) {
               <LockGlyph />
             </Show>
             <Show when={badgeOf(data())?.change}>{(change) => <GitGlyph change={change()} dir={data().dir} />}</Show>
+            <SyncGlyph row={data()} />
             <TagDots path={data().path} />
           </div>
         );
@@ -1025,7 +1065,7 @@ export function FileList(props: Props) {
   return (
     <div
       class="filelist"
-      classList={{ results: isSearch(), grouped: grouped() }}
+      classList={{ results: isSearch(), grouped: grouped(), "single-click": folderOptions().singleClick }}
       data-view={mode()}
       style={{ "--columns": columnTemplate(columnKind()) }}
     >

@@ -11,6 +11,8 @@ export interface MenuItem {
   danger?: boolean;
   /** For an option that is on or off: whether it is on. Shown as a check mark. */
   checked?: boolean;
+  /** An image shown before the label, such as a file type's icon in the New menu. */
+  icon?: string;
   run: () => void;
   /** Entries of a menu that opens beside this item, such as "Group by"; then `run` is unused. */
   submenu?: MenuEntry[];
@@ -141,6 +143,9 @@ export function ContextMenu(props: {
                       <Icon name="check" size={14} />
                     </Show>
                   </span>
+                </Show>
+                <Show when={item().icon}>
+                  {(src) => <img class="menu-icon" src={src()} width="16" height="16" alt="" draggable={false} />}
                 </Show>
                 <span class="menu-label">{item().label}</span>
                 <Show when={item().hint}>

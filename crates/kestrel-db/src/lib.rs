@@ -17,6 +17,7 @@ pub use rusqlite;
 
 pub mod layout;
 pub mod palette;
+pub mod parity;
 pub mod places;
 pub mod projects;
 pub mod shortcuts;
@@ -37,6 +38,7 @@ pub const MIGRATIONS: &[&[Migration]] = &[
     palette::MIGRATIONS,
     places::MIGRATIONS,
     layout::MIGRATIONS,
+    parity::MIGRATIONS,
 ];
 
 const SETTINGS: &[Migration] = &[Migration {
@@ -104,6 +106,8 @@ impl Db {
 
     fn prepare(mut connection: Connection) -> Result<Self> {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Functions the migrations may call, such as Unicode case folding.
+        parity::register_functions(&connection)?;
         migrate(&mut connection, MIGRATIONS)?;
         Ok(Self { connection: Mutex::new(connection) })
     }

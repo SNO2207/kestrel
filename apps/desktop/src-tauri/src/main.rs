@@ -17,6 +17,7 @@ mod layout;
 mod lru;
 mod navigation;
 mod palette;
+mod parity;
 mod places;
 mod preview;
 mod previewview;
@@ -60,24 +61,29 @@ fn index_status(engine: Shared) -> IndexStatus {
 /// Lists a folder. With `watch`, the folder is also watched from now on and `dir-changed`
 /// is emitted whenever its contents change; the watch is armed before the folder is read, so
 /// no change can fall between the two. Hidden and system items are left out when
-/// `show_hidden` is false.
+/// `show_hidden` is false, and protected operating system files (hidden and system both) when
+/// `show_protected` is false too. Each window watches its own folder.
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 fn list_dir(
     app: AppHandle,
+    window: Window,
     engine: Shared,
     watcher: State<Watcher>,
     path: String,
     sort: SortSpec,
     watch: bool,
     show_hidden: Option<bool>,
+    show_protected: Option<bool>,
 ) -> Result<Listing, String> {
     if watch {
         let path = engine::normalize(&path);
-        watcher.watch(&path, move |changed| {
+        // Each window watches the folder its tab on screen shows (`parity::appwindows`).
+        watcher.watch_for(window.label(), &path, move |changed| {
             let _ = app.emit("dir-changed", changed);
         });
     }
-    engine.list_dir_with(&path, sort, Visibility::from_request(show_hidden))
+    engine.list_dir_with(&path, sort, Visibility::from_request(show_hidden).with_protected(show_protected))
 }
 
 /// Runs a search. `tag:` clauses are resolved to the items carrying the tag.
@@ -89,8 +95,9 @@ fn search(
     scope: Option<String>,
     sort: SortSpec,
     show_hidden: Option<bool>,
+    show_protected: Option<bool>,
 ) -> Result<Listing, String> {
-    let visibility = Visibility::from_request(show_hidden);
+    let visibility = Visibility::from_request(show_hidden).with_protected(show_protected);
     engine.search_resolving(&query, scope.as_deref(), sort, visibility, |query, index| {
         shortcuts::tags::resolve(&db, query, index)
     })
@@ -248,9 +255,18 @@ fn places() -> places::Places {
     places::places()
 }
 
-/// Opens a file with its default application, as a double-click in Explorer would.
+/// Opens a file with its default application, as a double-click in Explorer would, and
+/// remembers it among Home's recent files (`parity::recent`).
 #[tauri::command(async)]
-fn open_path(path: String) -> Result<(), String> {
+fn open_path(db: State<Arc<kestrel_db::Db>>, path: String) -> Result<(), String> {
+    open_with_shell(&path)?;
+    if !std::path::Path::new(&path).is_dir() {
+        let _ = kestrel_db::parity::record_opened(&db, &path, parity::now_ms());
+    }
+    Ok(())
+}
+
+fn open_with_shell(path: &str) -> Result<(), String> {
     let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
     let verb: Vec<u16> = "open".encode_utf16().chain([0]).collect();
     // SAFETY: both strings are NUL-terminated and outlive the call.
@@ -500,9 +516,25 @@ fn main() {
             layout::watch_other_pane,
             layout::watch_active_folder,
             layout::folders_exist,
+            parity::shellnew::new_menu,
+            parity::shellnew::new_file,
+            parity::links::new_shortcut,
+            parity::links::shortcut_suggestion,
+            parity::links::shortcut_target_dev,
+            parity::recent::home_recent,
+            parity::recent::record_opened,
+            parity::recent::forget_recent,
+            parity::terminal::open_in_terminal,
+            parity::details::item_properties,
+            parity::details::selection_summary,
+            parity::syncroots::sync_roots_list,
+            parity::appwindows::new_window,
+            parity::appwindows::window_start,
+            parity::appwindows::app_windows_dev,
         ]))
         .on_window_event(|window, event| {
             dragdrop::on_window_event(event);
+            parity::appwindows::on_window_event(window, event);
             launcher::on_window_event(window, event);
         })
         .setup(move |app| {
@@ -520,7 +552,9 @@ fn main() {
             launcher::setup(app.handle(), database.clone());
             // Launching Kestrel again shows this one, wherever it is hiding.
             let showing = app.handle().clone();
-            instance.listen(move || launcher::show_main(&showing));
+            instance.listen(move || {
+                let _ = launcher::show_main(&showing);
+            });
             // Places: drives coming and going, late drive details, and index changes the
             // sidebar's folder tree follows.
             thispc::watch(app.handle().clone());

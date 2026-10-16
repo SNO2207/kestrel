@@ -442,7 +442,7 @@ fn shell_suggestions(typed: &str) -> Vec<Suggestion> {
 }
 
 /// The suggestions for what has been typed so far.
-pub fn suggest(engine: &Engine, text: &str, base: Option<&str>, show_hidden: bool) -> Suggestions {
+pub fn suggest(engine: &Engine, text: &str, base: Option<&str>, visibility: Visibility) -> Suggestions {
     let trimmed = text.trim_start().trim_start_matches('"');
     if starts_with_shell(trimmed) && !trimmed.contains(['\\', '/']) {
         return Suggestions { parent: None, items: shell_suggestions(&trimmed[6..]) };
@@ -457,7 +457,7 @@ pub fn suggest(engine: &Engine, text: &str, base: Option<&str>, show_hidden: boo
             return Suggestions::default();
         }
         let parent = format!(r"\\{server}");
-        let items = shares(&parent, show_hidden)
+        let items = shares(&parent, visibility.hidden)
             .into_iter()
             .take(MAX_SUGGESTIONS)
             .map(|share| Suggestion { path: format!(r"{parent}\{share}"), name: share, hint: None })
@@ -473,7 +473,7 @@ pub fn suggest(engine: &Engine, text: &str, base: Option<&str>, show_hidden: boo
         return Suggestions::default();
     }
     let folder = normalize(&parent);
-    let listing = foldertree::children(engine, std::slice::from_ref(&folder), Visibility { hidden: show_hidden });
+    let listing = foldertree::children(engine, std::slice::from_ref(&folder), visibility);
     let names: Vec<String> = listing.into_iter().flat_map(|listing| listing.folders).map(|folder| folder.name).collect();
     let items = rank(names, &typed)
         .into_iter()
@@ -489,13 +489,23 @@ pub fn address_resolve(text: String, base: Option<String>) -> Result<Resolved, S
 }
 
 #[tauri::command(async)]
-pub fn address_suggest(engine: State<Arc<Engine>>, text: String, base: Option<String>, show_hidden: bool) -> Suggestions {
-    suggest(&engine, &text, base.as_deref(), show_hidden)
+pub fn address_suggest(
+    engine: State<Arc<Engine>>,
+    text: String,
+    base: Option<String>,
+    show_hidden: bool,
+    show_protected: Option<bool>,
+) -> Suggestions {
+    let visibility = Visibility::from_request(Some(show_hidden)).with_protected(show_protected);
+    suggest(&engine, &text, base.as_deref(), visibility)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hidden folders left out, as with "Show hidden items" off.
+    const VISIBLE: Visibility = Visibility { hidden: false, ..Visibility::ALL };
     use kestrel_index::{IndexBuilder, walk};
     use std::fs;
 
@@ -601,20 +611,20 @@ mod tests {
         walk::walk(&path, &mut builder).unwrap();
         engine.install(builder.finish());
 
-        let found = suggest(&engine, &format!(r"{path}\pro"), None, false);
+        let found = suggest(&engine, &format!(r"{path}\pro"), None, VISIBLE);
         assert_eq!(found.parent.as_deref(), Some(path.as_str()));
         let names: Vec<&str> = found.items.iter().map(|item| item.name.as_str()).collect();
         assert_eq!(names, ["Projects", "old projects"]);
         assert_eq!(found.items[0].path, format!(r"{path}\Projects"));
-        let all = suggest(&engine, &format!("{}/", path.replace('\\', "/")), None, false);
+        let all = suggest(&engine, &format!("{}/", path.replace('\\', "/")), None, VISIBLE);
         assert_eq!(all.items.len(), 4);
         // Relative to the tab's folder.
         for typed in ["pic", r".\pic"] {
-            let relative = suggest(&engine, typed, Some(&path), false);
+            let relative = suggest(&engine, typed, Some(&path), VISIBLE);
             assert_eq!(relative.items.iter().map(|item| item.name.as_str()).collect::<Vec<_>>(), ["Pictures"], "{typed}");
         }
-        assert!(suggest(&engine, "pic", None, false).items.is_empty(), "nothing to be relative to");
-        let shells = suggest(&engine, "shell:down", None, false);
+        assert!(suggest(&engine, "pic", None, VISIBLE).items.is_empty(), "nothing to be relative to");
+        let shells = suggest(&engine, "shell:down", None, VISIBLE);
         assert_eq!(shells.items.first().map(|item| item.name.as_str()), Some("shell:Downloads"));
         fs::remove_dir_all(&root).unwrap();
     }

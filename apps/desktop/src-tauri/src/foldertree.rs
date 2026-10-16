@@ -199,20 +199,35 @@ pub fn subtree(engine: &Engine, path: &str, visibility: Visibility) -> String {
     out
 }
 
+/// "Show hidden items" and "Hide protected operating system files", as the file list has them.
+fn visibility(show_hidden: bool, show_protected: Option<bool>) -> Visibility {
+    Visibility::from_request(Some(show_hidden)).with_protected(show_protected)
+}
+
 #[tauri::command(async)]
-pub fn tree_children(engine: State<Arc<Engine>>, paths: Vec<String>, show_hidden: bool) -> Vec<TreeListing> {
-    children(&engine, &paths, Visibility { hidden: show_hidden })
+pub fn tree_children(
+    engine: State<Arc<Engine>>,
+    paths: Vec<String>,
+    show_hidden: bool,
+    show_protected: Option<bool>,
+) -> Vec<TreeListing> {
+    children(&engine, &paths, visibility(show_hidden, show_protected))
 }
 
 /// The listings the tree needs to show `path`: those of every folder above it on its drive.
 #[tauri::command(async)]
-pub fn tree_reveal(engine: State<Arc<Engine>>, path: String, show_hidden: bool) -> Vec<TreeListing> {
-    children(&engine, &ancestors(&path), Visibility { hidden: show_hidden })
+pub fn tree_reveal(
+    engine: State<Arc<Engine>>,
+    path: String,
+    show_hidden: bool,
+    show_protected: Option<bool>,
+) -> Vec<TreeListing> {
+    children(&engine, &ancestors(&path), visibility(show_hidden, show_protected))
 }
 
 #[tauri::command(async)]
-pub fn tree_subtree(engine: State<Arc<Engine>>, path: String, show_hidden: bool) -> String {
-    subtree(&engine, &path, Visibility { hidden: show_hidden })
+pub fn tree_subtree(engine: State<Arc<Engine>>, path: String, show_hidden: bool, show_protected: Option<bool>) -> String {
+    subtree(&engine, &path, visibility(show_hidden, show_protected))
 }
 
 /// What the sidebar remembers: collapsed sections, and "Expand to open folder".
@@ -290,7 +305,7 @@ mod tests {
     #[test]
     fn folders_come_from_the_index_in_name_order_with_their_chevrons() {
         let (engine, root, path) = indexed_sandbox("index");
-        let shown = Visibility { hidden: false };
+        let shown = Visibility { hidden: false, ..Visibility::ALL };
         let [listing] = children(&engine, std::slice::from_ref(&path), shown).try_into().unwrap();
         assert!(!listing.live && listing.error.is_none());
         // Natural order (b2 before b10), files left out, the hidden folder too.
@@ -334,7 +349,7 @@ mod tests {
     #[test]
     fn a_whole_subtree_comes_in_one_compact_answer() {
         let (engine, root, path) = indexed_sandbox("subtree");
-        let lines: Vec<String> = subtree(&engine, &path, Visibility { hidden: false }).lines().map(str::to_owned).collect();
+        let lines: Vec<String> = subtree(&engine, &path, Visibility { hidden: false, ..Visibility::ALL }).lines().map(str::to_owned).collect();
         assert_eq!(lines, ["1\t0\t1\tAlpha", "2\t0\t0\tinner", "1\t0\t0\tb2", "1\t0\t0\tb10", "1\t0\t0\tempty"]);
         fs::remove_dir_all(&root).unwrap();
     }

@@ -509,6 +509,10 @@ export const clearPending = (tabId: number) => patch(tabId, (tab) => void (tab.p
 export const selectWhenListed = (tabId: number, names: string[]) =>
   patch(tabId, (tab) => void (tab.pending = names.length > 0 ? { names, rename: false } : null));
 
+/** Selects the item called `name` once the tab's listing shows it, and starts renaming it. */
+export const renameWhenListed = (tabId: number, name: string) =>
+  patch(tabId, (tab) => void (tab.pending = { names: [name], rename: true }));
+
 // ---------- file operations ----------
 
 /** The selection of a tab that is showing rows, or `null` if nothing is selected. */
@@ -562,7 +566,8 @@ export async function copySelection(tabId: number, cut: boolean) {
 
 export function paste(tabId: number) {
   const tab = find(tabId);
-  if (!tab || isSearch(tab)) return;
+  // A special location (Home, This PC, the Recycle Bin) is no folder to make things in.
+  if (!tab || isSearch(tab) || locationOf(tab.path)) return;
   void operate(tabId, async () => {
     const names = await api.pasteItems(tab.path);
     if (names.length > 0) patch(tabId, (tab) => void (tab.pending = { names, rename: false }));
@@ -584,7 +589,8 @@ export function selectInFolder(folder: string, names: string[]) {
 /** Creates a folder here and starts renaming it, as Explorer does. */
 export function createFolder(tabId: number) {
   const tab = find(tabId);
-  if (!tab || isSearch(tab)) return;
+  // A special location (Home, This PC, the Recycle Bin) is no folder to make things in.
+  if (!tab || isSearch(tab) || locationOf(tab.path)) return;
   void operate(tabId, async () => {
     const name = await api.newFolder(tab.path);
     patch(tabId, (tab) => void (tab.pending = { names: [name], rename: true }));

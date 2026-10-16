@@ -62,7 +62,7 @@ impl Provider for FilesProvider {
         if scorer.is_empty() {
             return Vec::new();
         }
-        let visibility = Visibility { hidden: query.show_hidden };
+        let visibility = Visibility { hidden: query.show_hidden, ..Visibility::ALL };
         let mut hits = {
             let index = self.engine.index().read();
             let found = scan(&index, &scorer, visibility, SHORTLIST, &|| query.cancelled());
@@ -219,7 +219,7 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    const VISIBLE: Visibility = Visibility { hidden: false };
+    const VISIBLE: Visibility = Visibility { hidden: false, ..Visibility::ALL };
 
     /// A scratch folder with a few named files and folders, indexed.
     fn indexed(name: &str, files: &[&str]) -> (std::path::PathBuf, Index) {

@@ -1,12 +1,24 @@
 /**
- * Registers This PC and the Recycle Bin as special locations (lib/locations.ts), with the
- * names Explorer's address bar takes for them, and starts what places need. Imported by
+ * Registers Home, This PC and the Recycle Bin as special locations (lib/locations.ts), with
+ * the names Explorer's address bar takes for them, and starts what places need. Imported by
  * App.tsx, and by the quick launcher, whose palette lists them too.
  */
+import { HomeView } from "./components/HomeView";
 import { RecycleBinPage } from "./components/RecycleBin";
 import { ThisPcPage } from "./components/ThisPC";
+import { HOME_ALIASES, HOME_PATH } from "./lib/home";
 import { registerLocation } from "./lib/locations";
 import { RECYCLE_BIN, THIS_PC, isDriveRoot } from "./places";
+
+// Explorer's start page: quick access, favorites and recent files (HomeView.tsx).
+registerLocation({
+  address: HOME_PATH,
+  title: "Home",
+  icon: "home",
+  page: HomeView,
+  aliases: HOME_ALIASES,
+  keywords: "start page quick access favorites recent",
+});
 
 registerLocation({
   address: THIS_PC,

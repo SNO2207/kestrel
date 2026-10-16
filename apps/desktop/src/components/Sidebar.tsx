@@ -2,12 +2,15 @@ import { For, Show, onMount } from "solid-js";
 
 import { isDropPlace } from "../dragdrop";
 import { collapsibleSections } from "../lib/sidebarSections";
+import { baseName } from "../lib/format";
 import { RECYCLE_BIN, collapsedSections, samePlace, setSectionCollapsed } from "../places";
 import { activeTab, navigate, openTab, places } from "../state";
 import { closeProjects, projectsOpen, toggleProjects } from "../projects";
 import { FolderTree } from "./FolderTree";
+import { HomeEntry } from "./HomeEntry";
 import { Icon, hasIcon } from "./Icon";
 import { PinnedPlaces } from "./PinnedPlaces";
+import { ParityIcon } from "./ParityIcon";
 import { ProjectIcon } from "./ProjectIcon";
 import { ShortcutLists } from "./ShortcutLists";
 import { SidebarResizer } from "./SidebarResizer";
@@ -36,6 +39,7 @@ export function Sidebar() {
     <nav class="sidebar" aria-label="Places">
       <div ref={shelves} class="sidebar-shelves">
         <section>
+          <HomeEntry />
           <button
             class="projects-entry"
             classList={{ current: projectsOpen() }}
@@ -56,12 +60,14 @@ export function Sidebar() {
               class="place"
               classList={{ current: current() === places().home.toLowerCase(), "drop-target": isDropPlace(places().home) }}
               data-place={places().home}
-              data-place-name="Home"
+              data-place-name={baseName(places().home) || "Home"}
+              title={places().home}
               onClick={[open, places().home]}
               onAuxClick={[open, places().home]}
             >
-              <Icon name="home" />
-              <span>Home</span>
+              {/* Your user folder, named as Explorer names it; Home is Explorer's start page. */}
+              <ParityIcon name="person" />
+              <span>{baseName(places().home) || "Home"}</span>
             </button>
           </Show>
           <For each={places().folders}>

@@ -138,6 +138,8 @@ try {
   await step("sidebar places and tabs are targets too", async () => {
     // Hovering either for a second would open it, so each screenshot starts a fresh hover.
     const place = await centre(page.locator(".sidebar .place").first());
+    // The first place is your user folder, named after it.
+    const placeName = await page.locator(".sidebar .place").first().getAttribute("data-place-name");
     const tab = await centre(page.locator(".tab.active"));
     const away = await emptySpace();
     for (const colorScheme of ["dark", "light"]) {
@@ -146,7 +148,7 @@ try {
       await page.locator(".sidebar .place.drop-target").waitFor();
       assert.equal(await page.locator(".tab-panel.drop-target").count(), 0);
       // A place is named as the sidebar names it.
-      await hint.filter({ hasText: "Move to Home" }).waitFor();
+      await hint.filter({ hasText: `Move to ${placeName}` }).waitFor();
       await shot("dragdrop-3-place", colorScheme);
     }
     for (const colorScheme of ["dark", "light"]) {

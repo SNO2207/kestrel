@@ -2,12 +2,16 @@ import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { isDropTab } from "../dragdrop";
-import { locationTitle, titleOf } from "../lib/locations";
+import { folderOptions } from "../lib/folderOptions";
+import { locationOf, locationTitle, titleOf } from "../lib/locations";
 import { activateTab, activeId, closeTab, dual, isSearch, openTab, tabs, type Tab } from "../state";
 import { Icon } from "./Icon";
 
-function tabTitle(tab: Tab): string {
+/** What a tab is called in the title bar and in each pane's tab strip (Panes.tsx). */
+export function tabTitle(tab: Tab): string {
   if (isSearch(tab)) return `Search: ${tab.query}`;
+  // Folder Options' "Display the full path in the title bar"; a special location has none.
+  if (folderOptions().fullPath && !locationOf(tab.path)) return tab.path;
   return titleOf(tab.path);
 }
 

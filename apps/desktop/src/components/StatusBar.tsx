@@ -1,8 +1,9 @@
 import { For, Show } from "solid-js";
 
 import { formatCount, formatDuration } from "../lib/format";
-import { locationStatus } from "../lib/locations";
+import { locationOf, locationStatus } from "../lib/locations";
 import { activeTab, isSearch, status } from "../state";
+import { SelectionSize, ViewSwitches } from "./StatusExtras";
 
 export function StatusBar() {
   const tab = activeTab;
@@ -21,9 +22,9 @@ export function StatusBar() {
 
   return (
     <footer class="statusbar">
-      {/* A special location's page (This PC, the Recycle Bin) says what it shows itself. */}
+      {/* A special location's page (Home, This PC, the Recycle Bin) says what it shows itself. */}
       <Show
-        when={tab() && !tab()!.listing && !tab()!.query && locationStatus(tab()!.id)}
+        when={tab() && !tab()!.listing && !tab()!.query && !tab()!.error && locationOf(tab()!.path)}
         fallback={
           <>
             <span>
@@ -32,11 +33,12 @@ export function StatusBar() {
             </span>
             <Show when={(tab()?.selected ?? 0) > 0}>
               <span>{formatCount(tab()!.selected)} selected</span>
+              <SelectionSize />
             </Show>
           </>
         }
       >
-        {(parts) => <For each={parts()}>{(part) => <span>{part}</span>}</For>}
+        <For each={locationStatus(tab()!.id) ?? []}>{(part) => <span>{part}</span>}</For>
       </Show>
       <Show when={tab()?.listing}>
         {(listing) => (
@@ -52,6 +54,7 @@ export function StatusBar() {
           <Show when={status().refreshing}>, refreshing</Show>
         </Show>
       </span>
+      <ViewSwitches />
     </footer>
   );
 }

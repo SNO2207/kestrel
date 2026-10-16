@@ -185,23 +185,30 @@ fn is_folder(path: &str) -> bool {
 #[derive(Default)]
 pub struct OtherPaneWatcher(Watcher);
 
-/// Watches `path` for the other pane from now on, or nothing when it is null. The front end
-/// calls this before listing that pane's folder, so no change falls between the two.
-#[tauri::command(async)]
-pub fn watch_other_pane(app: AppHandle, watcher: State<'_, OtherPaneWatcher>, path: Option<String>) {
-    match path {
-        Some(path) => watcher.0.watch(&crate::engine::normalize(&path), move |changed| {
-            let _ = app.emit("dir-changed", changed);
-        }),
-        None => watcher.0.stop(),
+impl OtherPaneWatcher {
+    /// Stops the watch of a window that has closed (`parity::appwindows`).
+    pub fn forget(&self, window: &str) {
+        self.0.forget(window);
     }
 }
 
-/// Watches `path` as the active tab's folder, as `list_dir` would, without listing it again:
-/// for a pane that takes the keyboard while already showing a watched folder.
+/// Watches `path` for the window's other pane from now on, or nothing when it is null. The
+/// front end calls this before listing that pane's folder, so no change falls between the two.
 #[tauri::command(async)]
-pub fn watch_active_folder(app: AppHandle, watcher: State<'_, Watcher>, path: String) {
-    watcher.watch(&crate::engine::normalize(&path), move |changed| {
+pub fn watch_other_pane(app: AppHandle, window: Window, watcher: State<'_, OtherPaneWatcher>, path: Option<String>) {
+    match path {
+        Some(path) => watcher.0.watch_for(window.label(), &crate::engine::normalize(&path), move |changed| {
+            let _ = app.emit("dir-changed", changed);
+        }),
+        None => watcher.0.forget(window.label()),
+    }
+}
+
+/// Watches `path` as the window's active tab's folder, as `list_dir` would, without listing it
+/// again: for a pane that takes the keyboard while already showing a watched folder.
+#[tauri::command(async)]
+pub fn watch_active_folder(app: AppHandle, window: Window, watcher: State<'_, Watcher>, path: String) {
+    watcher.watch_for(window.label(), &crate::engine::normalize(&path), move |changed| {
         let _ = app.emit("dir-changed", changed);
     });
 }

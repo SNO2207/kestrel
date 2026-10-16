@@ -335,31 +335,46 @@ fn place(app: &AppHandle, window: &WebviewWindow) {
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
-/// The main window is looked up as a `Window`: once the preview's webview is laid over it
-/// (`previewview.rs`) it holds two webviews, and Tauri no longer counts it a webview window.
-pub fn show_main(app: &AppHandle) {
-    if let Some(window) = app.get_window(MAIN) {
-        let _ = window.show();
-        if window.is_minimized().unwrap_or(false) {
-            let _ = window.unminimize();
-        }
-        let _ = window.set_focus();
+/// Brings forward the app window used last (`parity::appwindows`; `main` until another is
+/// opened) and returns its label. Windows are looked up as `Window`s: once the preview's
+/// webview is laid over one (`previewview.rs`) it holds two webviews, and Tauri no longer
+/// counts it a webview window.
+pub fn show_main(app: &AppHandle) -> Option<String> {
+    let window = crate::parity::appwindows::target(app)?;
+    let _ = window.show();
+    if window.is_minimized().unwrap_or(false) {
+        let _ = window.unminimize();
     }
+    let _ = window.set_focus();
+    Some(window.label().to_owned())
 }
 
-/// Window events: closing the main window may only hide it, closing it for real ends the app
-/// (the hidden quick window would otherwise keep it running), and the quick window hides when
-/// it loses the focus.
+/// Window events: closing the last app window may only hide it, closing it for real ends the
+/// app (the hidden quick window would otherwise keep it running), and the quick window hides
+/// when it loses the focus. Of several app windows (Ctrl+N), all but the last simply close.
 pub fn on_window_event(window: &Window, event: &WindowEvent) {
     let app = window.app_handle();
     let Some(launcher) = app.try_state::<Launcher>() else { return };
-    match (window.label(), event) {
-        (MAIN, WindowEvent::CloseRequested { api, .. }) if launcher.keeps_running() && !launcher.exiting.load(Ordering::Relaxed) => {
+    let label = window.label();
+    let app_window = crate::parity::appwindows::is_app_window(label);
+    let others = || {
+        crate::parity::appwindows::app_windows(app)
+            .into_iter()
+            .filter(|other| other.label() != label)
+            .collect::<Vec<_>>()
+    };
+    match (label, event) {
+        (_, WindowEvent::CloseRequested { api, .. })
+            if app_window
+                && launcher.keeps_running()
+                && !launcher.exiting.load(Ordering::Relaxed)
+                && !others().iter().any(|other| other.is_visible().unwrap_or(false)) =>
+        {
             api.prevent_close();
             let _ = window.hide();
         }
-        (MAIN, WindowEvent::Destroyed) => {
-            if !launcher.exiting.swap(true, Ordering::Relaxed) {
+        (_, WindowEvent::Destroyed) if app_window => {
+            if others().is_empty() && !launcher.exiting.swap(true, Ordering::Relaxed) {
                 app.exit(0);
             }
         }
@@ -411,9 +426,11 @@ pub fn set_start_with_windows(app: AppHandle, start: bool) -> Result<bool, Strin
     Ok(autostart::is_enabled(identifier))
 }
 
+/// Brings the app window used last forward, and returns its label, so the quick launcher can
+/// hand it what was chosen.
 #[tauri::command(async)]
-pub fn show_main_window(app: AppHandle) {
-    show_main(&app);
+pub fn show_main_window(app: AppHandle) -> Option<String> {
+    show_main(&app)
 }
 
 #[tauri::command(async)]

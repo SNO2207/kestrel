@@ -9,8 +9,10 @@
  * it always has.
  */
 import { createEffect, createSignal, on, onCleanup } from "solid-js";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { loadColumns } from "./lib/columns";
+import { givenLocation, startLocation } from "./lib/home";
 import { layoutApi } from "./lib/layoutApi";
 import { locationOf } from "./lib/locations";
 import {
@@ -111,14 +113,21 @@ function reopen(saved: SavedTab, pane: number): number {
   return id;
 }
 
+/** Only the first window keeps the layout; windows opened with Ctrl+N start from a folder. */
+const keepsLayout = () => getCurrentWindow().label === "main";
+
 /**
  * Opens the window's tabs as they were when the app last ran: called by `start` (state.ts)
- * once it knows the home folder. Loads the details view's columns too.
+ * once it knows the user folder (`profile`). Loads the details view's columns too. A window
+ * opened with Ctrl+N opens on the folder it was given; otherwise, with nothing kept, the first
+ * tab opens where Folder Options say (lib/home.ts).
  */
-export async function openLayout(home: string) {
+export async function openLayout(profile: string) {
   const docs = new Map(await layoutApi.load().catch(() => [] as [string, string][]));
   loadColumns(docs);
-  const saved = parseLayout(docs.get(PANES_DOC));
+  const given = await givenLocation();
+  const home = given ?? startLocation(profile);
+  const saved = keepsLayout() && !given ? parseLayout(docs.get(PANES_DOC)) : null;
   setSplitSignal(saved?.split ?? DEFAULT_SPLIT);
   hiddenSecond = saved && !saved.dual ? (saved.panes[1]?.tabs ?? []) : [];
   if (!starting() || !saved) {
@@ -177,6 +186,7 @@ export function startPanes() {
     snapshot();
     clearTimeout(timer);
     timer = window.setTimeout(() => {
+      if (!keepsLayout()) return;
       const text = JSON.stringify(snapshot());
       if (text === lastSaved) return;
       lastSaved = text;

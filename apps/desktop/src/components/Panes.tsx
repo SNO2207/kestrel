@@ -1,12 +1,12 @@
 import { For, Show, createSignal } from "solid-js";
 
 import { isDropTab } from "../dragdrop";
-import { locationTitle, titleOf } from "../lib/locations";
+import { locationTitle } from "../lib/locations";
 import { MAX_SPLIT, MIN_SPLIT, focusPane, openFilter, resetSplit, setSplit, split, toggleSecondPane } from "../panes";
-import { activeId, activePane, activeTab, closePane, closeTab, dual, isSearch, openTab, revealTab, shownTab, tabsIn, type Tab } from "../state";
+import { activeId, activePane, activeTab, closePane, closeTab, dual, isSearch, openTab, revealTab, shownTab, tabsIn } from "../state";
 import { Icon } from "./Icon";
+import { tabTitle } from "./TitleBar";
 
-const tabTitle = (tab: Tab) => (isSearch(tab) ? `Search: ${tab.query}` : titleOf(tab.path));
 const KEY_STEP = 0.02;
 
 /**

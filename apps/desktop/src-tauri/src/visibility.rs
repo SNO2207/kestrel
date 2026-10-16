@@ -10,25 +10,40 @@ use kestrel_index::attr;
 
 /// Attribute bits that keep an entry out of view unless hidden items are shown.
 const CONCEALING: u32 = attr::HIDDEN;
+/// A protected operating system file is hidden and system both. Explorer's Folder Options
+/// keep these out even while hidden items are shown ("Hide protected operating system files"),
+/// unless that option is turned off too.
+const PROTECTED: u32 = attr::HIDDEN | attr::SYSTEM;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Visibility {
     /// Hidden entries are included.
     pub hidden: bool,
+    /// Protected operating system files are included too (when hidden ones are).
+    pub protected: bool,
 }
 
 impl Visibility {
     /// Everything, as the engine listed before the option existed.
-    pub const ALL: Self = Self { hidden: true };
+    pub const ALL: Self = Self { hidden: true, protected: true };
 
     /// The visibility a command asked for. A caller that does not say gets everything, so
     /// older callers keep their behaviour.
     pub fn from_request(show_hidden: Option<bool>) -> Self {
-        Self { hidden: show_hidden.unwrap_or(true) }
+        Self { hidden: show_hidden.unwrap_or(true), protected: true }
+    }
+
+    /// The same, with protected operating system files left out unless `show_protected` (a
+    /// caller that does not say gets them, as before the option existed).
+    pub fn with_protected(self, show_protected: Option<bool>) -> Self {
+        Self { protected: show_protected.unwrap_or(true), ..self }
     }
 
     /// Whether an entry with these attributes belongs in the view.
     pub fn shows(self, attrs: u32) -> bool {
+        if attrs & PROTECTED == PROTECTED && !self.protected {
+            return false;
+        }
         self.hidden || attrs & CONCEALING == 0
     }
 }
@@ -43,7 +58,20 @@ mod tests {
     use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM, SetFileAttributesW};
 
     const BY_NAME: SortSpec = SortSpec { key: SortField::Name, desc: false };
-    const VISIBLE_ONLY: Visibility = Visibility { hidden: false };
+    const VISIBLE_ONLY: Visibility = Visibility { hidden: false, protected: true };
+    /// Hidden items shown, protected operating system files still left out (Explorer's default
+    /// once "Show hidden items" is on).
+    const HIDDEN_NOT_PROTECTED: Visibility = Visibility { hidden: true, protected: false };
+
+    #[test]
+    fn protected_files_stay_out_while_hidden_ones_are_shown() {
+        assert!(HIDDEN_NOT_PROTECTED.shows(attr::HIDDEN));
+        assert!(HIDDEN_NOT_PROTECTED.shows(attr::SYSTEM | attr::DIRECTORY));
+        assert!(!HIDDEN_NOT_PROTECTED.shows(attr::HIDDEN | attr::SYSTEM));
+        assert!(!HIDDEN_NOT_PROTECTED.shows(attr::HIDDEN | attr::SYSTEM | attr::DIRECTORY));
+        assert_eq!(Visibility::from_request(Some(true)).with_protected(Some(false)), HIDDEN_NOT_PROTECTED);
+        assert_eq!(Visibility::from_request(Some(true)).with_protected(None), Visibility::ALL);
+    }
 
     #[test]
     fn hidden_entries_are_concealed_unless_asked_for() {
@@ -110,6 +138,33 @@ mod tests {
         assert_eq!(names(&engine, found.set), ["shown.txt", "system-dir"]);
         let found = engine.search_with("s", Some(&root_str), BY_NAME, Visibility::ALL).unwrap();
         assert_eq!(names(&engine, found.set), ["secret-dir", "secret.txt", "shown.txt", "system-dir"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn protected_files_are_left_out_of_listings_and_searches_unless_asked_for() {
+        let root = std::env::temp_dir().join(format!("kestrel-protected-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("plain.txt"), b"1").unwrap();
+        fs::write(root.join("hidden.txt"), b"1").unwrap();
+        fs::write(root.join("protected.sys"), b"1").unwrap();
+        hide(&root.join("hidden.txt"));
+        set_attributes(&root.join("protected.sys"), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+        let root_str = root.to_str().unwrap().to_owned();
+        let engine = Engine::default();
+        let listed = engine.list_dir_with(&root_str, BY_NAME, HIDDEN_NOT_PROTECTED).unwrap();
+        assert_eq!(names(&engine, listed.set), ["hidden.txt", "plain.txt"]);
+        let everything = engine.list_dir_with(&root_str, BY_NAME, Visibility::ALL).unwrap();
+        assert_eq!(names(&engine, everything.set), ["hidden.txt", "plain.txt", "protected.sys"]);
+        let mut builder = IndexBuilder::new();
+        walk::walk(&root_str, &mut builder).unwrap();
+        engine.install(builder.finish());
+        let found = engine.search_with("t", Some(&root_str), BY_NAME, HIDDEN_NOT_PROTECTED).unwrap();
+        assert_eq!(names(&engine, found.set), ["hidden.txt", "plain.txt"]);
+        // Files can't be deleted while marked system and hidden.
+        set_attributes(&root.join("protected.sys"), 0x80);
+        set_attributes(&root.join("hidden.txt"), 0x80);
         fs::remove_dir_all(&root).unwrap();
     }
 }

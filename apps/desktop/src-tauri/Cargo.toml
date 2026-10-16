@@ -47,6 +47,11 @@ windows = { version = "0.62", features = [
     "Win32_System_Ole",
     "Win32_System_SystemServices",
     "Win32_UI_Shell_Common",
+    # Explorer parity (src/parity): reading shortcuts' targets (IShellLinkW::GetPath takes find
+    # data) and the details pane's properties from the Windows property system.
+    "Win32_Storage_FileSystem",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
 ] }
 windows-core = "0.62"
 windows-sys = { workspace = true, features = [
