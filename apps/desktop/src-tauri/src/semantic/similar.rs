@@ -85,8 +85,11 @@ fn candidates(index: &Index, rows: &HashMap<(u32, u64), u32>, within: &Within) -
         let entry = index.entries_with_file_id(file_id).into_iter().find(|&id| {
             !index.is_dir(id)
                 && index.size(id) >= within.min_size
-                && roots.iter().any(|&root| index.is_under(id, root))
-                && !excluded.iter().any(|&dir| index.is_under(id, dir))
+                // As the duplicate finder walks: a folder left out is skipped only beneath a root,
+                // so a root inside one (a folder under AppData chosen on purpose) is still looked in.
+                && roots.iter().any(|&root| {
+                    index.is_under(id, root) && !excluded.iter().any(|&dir| dir != root && index.is_under(dir, root) && index.is_under(id, dir))
+                })
                 && volume_code(&index.path(id)) == Some(volume)
         });
         if let Some(id) = entry {
@@ -223,6 +226,10 @@ mod tests {
         let names: Vec<String> = found.iter().map(|c| c.file.path.rsplit('\\').next().unwrap().to_owned()).collect();
         assert_eq!(names, ["beach.jpg", "burst 1.jpg", "burst 2.jpg", "burst 3.jpg"], "too small and left out are not looked at");
         assert!(found.iter().all(|c| c.file.size == 2000 && c.file.modified > 1_600_000_000_000));
+        // A folder chosen inside one left out (a scratch folder under AppData) is looked in.
+        let inside = Within { roots: &[path("elsewhere")], exclude: &[root.to_str().unwrap().to_owned(), path("elsewhere")], min_size: 100 };
+        let names: Vec<String> = candidates(&index, &rows, &inside).iter().map(|c| c.file.path.rsplit('\\').next().unwrap().to_owned()).collect();
+        assert_eq!(names, ["burst 4.jpg"]);
         assert_eq!(photo_rows(&store).len(), 6);
 
         // At 0.95: the three bursts, linked through the second; the beach alone isn't a group.
