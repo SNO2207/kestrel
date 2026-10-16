@@ -4,19 +4,24 @@
  * or folder the hub analyses. These are the command palette's ways to them.
  */
 import { analysableFolder, driveOf, openDiskUsage, setDiskTab } from "./disk";
+import { cleanupApi } from "./lib/cleanupApi";
 import { activeTab, places } from "./state";
 
 /** The hub's tabs for the two panels. */
 export type CleanupTab = "cleanup" | "duplicates";
 
 /**
- * Opens the hub on a tab: recommendations for the drive on screen, duplicates in the user
- * folder, where copies collect (and where the finder looked by default before it was a tab).
+ * Opens the hub on a tab: recommendations for the drive on screen, duplicates where the finder
+ * looks by default (the user folder: `dupes_defaults`, which tests point at a scratch folder).
  */
-export function openCleanup(which: CleanupTab) {
+export async function openCleanup(which: CleanupTab) {
   const here = analysableFolder(activeTab());
   const home = places().home;
-  const root = which === "cleanup" ? driveOf(here ?? (home || "C:\\")) : home || here || "C:\\";
+  const fallback = here ?? (home || "C:\\");
+  const root =
+    which === "cleanup"
+      ? driveOf(fallback)
+      : ((await cleanupApi.dupesDefaults().then((defaults) => defaults.roots[0]).catch(() => undefined)) ?? (home || fallback));
   setDiskTab(which);
   openDiskUsage(root);
 }
@@ -28,13 +33,13 @@ export function cleanupActions() {
       id: "cleanup-recommendations",
       title: "Cleanup recommendations",
       keywords: "clean up free space disk storage junk temporary cache recycle",
-      run: () => openCleanup("cleanup"),
+      run: () => void openCleanup("cleanup"),
     },
     {
       id: "find-duplicates",
       title: "Find duplicate files",
       keywords: "duplicates copies same identical free space disk",
-      run: () => openCleanup("duplicates"),
+      run: () => void openCleanup("duplicates"),
     },
   ];
 }

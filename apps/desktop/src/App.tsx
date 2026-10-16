@@ -262,7 +262,8 @@ export function App() {
                   listFocus.set(tab.id, focus);
                   onCleanup(() => listFocus.delete(tab.id));
                 }}
-                onFocusRow={(row) => setFocusedRow(tab.id, row)}
+                // A location's page reports its own focused item (HomeView); the list beneath is hidden.
+                onFocusRow={(row) => !pageOf(tab) && setFocusedRow(tab.id, row)}
                 stepRef={(step) => onCleanup(registerStepper(tab.id, step))}
                 selectRef={(control) => onCleanup(registerSelector(tab.id, control))}
               />

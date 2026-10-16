@@ -377,13 +377,18 @@ export function FolderTree() {
     if (scroll) reveal(indexOf(target), true);
   };
 
-  /** Ctrl+Shift+E (ParityLayer.tsx): Explorer's "Expand to current folder", which takes the keyboard. */
-  const onRevealRequest = () =>
+  /**
+   * Ctrl+Shift+E (ParityLayer.tsx): Explorer's "Expand to current folder", which takes the
+   * keyboard, unless the keyboard has moved on elsewhere while the tree was being expanded.
+   */
+  const onRevealRequest = () => {
+    const holder = document.activeElement;
     void revealCurrent(true, true).then(() => {
       const target = nodeAt(currentPath() ?? THIS_PC);
       if (target) setFocusNode(target);
-      tree.focus();
+      if (document.activeElement === holder) tree.focus();
     });
+  };
 
   createEffect(on([currentPath, expandToOpen], () => void revealCurrent(true)));
 

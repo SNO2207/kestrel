@@ -152,6 +152,10 @@ export function AddressInput(props: {
 
   onMount(() => {
     props.ref(input);
+    // The box exists only while the address is edited, so it takes the keyboard as it appears:
+    // the toolbar's own focus call runs before this mounts (Alt+D, Ctrl+L, F4, a click).
+    input.focus();
+    input.select();
     onCleanup(() => clearTimeout(timer));
   });
 

@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { connectToKestrel } from "./connect.mjs";
@@ -143,6 +143,11 @@ async function open(path, expectName) {
   await page.keyboard.press("Control+l");
   await page.locator(".address-input").fill(path);
   await page.keyboard.press("Enter");
+  // The folder's name ends the breadcrumb once the tab is there: both folders hold an a.txt.
+  await page.waitForFunction((name) => {
+    const crumbs = document.querySelectorAll(".crumbs .crumb");
+    return crumbs.length > 0 && crumbs[crumbs.length - 1].textContent === name;
+  }, basename(path));
   if (expectName) await item(expectName).waitFor();
   else await active().locator(".list-empty").waitFor();
 }

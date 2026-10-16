@@ -1,6 +1,6 @@
 import { Show, createEffect, createSignal, on, onCleanup, onMount, type JSX } from "solid-js";
 
-import { inArchive } from "../archives";
+import { inArchive, isArchiveFile } from "../archives";
 import { api, type SortKey } from "../lib/api";
 import {
   detailsOpen,
@@ -17,6 +17,7 @@ import {
   toggleDetails,
   toggleFullScreen,
 } from "../parity";
+import { focusedItem } from "../previewState";
 import { activeId, activeTab, setSortSpec, startsDescending } from "../state";
 import { redoLast, undoLast } from "../undo";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
@@ -44,6 +45,12 @@ export function CommandBar(props: { runCommand: (command: ListCommand) => void; 
   const tab = activeTab;
   const selected = () => tab()?.selected ?? 0;
   const folder = () => inFolder(tab());
+  /** Inside an archive, or with one archive selected, "Extract all…" has something to extract. */
+  const extractable = () => {
+    if (inArchive(tab()?.listing)) return true;
+    const item = focusedItem();
+    return selected() === 1 && item !== null && isArchiveFile(item);
+  };
   /** Inside an archive nothing can be cut, renamed or deleted (archives.ts). */
   const changeable = () => selected() > 0 && !inArchive(tab()?.listing);
 
@@ -117,6 +124,11 @@ export function CommandBar(props: { runCommand: (command: ListCommand) => void; 
       { label: "Select all", hint: "Ctrl+A", disabled: !listed, run: () => selectAll(current.id) },
       { label: "Select none", disabled: !listed || selected() === 0, run: () => selectNone(current.id) },
       { label: "Invert selection", disabled: !listed, run: () => invertSelection(current.id) },
+      "separator",
+      // Archives (archives.ts) and the disk usage hub (disk.ts), as their menus have them.
+      { label: "Compress to ZIP file", disabled: !browsing || selected() === 0, run: () => props.runCommand("compress-zip") },
+      { label: "Extract all…", disabled: !extractable(), run: () => props.runCommand("extract-all") },
+      { label: "Show disk usage", hint: "Ctrl+Shift+U", disabled: !browsing && !inArchive(current.listing), run: () => props.runCommand("disk-usage") },
       "separator",
       { label: "Open in Terminal", disabled: !browsing, run: () => openInTerminal(current.path) },
       { label: "New window", hint: "Ctrl+N", run: () => openNewWindow() },

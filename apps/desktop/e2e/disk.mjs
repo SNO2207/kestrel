@@ -267,7 +267,7 @@ try {
     for (const t of all.filter((t) => t.parent >= 0)) assert(inside(t, all[t.parent]), `${t.name} lies inside its folder`);
     for (const a of all) {
       for (const b of all) {
-        if (a !== b && a.parent === b.parent) assert(overlap(a, b) < 0.01, `${a.name} and ${b.name} overlap`);
+        if (a !== b && a.parent === b.parent) assert(overlap(a, b) === 0, `${a.name} and ${b.name} overlap: ${JSON.stringify([a, b])}`);
       }
     }
     const movie = await tile("movie.mp4");
@@ -484,9 +484,13 @@ function inside(a, b) {
   return a.x >= b.x - 0.01 && a.y >= b.y - 0.01 && a.x + a.w <= b.x + b.w + 0.01 && a.y + a.h <= b.y + b.h + 0.01;
 }
 
-/** The area two tiles share. */
+/**
+ * The area two tiles share. Positions arrive rounded to a hundredth of a pixel (`disk_treemap`),
+ * so tiles that meet can seem to share a sliver that thin; such a sliver is no overlap.
+ */
 function overlap(a, b) {
+  const ROUNDING = 0.02;
   const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
   const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
-  return w > 0 && h > 0 ? w * h : 0;
+  return w > ROUNDING && h > ROUNDING ? w * h : 0;
 }
