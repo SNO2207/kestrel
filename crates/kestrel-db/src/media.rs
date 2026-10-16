@@ -361,6 +361,37 @@ pub fn find_text(db: &Db, query: &str) -> Result<Vec<(String, u64)>> {
     })
 }
 
+/// An item whose recognised text holds some of the words looked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextHit {
+    pub volume: String,
+    pub file_id: u64,
+    pub text: String,
+}
+
+/// Up to `limit` items in the scopes whose recognised text holds any of `words` (whole words,
+/// any case or accent), best matches first: what AI search weighs a description's words with.
+pub fn text_hits(db: &Db, words: &[String], limit: usize) -> Result<Vec<TextHit>> {
+    let terms: Vec<String> = words
+        .iter()
+        .map(|word| word.chars().filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-').collect::<String>())
+        .filter(|word| !word.is_empty())
+        .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
+        .collect();
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let query = terms.join(" OR ");
+    db.with(|c| {
+        c.prepare(
+            "SELECT i.volume, i.file_id, t.text FROM media_text t JOIN media_items i ON i.id = t.rowid
+             WHERE media_text MATCH ?1 AND i.gone IS NULL ORDER BY bm25(media_text) LIMIT ?2",
+        )?
+        .query_map(params![query, limit as i64], |row| Ok(TextHit { volume: row.get(0)?, file_id: row.get::<_, i64>(1)? as u64, text: row.get(2)? }))?
+        .collect()
+    })
+}
+
 /// The FTS5 query for text typed after `text:`: every word must appear, in order and side by
 /// side when they were quoted together, and the last may be the start of a longer word, as
 /// names match as you type. Every word is quoted, so nothing typed is read as FTS5 syntax.
@@ -528,5 +559,22 @@ mod tests {
         assert_eq!(find("order"), [1], "gone from the scopes: not found");
         set_text(&db, ids[0], "").unwrap();
         assert_eq!(find("costco"), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn any_word_of_a_description_finds_text_best_first() {
+        let db = Db::open_in_memory().unwrap();
+        let ids = add(&db, &[found(1, r"C:\receipt.png", PHOTO), found(2, r"C:\note.png", PHOTO), found(3, r"C:\x.png", PHOTO)]).unwrap();
+        set_text(&db, ids[0], "COSTCO WHOLESALE receipt total 42.17").unwrap();
+        set_text(&db, ids[1], "Shopping list: milk, bread").unwrap();
+        set_text(&db, ids[2], "Nothing to see").unwrap();
+        let words = |w: &[&str]| w.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        let hits = text_hits(&db, &words(&["costco", "receipt", "milk"]), 10).unwrap();
+        assert_eq!(hits.iter().map(|hit| hit.file_id).collect::<Vec<_>>(), [1, 2], "two words beat one");
+        assert_eq!((hits[0].volume.as_str(), hits[0].text.as_str()), ("c:", "COSTCO WHOLESALE receipt total 42.17"));
+        assert!(text_hits(&db, &words(&["\"", " "]), 10).unwrap().is_empty());
+        assert_eq!(text_hits(&db, &words(&["42.17"]), 10).unwrap().len(), 1);
+        mark_gone(&db, &[ids[0]], 50).unwrap();
+        assert_eq!(text_hits(&db, &words(&["costco", "milk"]), 10).unwrap().iter().map(|hit| hit.file_id).collect::<Vec<_>>(), [2]);
     }
 }

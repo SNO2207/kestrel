@@ -65,4 +65,6 @@ export const STAGE_LABELS: Record<string, string> = {
   metadata: "Details (dimensions, date taken, camera, place, length)",
   thumbnail: "Thumbnails for the Gallery",
   text: "Text in images",
+  // AI search's embedding stage (semantic/stage.rs), ready once a model is downloaded.
+  embedding: "Descriptions for AI search (with a model downloaded)",
 };

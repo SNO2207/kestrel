@@ -456,3 +456,90 @@ fn the_text_stage_stores_what_it_reads_for_searches() {
     pipeline.stop();
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A stage whose model comes and goes: not ready, ready at one version, then at another.
+#[derive(Default)]
+struct Modelled {
+    /// 0 while no model is loaded.
+    version: std::sync::atomic::AtomicU32,
+    runs: Mutex<Vec<(String, u32)>>,
+    /// Makes the next run take the model away while it runs.
+    lose_model: AtomicBool,
+}
+
+impl Stage for Modelled {
+    fn name(&self) -> &'static str {
+        "modelled"
+    }
+
+    fn version(&self) -> u32 {
+        self.version.load(Ordering::SeqCst)
+    }
+
+    fn ready(&self) -> bool {
+        self.version() != 0
+    }
+
+    fn needs(&self) -> Needs {
+        Needs { pixels: 32 }
+    }
+
+    fn run(&self, item: &Item, _: &Input) -> Result<(), String> {
+        if self.lose_model.swap(false, Ordering::SeqCst) {
+            self.version.store(0, Ordering::SeqCst);
+            return Err("the model went".into());
+        }
+        let name = item.path.rsplit('\\').next().unwrap().to_owned();
+        self.runs.lock().push((name, self.version()));
+        Ok(())
+    }
+}
+
+#[test]
+fn a_stage_waits_until_it_is_ready_and_runs_again_for_another_version() {
+    let _com = Apartment::enter();
+    let dir = scratch("ready");
+    fixtures::write_jpeg(&dir.join("a.jpg"), &quarters(120, 80), &Exif::default()).unwrap();
+    fixtures::write_jpeg(&dir.join("b.jpg"), &quarters(80, 120), &Exif::default()).unwrap();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let stage = Arc::new(Modelled::default());
+    let pipeline = Pipeline::new(db.clone(), Config { workers: 1, conditions: Box::new(|| None), recheck: Duration::from_millis(50) });
+    pipeline.register(stage.clone());
+    pipeline.start();
+
+    // Not ready: the metadata stage runs, this one has no work and nothing is queued for it.
+    pipeline.plan(candidates(&dir)).unwrap();
+    assert!(pipeline.wait_idle(Duration::from_secs(30)));
+    assert!(stage.runs.lock().is_empty());
+    assert_eq!(pipeline.progress().queued, 0);
+
+    // Ready: everything is queued for it once asked.
+    stage.version.store(7, Ordering::SeqCst);
+    pipeline.requeue();
+    assert!(pipeline.wait_idle(Duration::from_secs(30)));
+    assert_eq!(stage.runs.lock().len(), 2);
+    assert!(stage.runs.lock().iter().all(|(_, version)| *version == 7));
+
+    // Another version (another model): everything again.
+    stage.version.store(8, Ordering::SeqCst);
+    pipeline.requeue();
+    assert!(pipeline.wait_idle(Duration::from_secs(30)));
+    assert_eq!(stage.runs.lock().len(), 4);
+
+    // The model goes while a changed file is read: that failure isn't recorded, and the file
+    // is read once the model is back.
+    std::thread::sleep(Duration::from_millis(20));
+    fixtures::write_jpeg(&dir.join("a.jpg"), &quarters(160, 80), &Exif::default()).unwrap();
+    stage.lose_model.store(true, Ordering::SeqCst);
+    pipeline.plan(candidates(&dir)).unwrap();
+    assert!(pipeline.wait_idle(Duration::from_secs(30)));
+    assert_eq!(stage.runs.lock().len(), 4);
+    assert!(pipeline.progress().skipped.is_empty(), "{:?}", pipeline.progress().skipped);
+    stage.version.store(8, Ordering::SeqCst);
+    pipeline.requeue();
+    assert!(pipeline.wait_idle(Duration::from_secs(30)));
+    assert_eq!(stage.runs.lock().last().unwrap(), &("a.jpg".to_owned(), 8));
+    assert_eq!(stage.runs.lock().len(), 5);
+    pipeline.stop();
+    std::fs::remove_dir_all(&dir).unwrap();
+}

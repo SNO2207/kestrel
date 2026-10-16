@@ -12,6 +12,7 @@ import { createSignal } from "solid-js";
 
 import type { MenuEntry } from "./components/ContextMenu";
 import type { Row } from "./lib/api";
+import { mediaApi } from "./lib/mediaApi";
 import { semanticApi, type SemanticState } from "./lib/semanticApi";
 import { activeTab, openSearch, setQuery } from "./state";
 
@@ -66,11 +67,21 @@ export async function refreshSemantic() {
   if (next) setState(next);
 }
 
-/** Keeps `semanticState` current from now on. */
+let refreshDue: number | undefined;
+
+/** Keeps `semanticState` current from now on: the describing is the media library's pass, so
+ * its progress (and its Pause, wherever pressed) changes the state too. */
 export function watchSemantic() {
   if (!listening) {
     listening = true;
     void semanticApi.onChange(() => void refreshSemantic());
+    void mediaApi.onProgress(() => {
+      if (refreshDue !== undefined) return;
+      refreshDue = window.setTimeout(() => {
+        refreshDue = undefined;
+        void refreshSemantic();
+      }, 250);
+    });
   }
   void refreshSemantic();
 }

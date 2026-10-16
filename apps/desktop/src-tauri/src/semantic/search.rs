@@ -3,7 +3,8 @@
 //!
 //! In two steps, so that the index is held only for the second: [`prepare`] runs the model (the
 //! description through the text tower, or the picture's stored vectors) and scans the vector
-//! store, and looks the description's words up in the text read from photos; then
+//! store, and looks the description's words up in the text the media library read from photos
+//! (its text stage, `media_text`); then
 //! [`Prepared::resolve`], with the index held, turns files into entries and scores each:
 //!
 //!   score = how alike it looks (cosine) + span x (0.6 x share of the words in its text
@@ -16,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use kestrel_db::semantic::{self as data, TextHit};
+use kestrel_db::media::{self as library, TextHit};
 use kestrel_embed::catalog::ModelSpec;
 use kestrel_embed::{Embedder, Rgb, video};
 use kestrel_index::{EntryId, Index, fold, walk};
@@ -110,9 +111,12 @@ impl Like {
             candidates.insert(hit.key.file(), Candidate { sight: Some(hit.score), at_ms: hit.key.at_ms, text: 0.0 });
         }
         for text in texts {
-            let found = share(&words, &text.body);
-            if found > 0.0 {
-                candidates.entry((text.file.volume, text.file.file_id)).or_default().text = found;
+            let found = share(&words, &text.text);
+            // The library names volumes as `c:`; the store by the letter's code.
+            if found > 0.0
+                && let Some(volume) = volume_code(&text.volume)
+            {
+                candidates.entry((volume, text.file_id)).or_default().text = found;
             }
         }
         Like { description: description.to_owned(), threshold: fewer - span * cutoff, span, loose: more, words, candidates }
@@ -216,7 +220,7 @@ fn prepare_one(semantic: &Semantic, loaded: &Loaded, spec: &ModelSpec, descripti
         let rows = store.search(&vector, HITS, Like::floor(range));
         store.best_per_file(&rows)
     };
-    let texts = if picture { Vec::new() } else { data::search_text(&semantic.db, &words_of(description), TEXT_HITS).unwrap_or_default() };
+    let texts = if picture { Vec::new() } else { library::text_hits(&semantic.db, &words_of(description), TEXT_HITS).unwrap_or_default() };
     Ok(Like::new(description, range, cutoff, &hits, &texts))
 }
 
@@ -280,7 +284,6 @@ mod tests {
     use super::*;
     use crate::engine::{Engine, SortField, SortSpec};
     use crate::visibility::Visibility;
-    use kestrel_db::semantic::FileState;
     use kestrel_index::IndexBuilder;
     use kestrel_vector::Key;
 
@@ -322,10 +325,7 @@ mod tests {
             hit("cat.jpg", 0.02, None),
         ];
         // The scan was never described, but its text says "dog".
-        let texts = [TextHit {
-            file: FileState { volume, file_id: id_of("scan.png"), size: 1, mtime: 1 },
-            body: "DOG LICENCE 2024".into(),
-        }];
+        let texts = [TextHit { volume: kestrel_media::volume_of(root.to_str().unwrap()).unwrap(), file_id: id_of("scan.png"), text: "DOG LICENCE 2024".into() }];
         let mut builder = IndexBuilder::new();
         walk::walk(root.to_str().unwrap(), &mut builder).unwrap();
         let engine = Engine::default();

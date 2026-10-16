@@ -4,21 +4,20 @@
 //!
 //! - `models.rs`: the AI search page's catalogue, downloads (only when the owner clicks, with
 //!   progress, resume, cancel and SHA-256 checks), deletion and the self-test.
-//! - `stage.rs`: the embedding stage (photos and video frames to vectors, photos' text to the
-//!   text index), shaped to be a stage of the media pipeline.
-//! - `driver.rs`: stands in for that pipeline: walks the index for photos and videos in the
-//!   scopes, at low priority, pausable, never opening a cloud-only file, incremental by file key.
+//! - `stage.rs`: the embedding stage, one stage of the media library's pass (photos and video
+//!   frames to vectors). The library chooses the files, schedules them, pauses (one Pause for
+//!   all of it) and decodes each photo once for every stage; its folders are AI search's.
 //! - `search.rs`: resolves `like:` clauses (and `~` queries) for the engine, as tags are: the
-//!   description (or a picture, for "Find similar") against the store, with the text read from
-//!   photos and their names, ranked and cut off where the owner's slider says.
+//!   description (or a picture, for "Find similar") against the store, with the text the
+//!   library read from photos (`media_text`) and their names, ranked and cut off where the
+//!   owner's slider says.
 //!
 //! The model in use loads on a background thread when Kestrel starts (when one is installed),
-//! or when a search first needs it, and stays loaded. Everything the page shows comes from
-//! `semantic_state`; `semantic-state` events say when to ask again.
+//! or when a search first needs it, and stays loaded; while it is loaded the stage is ready and
+//! the library describes what it holds. Everything the page shows comes from `semantic_state`;
+//! `semantic-state` events say when to ask again.
 
-mod driver;
 pub mod models;
-mod scopes;
 pub mod search;
 pub mod stage;
 
@@ -38,13 +37,14 @@ use parking_lot::{Condvar, Mutex, RwLock};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::engine::Engine;
+use crate::media::Media;
+use stage::DescribeStage;
 
 /// Settings, in the database's settings table.
 const ACTIVE: &str = "semantic.active";
-const PAUSED: &str = "semantic.paused";
 const CUTOFF: &str = "semantic.cutoff";
-const SCOPES: &str = "semantic.scopes";
+/// Compact the store when this share of its rows are tombstones.
+const COMPACT_SHARE: f32 = 0.25;
 
 /// How long a search waits for the model to load.
 const LOAD_WAIT: Duration = Duration::from_secs(120);
@@ -76,23 +76,27 @@ enum Runtime {
     Failed(String, String),
 }
 
-/// What the background describing is doing, for the page.
+/// What the background describing is doing, for the page: the media library's pass, as far as
+/// its embedding stage goes.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Indexing {
-    /// `off` (no model), `loading`, `working`, `done`, `paused` or `failed`.
+    /// `off` (no model), `loading`, `working`, `waiting` (on a full-screen app or battery
+    /// saver), `done`, `paused` or `failed`.
     pub state: &'static str,
     /// Photos and videos described so far with the model in use.
     pub files: usize,
-    /// Photos and videos in the folders described.
-    pub media: usize,
-    /// Left to do in this pass, and done in it.
-    pub queued: usize,
-    pub done: usize,
+    /// Photos and videos in the library's folders.
+    pub media: u64,
+    /// Waiting for the pass (some stage, this one included, has work left on them).
+    pub queued: u64,
+    /// Described with the model in use, as the pass recorded it.
+    pub done: u64,
     /// Files the model couldn't read.
     pub unreadable: u64,
-    /// What it is reading now.
+    /// What the pass is reading now.
     pub current: Option<String>,
+    /// Why it stopped, or why it waits.
     pub error: Option<String>,
 }
 
@@ -107,16 +111,17 @@ pub struct RuntimeView {
 }
 
 pub struct Semantic {
-    engine: Arc<Engine>,
     db: Arc<Db>,
+    /// The library whose pass describes: its folders, its pause and its progress are AI search's.
+    media: Arc<Media>,
+    /// The embedding stage, registered with the library's pass.
+    stage: Arc<DescribeStage>,
     app: Mutex<Option<AppHandle>>,
     runtime: Mutex<Runtime>,
     runtime_changed: Condvar,
-    /// Bumped whenever the model in use, the scopes or the pause change: a pass in progress
-    /// stops, and the driver looks again at once.
+    /// Bumped whenever the model in use changes: the loading thread looks again at once.
     epoch: AtomicU64,
     wake: (Mutex<bool>, Condvar),
-    indexing: Mutex<Indexing>,
     downloads: Mutex<HashMap<String, Arc<models::Job>>>,
     /// Development builds: where a model's files come from instead, and what they are.
     overrides: Mutex<HashMap<String, models::Override>>,
@@ -129,31 +134,94 @@ pub struct Semantic {
 }
 
 impl Semantic {
-    pub fn new(engine: Arc<Engine>, db: Arc<Db>) -> Arc<Self> {
-        Arc::new(Self {
-            engine,
+    /// AI search, with its embedding stage registered in the media library's pass (which only
+    /// runs it while a model is loaded), and vectors of files the library let go of dropped
+    /// after each of its plans.
+    pub fn new(db: Arc<Db>, media: Arc<Media>) -> Arc<Self> {
+        let semantic = Arc::new_cyclic(|me| Self {
             db,
+            media: media.clone(),
+            stage: Arc::new(DescribeStage::new(me.clone())),
             app: Mutex::new(None),
             runtime: Mutex::new(Runtime::Off),
             runtime_changed: Condvar::new(),
             epoch: AtomicU64::new(0),
             wake: (Mutex::new(false), Condvar::new()),
-            indexing: Mutex::new(Indexing { state: "off", ..Indexing::default() }),
             downloads: Mutex::new(HashMap::new()),
             overrides: Mutex::new(HashMap::new()),
             moments: Mutex::new(VecDeque::new()),
             downloads_started: AtomicUsize::new(0),
             last_status: Mutex::new(None),
-        })
+        });
+        media.pipeline().register(semantic.stage.clone());
+        let tidying = Arc::downgrade(&semantic);
+        media.after_plan(move |pipeline| {
+            if let Some(semantic) = tidying.upgrade() {
+                semantic.tidy(pipeline);
+            }
+        });
+        semantic
     }
 
-    /// Checks the installed models are still all there, and starts describing in the
-    /// background (which loads the model in use first).
+    /// Checks the installed models are still all there, and loads the model in use in the
+    /// background, after which the library's pass describes what it holds.
     pub fn start(self: &Arc<Self>, app: AppHandle) {
         *self.app.lock() = Some(app);
         self.check_installs();
         let me = self.clone();
-        let _ = std::thread::Builder::new().name("kestrel-semantic".into()).spawn(move || driver::run(me));
+        let _ = std::thread::Builder::new().name("kestrel-semantic".into()).spawn(move || me.keep_ready());
+    }
+
+    /// The loading thread: keeps the model in use loaded, and the stage ready while it is.
+    fn keep_ready(&self) {
+        // Give the window a moment to open before the model loads.
+        self.wait(Duration::from_secs(3));
+        loop {
+            let epoch = self.epoch();
+            match self.active() {
+                None => self.use_model(None),
+                Some(model) => {
+                    let failed = matches!(&*self.runtime.lock(), Runtime::Failed(failed, _) if *failed == model);
+                    if !failed {
+                        // Loading reads a gigabyte or two, at normal priority: a search may be
+                        // waiting for it.
+                        match self.ready() {
+                            Ok(loaded) => self.use_model(Some(&loaded)),
+                            Err(_) => self.use_model(None),
+                        }
+                    }
+                }
+            }
+            if let Some(loaded) = self.current() {
+                let _ = loaded.store.write().flush();
+            }
+            if self.epoch() == epoch {
+                self.wait(Duration::from_secs(30));
+            }
+        }
+    }
+
+    /// Readies the stage for `loaded` (or for no model), and has the library queue its work
+    /// again when that changed anything.
+    fn use_model(&self, loaded: Option<&Loaded>) {
+        if self.stage.set_model(loaded) {
+            self.media.pipeline().requeue();
+            self.status_changed(true);
+        }
+    }
+
+    /// After the library's plan: vectors of files it no longer holds go, and the store is
+    /// compacted once enough of it is tombstones.
+    fn tidy(&self, pipeline: &kestrel_media::pipeline::Pipeline) {
+        let Some(loaded) = self.current() else { return };
+        let held: std::collections::HashSet<(u32, u64)> =
+            pipeline.items().iter().filter_map(|item| Some((stage::volume_code(&item.path)?, item.file_id))).collect();
+        stage::sweep(&loaded.store, &held);
+        let mut store = loaded.store.write();
+        if store.dead_share() > COMPACT_SHARE && store.len() > 64 {
+            let _ = store.compact();
+        }
+        let _ = store.flush();
     }
 
     /// Forgets installs whose files went or changed size (a full SHA-256 check happened when
@@ -273,6 +341,8 @@ impl Semantic {
     /// Lets go of the loaded model; it loads again when next needed. Returns it, so a caller
     /// about to delete its files can wait until nothing else holds it.
     fn unload(&self) -> Option<Arc<Loaded>> {
+        // The stage stops first, so no run in progress records its failure.
+        self.stage.set_model(None);
         let previous = std::mem::replace(&mut *self.runtime.lock(), Runtime::Off);
         self.runtime_changed.notify_all();
         self.bump();
@@ -282,14 +352,10 @@ impl Semantic {
         }
     }
 
-    /// Whether no model is loaded, loading or failed: as after a delete or a switch.
-    fn runtime_is_off(&self) -> bool {
-        matches!(&*self.runtime.lock(), Runtime::Off)
-    }
-
     /// Lets go of `model` if it is loaded or loading, and waits up to `patience` until nothing
     /// holds it any more.
     fn release(&self, model: &str, patience: Duration) {
+        self.stage.set_model(None);
         let deadline = Instant::now() + patience;
         let mut runtime = self.runtime.lock();
         while matches!(&*runtime, Runtime::Loading(loading) if loading == model) {
@@ -326,8 +392,9 @@ impl Semantic {
         }
     }
 
+    /// The media library's pause, which holds the describing with the rest of its pass.
     pub fn paused(&self) -> bool {
-        self.db.setting(PAUSED).ok().flatten().unwrap_or(false)
+        self.media.pipeline().is_paused()
     }
 
     /// The owner's relevance slider, from 0 (fewer, only close matches) to 1 (more).
@@ -335,26 +402,22 @@ impl Semantic {
         self.db.setting::<f32>(CUTOFF).ok().flatten().unwrap_or(0.5).clamp(0.0, 1.0)
     }
 
-    /// The folders described: the owner's choice, else their picture and video folders.
+    /// The folders described: the media library's.
     pub fn scopes(&self) -> Vec<String> {
-        match self.db.setting::<Vec<String>>(SCOPES).ok().flatten() {
-            Some(chosen) => chosen,
-            None => scopes::defaults(),
-        }
+        self.media.scopes()
     }
 
     fn epoch(&self) -> u64 {
         self.epoch.load(Ordering::SeqCst)
     }
 
-    /// Something the driver depends on changed: a pass in progress stops, and the driver looks
-    /// again at once.
+    /// The model in use may have changed: the loading thread looks again at once.
     fn bump(&self) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
-        self.wake_driver();
+        self.wake_loader();
     }
 
-    fn wake_driver(&self) {
+    fn wake_loader(&self) {
         *self.wake.0.lock() = true;
         self.wake.1.notify_all();
     }
@@ -368,13 +431,8 @@ impl Semantic {
         *woken = false;
     }
 
-    fn set_indexing(&self, change: impl FnOnce(&mut Indexing)) {
-        change(&mut self.indexing.lock());
-        self.status_changed(false);
-    }
-
     /// Tells the windows the state changed: at once when `now`, else at most every 400 ms.
-    fn status_changed(&self, now: bool) {
+    pub(crate) fn status_changed(&self, now: bool) {
         {
             let mut last = self.last_status.lock();
             if !now && last.is_some_and(|at| at.elapsed() < Duration::from_millis(400)) {
@@ -409,14 +467,7 @@ impl Semantic {
                 models::ModelView::new(&spec, install, active.as_deref() == Some(spec.id), downloads.get(spec.id).map(|job| job.progress()))
             })
             .collect();
-        let mut indexing = self.indexing.lock().clone();
-        if let Some(model) = &active {
-            indexing.unreadable = data::skip_count(&self.db, model).unwrap_or(0);
-        }
-        if let Some(loaded) = self.current() {
-            indexing.files = loaded.store.read().live_files();
-        }
-        let chosen: Option<Vec<String>> = self.db.setting(SCOPES).ok().flatten();
+        let indexing = self.indexing(active.is_some());
         StateView {
             models,
             active,
@@ -424,10 +475,46 @@ impl Semantic {
             indexing,
             paused: self.paused(),
             cutoff: self.cutoff(),
-            default_scopes: chosen.is_none(),
+            default_scopes: self.media.default_scopes(),
             scopes: self.scopes(),
             local_only: models::policy() == kestrel_embed::download::Policy::LoopbackOnly,
         }
+    }
+}
+
+impl Semantic {
+    /// Where the describing stands, from the library's progress and the stage's records.
+    fn indexing(&self, has_model: bool) -> Indexing {
+        if !has_model {
+            return Indexing { state: "off", ..Indexing::default() };
+        }
+        let progress = self.media.progress();
+        let mut indexing = Indexing { media: progress.total, queued: progress.queued, ..Indexing::default() };
+        if let Some(counts) = progress.stages.iter().find(|counts| counts.name == stage::STAGE) {
+            (indexing.done, indexing.unreadable) = (counts.done, counts.failed);
+        }
+        let loaded = self.current();
+        if let Some(loaded) = &loaded {
+            indexing.files = loaded.store.read().live_files();
+        }
+        indexing.state = match (&*self.runtime.lock(), progress.state) {
+            (Runtime::Failed(_, error), _) => {
+                indexing.error = Some(error.clone());
+                "failed"
+            }
+            (_, "paused") => "paused",
+            (Runtime::Ready(_), "running") => "working",
+            (Runtime::Ready(_), "waiting") => {
+                indexing.error = progress.reason.clone();
+                "waiting"
+            }
+            (Runtime::Ready(_), _) => "done",
+            _ => "loading",
+        };
+        if indexing.state == "working" {
+            indexing.current = progress.working.first().cloned();
+        }
+        indexing
     }
 }
 
@@ -464,11 +551,11 @@ pub fn semantic_set_active(semantic: Shared, model: String) -> Result<(), String
     Ok(())
 }
 
-/// Pauses or resumes describing photos and videos in the background.
+/// Pauses or resumes describing photos and videos in the background: the media library's
+/// pause, which holds the rest of its pass too.
 #[tauri::command(async)]
 pub fn semantic_set_paused(semantic: Shared, paused: bool) -> Result<(), String> {
-    semantic.db.set_setting(PAUSED, &paused)?;
-    semantic.bump();
+    semantic.media.set_paused(paused)?;
     semantic.status_changed(true);
     Ok(())
 }
@@ -483,7 +570,7 @@ pub fn semantic_set_cutoff(semantic: Shared, value: f32) -> Result<(), String> {
     Ok(())
 }
 
-/// The folders to describe; `None` goes back to the picture and video folders.
+/// The folders to describe, which are the media library's; `None` goes back to its defaults.
 #[tauri::command(async)]
 pub fn semantic_set_scopes(semantic: Shared, scopes: Option<Vec<String>>) -> Result<(), String> {
     semantic.set_scopes(scopes)
@@ -491,21 +578,7 @@ pub fn semantic_set_scopes(semantic: Shared, scopes: Option<Vec<String>>) -> Res
 
 impl Semantic {
     fn set_scopes(&self, scopes: Option<Vec<String>>) -> Result<(), String> {
-        match scopes {
-            Some(scopes) => {
-                let mut seen = std::collections::HashSet::new();
-                let scopes: Vec<String> = scopes
-                    .iter()
-                    .map(|s| crate::engine::normalize(s))
-                    .filter(|s| !s.is_empty() && seen.insert(s.to_lowercase()))
-                    .collect();
-                self.db.set_setting(SCOPES, &scopes)?;
-            }
-            None => {
-                self.db.with(|c| c.execute("DELETE FROM settings WHERE key = ?1", [SCOPES]))?;
-            }
-        }
-        self.bump();
+        self.media.set_scopes(scopes)?;
         self.status_changed(true);
         Ok(())
     }

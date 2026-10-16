@@ -25,7 +25,6 @@ pub mod catalog;
 pub mod download;
 pub mod draw;
 pub mod image;
-pub mod ocr;
 pub mod onnx;
 pub mod preprocess;
 pub mod resize;

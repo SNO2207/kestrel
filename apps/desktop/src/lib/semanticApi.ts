@@ -68,8 +68,9 @@ export interface ModelView {
   download: DownloadProgress | null;
 }
 
+/** The media library's pass, as far as AI search's embedding stage goes. */
 export interface Indexing {
-  state: "off" | "loading" | "working" | "done" | "paused" | "failed";
+  state: "off" | "loading" | "working" | "waiting" | "done" | "paused" | "failed";
   files: number;
   media: number;
   queued: number;
@@ -102,7 +103,7 @@ export const semanticApi = {
   setActive: (model: string) => invoke<void>("semantic_set_active", { model }),
   setPaused: (paused: boolean) => invoke<void>("semantic_set_paused", { paused }),
   setCutoff: (value: number) => invoke<void>("semantic_set_cutoff", { value }),
-  /** The folders to describe; `null` goes back to the picture and video folders. */
+  /** The folders to describe, which are the media library's; `null` goes back to its defaults. */
   setScopes: (scopes: string[] | null) => invoke<void>("semantic_set_scopes", { scopes }),
   /** Where in each video of a result set the description matched, in ms, by lower-case path. */
   moments: (set: number) => invoke<Record<string, number>>("semantic_moments", { set }),

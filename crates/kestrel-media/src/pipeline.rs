@@ -96,6 +96,13 @@ pub trait Stage: Send + Sync {
         true
     }
     fn needs(&self) -> Needs;
+    /// Whether the stage can work now. One that can't (its model not downloaded or still
+    /// loading, say) has no work queued, and an error from a run during which it stopped being
+    /// ready is not recorded: the item waits for it. Call [`Pipeline::requeue`] once it is
+    /// ready again. Asked for every item, so it must be cheap.
+    fn ready(&self) -> bool {
+        true
+    }
     /// Does the stage's work on one item. An error says, in words for the owner, why it could
     /// not; the stage is not tried on the item again until the file changes.
     fn run(&self, item: &Item, input: &Input) -> Result<(), String>;
@@ -276,7 +283,7 @@ impl Shared {
             pending.push((METADATA, METADATA_VERSION));
         }
         for stage in self.stages.read().iter() {
-            if stage.applies_to(entry.kind) && !entry.record_matches(stage.name(), stage.version()) {
+            if stage.ready() && stage.applies_to(entry.kind) && !entry.record_matches(stage.name(), stage.version()) {
                 pending.push((stage.name(), stage.version()));
             }
         }
@@ -318,6 +325,12 @@ impl Pipeline {
     /// if the library is loaded already.
     pub fn register(&self, stage: Arc<dyn Stage>) {
         self.shared.stages.write().push(stage);
+        self.requeue();
+    }
+
+    /// Queues every item some stage has work on: after a stage became ready, or changed its
+    /// version (another model, say).
+    pub fn requeue(&self) {
         let mut state = self.shared.state.lock();
         let keys: Vec<(String, u64)> = state.known.keys().cloned().collect();
         for key in &keys {
@@ -754,11 +767,15 @@ fn process(shared: &Shared, job: Job) -> Outcome {
         store::facts(&shared.db, item.id).ok().flatten().unwrap_or_default()
     };
 
-    let stages: Vec<Arc<dyn Stage>> = {
+    // Each stage with the version it was planned at, which is what its record names.
+    let stages: Vec<(Arc<dyn Stage>, u32)> = {
         let all = shared.stages.read();
-        pending.iter().filter_map(|(name, version)| all.iter().find(|s| s.name() == *name && s.version() == *version).cloned()).collect()
+        pending
+            .iter()
+            .filter_map(|&(name, version)| all.iter().find(|s| s.name() == name && s.version() == version).map(|s| (s.clone(), version)))
+            .collect()
     };
-    let largest = stages.iter().map(|stage| stage.needs().pixels).max().unwrap_or(0);
+    let largest = stages.iter().map(|(stage, _)| stage.needs().pixels).max().unwrap_or(0);
     let picture: Option<Result<Bitmap, String>> = (largest > 0).then(|| match item.kind {
         Kind::Photo => crate::decode::image(&item.path, largest, facts.orientation.unwrap_or(1)),
         Kind::Video => crate::decode::video_frame(&item.path, 0.1, largest).map(|frame| frame.bitmap),
@@ -769,14 +786,19 @@ fn process(shared: &Shared, job: Job) -> Outcome {
     {
         let _ = store::save_facts(&shared.db, item.id, &facts);
     }
-    for stage in stages {
+    for (stage, version) in stages {
         let wants_picture = stage.needs().pixels > 0;
         let result = match (&picture, wants_picture) {
             (Some(Err(error)), true) => Err(error.clone()),
             (Some(Ok(bitmap)), true) => stage.run(&item, &Input { facts: &facts, picture: Some(bitmap) }),
             _ => stage.run(&item, &Input { facts: &facts, picture: None }),
         };
-        if !record(stage.name(), stage.version(), result.err()) {
+        // It stopped being ready while it ran (its model went), or became another version (a
+        // model switched): nothing is recorded, and the item waits for it again.
+        if (result.is_err() && !stage.ready()) || stage.version() != version {
+            continue;
+        }
+        if !record(stage.name(), version, result.err()) {
             return Outcome::Failed;
         }
     }

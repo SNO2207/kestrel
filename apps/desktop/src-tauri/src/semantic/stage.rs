@@ -1,22 +1,37 @@
-//! The embedding stage: what turns photos and videos into vectors in the model's store, and the
-//! text in photos into the text index.
+//! The embedding stage: one stage of the media library's pass (`kestrel_media::pipeline`), which
+//! turns photos and videos into vectors in the model's store.
 //!
-//! It is shaped as one stage of a media pipeline: something else decides which files to look at
-//! and when (scopes, scheduling, pausing; here `driver.rs` stands in), hands it [`MediaItem`]s
-//! keyed by [`FileKey`], asks [`EmbedStage::wants`] first, and gives it batches. The stage itself
-//! never opens a cloud-only placeholder (it checks the file's attributes on disk right before
-//! opening it, which does not download anything), records what it couldn't read so that is not
-//! tried again until the file changes, and replaces a changed file's vectors.
+//! The pass decides which files to look at and when (its scopes, newest first, what the Gallery
+//! shows first), pauses, waits for full-screen apps and battery saver, never opens a cloud-only
+//! file, and records what each stage did by file key (volume, file id, size, time), so a renamed
+//! or moved file is never read again and a changed one always is. It decodes each photo once, at
+//! the largest size any stage asks for, turned upright; this stage asks for its model's side
+//! and resizes that picture to the model's square with the model's own filter. A video is
+//! sampled here, a frame every five seconds plus one where the picture cuts, since one frame
+//! cannot describe it.
+//!
+//! The stage is ready only while a model is loaded ([`DescribeStage::set_model`]); its version
+//! comes from the model's store, so another model (or another download of different files)
+//! describes everything again, and a stored file that is still current is not read twice
+//! ([`kestrel_vector::Store::has_current`]). The text in photos is the library's own text stage's
+//! (`media_text`), which AI search weighs a description's words with (`search.rs`).
 
-use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Weak;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use kestrel_db::Db;
-use kestrel_db::semantic::{self as data, FileState};
-use kestrel_embed::{Embedder, Rgb, ocr::Ocr, video};
+use kestrel_embed::{Embedder, Rgb, video};
+use kestrel_media::Kind;
+use kestrel_media::pipeline::{Input, Item, Needs, Stage};
 use kestrel_vector::{Key, Store};
 use parking_lot::RwLock;
-use rayon::prelude::*;
+
+use super::{Loaded, Semantic};
+
+/// The stage's name in the library's records: never changes.
+pub const STAGE: &str = "embedding";
+/// Bump to describe everything again with every model (a change to how pictures are prepared).
+const STAGE_VERSION: u32 = 1;
 
 /// Photos Kestrel describes: what WIC decodes on a standard Windows 11 (HEIC, WebP and AVIF
 /// need their free extensions, which are installed on most machines).
@@ -56,68 +71,6 @@ pub fn volume_code(path: &str) -> Option<u32> {
     (bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()).then(|| u32::from(bytes[0].to_ascii_uppercase()))
 }
 
-/// Which file, as it was: what the stage keys everything by. A renamed or moved file keeps its
-/// key, so it is never read again; a changed one gets a new size or time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FileKey {
-    pub volume: u32,
-    pub file_id: u64,
-    pub size: u64,
-    /// Last write time, FILETIME ticks.
-    pub mtime: i64,
-}
-
-impl FileKey {
-    fn state(&self) -> FileState {
-        FileState { volume: self.volume, file_id: self.file_id, size: self.size, mtime: self.mtime }
-    }
-
-    fn row(&self, at_ms: Option<u32>) -> Key {
-        Key { volume: self.volume, file_id: self.file_id, size: self.size, mtime: self.mtime, at_ms }
-    }
-}
-
-/// A photo or video handed to the stage.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MediaItem {
-    pub path: String,
-    pub key: FileKey,
-    pub kind: MediaKind,
-}
-
-/// What became of an item.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    /// Stored, with this many vectors (one for a photo, one per frame for a video).
-    Embedded(usize),
-    /// It couldn't be read; noted, and not tried again until it changes.
-    Unreadable(String),
-    /// Its contents are in the cloud only; left alone.
-    Placeholder,
-    /// It is no longer there.
-    Gone,
-}
-
-/// The model the stage feeds and the store its vectors go to.
-pub struct Target<'a> {
-    pub model: &'a str,
-    pub embedder: &'a dyn Embedder,
-    /// The side of the square the model sees: pictures are resized to it as soon as they are
-    /// decoded, which is the model's own preprocessing and keeps memory small.
-    pub side: u32,
-    pub store: &'a RwLock<Store>,
-}
-
-pub struct EmbedStage<'a> {
-    pub target: Target<'a>,
-    pub db: &'a Db,
-    /// Windows' text recogniser, when it has one for the owner's languages.
-    pub ocr: Option<&'a Ocr>,
-    pub plan: video::Plan,
-    /// Low-priority threads that decode, resize and read text.
-    pub pool: &'a rayon::ThreadPool,
-}
-
 /// A file's attributes, size and last write time as the disk has them now, without opening it
 /// (so a placeholder stays one). `None` when it is gone.
 pub fn on_disk(path: &str) -> Option<(u32, u64, i64)> {
@@ -135,142 +88,162 @@ pub fn on_disk(path: &str) -> Option<(u32, u64, i64)> {
     Some((data.dwFileAttributes, size, mtime))
 }
 
-/// Checks an item on disk right before it is opened: gone or a placeholder, or else the key to
-/// store it under. That is the key the pipeline gave (with the file id read if it had none),
-/// not what the disk says now: stored keys then always match the pipeline's, and a file changed
-/// since is simply read again when the pipeline hands it over with its new key.
-fn check(item: &MediaItem) -> Result<FileKey, Outcome> {
-    let (attrs, _, _) = on_disk(&item.path).ok_or(Outcome::Gone)?;
-    if is_placeholder(attrs) {
-        return Err(Outcome::Placeholder);
+/// The stage's version for a loaded model: from its store's tag (the model and its vision
+/// tower's checksum), so the version changes exactly when the vectors would go to another
+/// store. Never 0, which means "no model".
+pub fn version_for(store_tag: &str) -> u32 {
+    // FNV-1a: stable across runs and builds, unlike std's hasher.
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in format!("{STAGE_VERSION}:{store_tag}").bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
     }
-    let file_id = if item.key.file_id != 0 { item.key.file_id } else { kestrel_index::walk::file_id_of(&item.path).unwrap_or(0) };
-    if file_id == 0 {
-        return Err(Outcome::Unreadable("Windows gave the file no id".into()));
-    }
-    Ok(FileKey { file_id, ..item.key })
+    hash.max(1)
 }
 
-/// A decoded photo, made the model's size, and the text read from it.
-struct Prepared {
-    key: FileKey,
-    picture: Rgb,
-    text: Option<String>,
+/// The library item's key in the vector store.
+fn key_of(item: &Item) -> Result<(u32, u64), String> {
+    let volume = volume_code(&item.path).ok_or("Files on network drives are not described")?;
+    if item.file_id == 0 {
+        return Err("Its drive gives files no lasting id".into());
+    }
+    Ok((volume, item.file_id))
 }
 
-impl EmbedStage<'_> {
-    /// Whether `item` needs the stage: not stored as it is now, and not a file this model
-    /// couldn't read as it is now. `skips` is `kestrel_db::semantic::skips` for the model.
-    pub fn wants(&self, item: &MediaItem, skips: &HashMap<(u32, u64), (u64, i64)>) -> bool {
-        let key = item.key;
-        if skips.get(&(key.volume, key.file_id)) == Some(&(key.size, key.mtime)) {
-            return false;
-        }
-        !self.target.store.read().has_current(key.volume, key.file_id, key.size, key.mtime)
-    }
+/// A picture of the pass's (BGRA, upright) as the model's RGB.
+fn rgb_of(picture: &kestrel_media::Bitmap) -> Rgb {
+    let pixels = picture.pixels.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0]]).collect();
+    Rgb { width: picture.width, height: picture.height, pixels }
+}
 
-    /// Decodes, describes and stores a batch of photos; `needs_text` says which files still
-    /// want their text read (`kestrel_db::semantic::text_files`).
-    pub fn run_images(&self, items: &[MediaItem], text_files: &HashMap<(u32, u64), (u64, i64)>) -> Vec<Outcome> {
-        let side = self.target.side;
-        let prepared: Vec<Result<Prepared, Outcome>> = self.pool.install(|| {
-            items
-                .par_iter()
-                .map(|item| {
-                    let key = check(item)?;
-                    let decoded = kestrel_embed::image::decode(Path::new(&item.path)).map_err(|error| Outcome::Unreadable(error.0))?;
-                    let wants_text = text_files.get(&(key.volume, key.file_id)) != Some(&(key.size, key.mtime));
-                    let text = match (self.ocr, wants_text) {
-                        (Some(ocr), true) => Some(ocr.read(&decoded).unwrap_or_default()),
-                        _ => None,
-                    };
-                    Ok(Prepared { key, picture: kestrel_embed::resize::resize(&decoded, side, side), text })
-                })
-                .collect()
-        });
-        let ready: Vec<&Prepared> = prepared.iter().filter_map(|p| p.as_ref().ok()).collect();
-        let pictures: Vec<Rgb> = ready.iter().map(|p| p.picture.clone()).collect();
-        let vectors = if pictures.is_empty() { Ok(Vec::new()) } else { self.target.embedder.embed_images(&pictures) };
-        let mut outcomes = Vec::with_capacity(items.len());
-        match vectors {
-            Ok(vectors) => {
-                let rows: Vec<(Key, Vec<f32>)> = ready.iter().zip(vectors).map(|(p, v)| (p.key.row(None), v)).collect();
-                if let Err(error) = self.store(&rows) {
-                    return items.iter().map(|_| Outcome::Unreadable(format!("the store couldn't be written: {error}"))).collect();
-                }
-            }
-            // The model failed on the batch: nothing is noted against the files, which are
-            // tried again on the next pass.
-            Err(error) => return items.iter().map(|_| Outcome::Unreadable(error.0.clone())).collect(),
-        }
-        for (item, result) in items.iter().zip(&prepared) {
-            match result {
-                Ok(p) => {
-                    if let Some(text) = &p.text {
-                        let _ = data::set_text(self.db, &p.key.state(), text);
-                    }
-                    outcomes.push(Outcome::Embedded(1));
-                }
-                Err(outcome) => {
-                    if let Outcome::Unreadable(why) = outcome {
-                        let _ = data::skip(self.db, self.target.model, &item.key.state(), why);
-                    }
-                    outcomes.push(outcome.clone());
-                }
-            }
-        }
-        outcomes
+/// Describes a photo already decoded, or samples and describes a video, into `store`.
+fn describe(embedder: &dyn Embedder, side: u32, store: &RwLock<Store>, plan: &video::Plan, item: &Item, input: &Input) -> Result<usize, String> {
+    let (volume, file_id) = key_of(item)?;
+    let row = |at_ms: Option<u32>| Key { volume, file_id, size: item.size, mtime: item.mtime, at_ms };
+    if store.read().has_current(volume, file_id, item.size, item.mtime) {
+        return Ok(0);
     }
-
-    /// Samples a video's frames, describes them and stores one vector per frame with its moment.
-    pub fn run_video(&self, item: &MediaItem) -> Outcome {
-        let key = match check(item) {
-            Ok(key) => key,
-            Err(outcome) => return outcome,
-        };
-        let side = self.target.side;
-        let mut frames: Vec<(u32, Rgb)> = Vec::new();
-        let sampled = self.pool.install(|| {
-            video::sample(Path::new(&item.path), &self.plan, &mut |at, frame| {
+    let rows: Vec<(Key, Vec<f32>)> = match item.kind {
+        Kind::Photo => {
+            let picture = input.picture.ok_or("The picture couldn't be decoded")?;
+            let square = kestrel_embed::resize::resize(&rgb_of(picture), side, side);
+            let vectors = embedder.embed_images(&[square]).map_err(|e| e.0)?;
+            vectors.into_iter().map(|vector| (row(None), vector)).collect()
+        }
+        Kind::Video => {
+            // The pass checked the file before running its stages; the sampler opens it again,
+            // so look once more that it is no placeholder (that would download it).
+            let (attrs, _, _) = on_disk(&item.path).ok_or("The file went")?;
+            if is_placeholder(attrs) {
+                return Err(kestrel_media::pipeline::ONLINE_ONLY.into());
+            }
+            let mut frames: Vec<(u32, Rgb)> = Vec::new();
+            video::sample(Path::new(&item.path), plan, &mut |at, frame| {
                 frames.push((at, kestrel_embed::resize::resize(&frame, side, side)));
                 true
             })
-        });
-        if let Err(error) = sampled {
-            let _ = data::skip(self.db, self.target.model, &item.key.state(), &error.0);
-            return Outcome::Unreadable(error.0);
-        }
-        if frames.is_empty() {
-            let why = "no frame could be read".to_owned();
-            let _ = data::skip(self.db, self.target.model, &item.key.state(), &why);
-            return Outcome::Unreadable(why);
-        }
-        let mut rows = Vec::with_capacity(frames.len());
-        for chunk in frames.chunks(16) {
-            let pictures: Vec<Rgb> = chunk.iter().map(|(_, picture)| picture.clone()).collect();
-            match self.target.embedder.embed_images(&pictures) {
-                Ok(vectors) => rows.extend(chunk.iter().zip(vectors).map(|((at, _), v)| (key.row(Some(*at)), v))),
-                Err(error) => return Outcome::Unreadable(error.0),
+            .map_err(|e| e.0)?;
+            if frames.is_empty() {
+                return Err("No frame could be read".into());
             }
+            let mut rows = Vec::with_capacity(frames.len());
+            for chunk in frames.chunks(16) {
+                let pictures: Vec<Rgb> = chunk.iter().map(|(_, picture)| picture.clone()).collect();
+                let vectors = embedder.embed_images(&pictures).map_err(|e| e.0)?;
+                rows.extend(chunk.iter().zip(vectors).map(|((at, _), vector)| (row(Some(*at)), vector)));
+            }
+            rows
         }
-        match self.store(&rows) {
-            Ok(()) => Outcome::Embedded(rows.len()),
-            Err(error) => Outcome::Unreadable(format!("the store couldn't be written: {error}")),
-        }
+    };
+    replace(store, volume, file_id, &rows).map_err(|error| format!("The vectors couldn't be stored: {error}"))?;
+    Ok(rows.len())
+}
+
+/// Replaces a file's vectors with `rows`.
+fn replace(store: &RwLock<Store>, volume: u32, file_id: u64, rows: &[(Key, Vec<f32>)]) -> std::io::Result<()> {
+    let mut store = store.write();
+    store.tombstone_file(volume, file_id)?;
+    store.append(rows)?;
+    Ok(())
+}
+
+/// The stage the media library's pass runs: registered once, at start (`Semantic::new`).
+pub struct DescribeStage {
+    semantic: Weak<Semantic>,
+    /// 0 while no model is loaded; see [`version_for`].
+    version: AtomicU32,
+    /// The loaded model's picture side.
+    side: AtomicU32,
+    plan: video::Plan,
+}
+
+impl DescribeStage {
+    pub fn new(semantic: Weak<Semantic>) -> Self {
+        Self { semantic, version: AtomicU32::new(0), side: AtomicU32::new(0), plan: video::Plan::default() }
     }
 
-    /// Replaces the vectors of the files in `rows` with these.
-    fn store(&self, rows: &[(Key, Vec<f32>)]) -> std::io::Result<()> {
-        let mut store = self.target.store.write();
-        let mut cleared = std::collections::HashSet::new();
-        for (key, _) in rows {
-            if cleared.insert(key.file()) {
-                store.tombstone_file(key.volume, key.file_id)?;
-            }
-        }
-        store.append(rows)?;
-        Ok(())
+    /// The model the stage describes with, or `None` for none. Returns whether that changed
+    /// anything, after which the pass should queue its work again (`Pipeline::requeue`).
+    pub fn set_model(&self, loaded: Option<&Loaded>) -> bool {
+        let (version, side) = match loaded {
+            Some(loaded) => (version_for(loaded.store.read().tag()), loaded.side),
+            None => (0, 0),
+        };
+        self.side.store(side, Ordering::SeqCst);
+        self.version.swap(version, Ordering::SeqCst) != version
     }
+}
+
+impl Stage for DescribeStage {
+    fn name(&self) -> &'static str {
+        STAGE
+    }
+
+    fn version(&self) -> u32 {
+        self.version.load(Ordering::SeqCst)
+    }
+
+    fn ready(&self) -> bool {
+        self.version() != 0
+    }
+
+    fn needs(&self) -> Needs {
+        Needs { pixels: self.side.load(Ordering::SeqCst) }
+    }
+
+    fn run(&self, item: &Item, input: &Input) -> Result<(), String> {
+        let semantic = self.semantic.upgrade().ok_or("Kestrel is closing")?;
+        // The model that set this version, still loaded. Otherwise the stage stops being ready,
+        // so the pass records nothing and the item waits, until the loading thread readies it
+        // again for the model now in use.
+        let Some(loaded) = semantic.current().filter(|loaded| version_for(loaded.store.read().tag()) == self.version()) else {
+            self.version.store(0, Ordering::SeqCst);
+            semantic.wake_loader();
+            return Err("The model changed while the file was read".into());
+        };
+        let described = describe(&loaded.embedder, loaded.side, &loaded.store, &self.plan, item, input);
+        semantic.status_changed(false);
+        described.map(|_| ())
+    }
+}
+
+/// Tombstones the vectors of files the library no longer holds (deleted, or gone from its
+/// folders); `items` are its items, by volume code and file id. A changed file's vectors are
+/// replaced when it is described again.
+pub fn sweep(store: &RwLock<Store>, items: &std::collections::HashSet<(u32, u64)>) -> usize {
+    let stale: Vec<u32> = {
+        let store = store.read();
+        (0..store.len() as u32)
+            .filter(|&row| store.is_live(row) && store.key(row).is_some_and(|key| !items.contains(&key.file())))
+            .collect()
+    };
+    if !stale.is_empty() {
+        let mut store = store.write();
+        for &row in &stale {
+            let _ = store.tombstone(row);
+        }
+    }
+    stale.len()
 }
 
 #[cfg(test)]
@@ -311,102 +284,74 @@ mod tests {
         dir
     }
 
-    fn item(path: &Path, kind: MediaKind) -> MediaItem {
+    fn item(path: &Path, kind: Kind) -> Item {
         let path = path.to_str().unwrap().to_owned();
         let (_, size, mtime) = on_disk(&path).unwrap();
-        let key = FileKey { volume: volume_code(&path).unwrap(), file_id: kestrel_index::walk::file_id_of(&path).unwrap(), size, mtime };
-        MediaItem { path, key, kind }
+        Item { id: 1, volume: "c:".into(), file_id: kestrel_index::walk::file_id_of(&path).unwrap(), path, kind, size, mtime }
+    }
+
+    /// The pass's picture: BGRA, as WIC gives it.
+    fn bgra(width: u32, height: u32, rgb: [u8; 3]) -> kestrel_media::Bitmap {
+        kestrel_media::Bitmap::filled(width, height, [rgb[2], rgb[1], rgb[0], 255])
     }
 
     #[test]
-    fn photos_and_videos_are_stored_once_and_unreadable_files_noted() {
+    fn photos_and_videos_are_described_once_and_replaced_when_they_change() {
+        let _com = kestrel_media::Apartment::enter();
         let dir = scratch("run");
         let red = dir.join("red.png");
-        let blue = dir.join("blue.jpg");
-        let broken = dir.join("broken.png");
         let clip = dir.join("clip.mp4");
-        let receipt = dir.join("receipt.png");
         kestrel_embed::image::encode(&Rgb::filled(40, 30, [250, 10, 10]), &red, false).unwrap();
-        kestrel_embed::image::encode(&Rgb::filled(40, 30, [10, 10, 250]), &blue, true).unwrap();
-        std::fs::write(&broken, b"not a picture").unwrap();
         video::write_test_video(&clip, 64, 64, 10, &[([200, 20, 20], 2000), ([20, 200, 20], 2000)]).unwrap();
-        let words = kestrel_embed::draw::words(800, 240, [255, 255, 255], [0, 0, 0], &["COSTCO", "TOTAL 42.17"], 60).unwrap();
-        kestrel_embed::image::encode(&words, &receipt, false).unwrap();
-
         let store = RwLock::new(Store::open(&dir.join("vectors"), 3, "test").unwrap());
-        let db = Db::open_in_memory().unwrap();
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
-        let ocr = Ocr::new().ok();
-        let stage = EmbedStage {
-            target: Target { model: "fast", embedder: &Colours, side: 8, store: &store },
-            db: &db,
-            ocr: ocr.as_ref(),
-            plan: video::Plan { every_ms: 1000, max_frames: 8, scene_changes: false },
-            pool: &pool,
-        };
-        let photos = [item(&red, MediaKind::Image), item(&blue, MediaKind::Image), item(&broken, MediaKind::Image), item(&receipt, MediaKind::Image)];
-        let skips = data::skips(&db, "fast").unwrap();
-        assert!(photos.iter().all(|p| stage.wants(p, &skips)));
-        let outcomes = stage.run_images(&photos, &data::text_files(&db).unwrap());
-        assert_eq!(outcomes[0], Outcome::Embedded(1));
-        assert_eq!(outcomes[1], Outcome::Embedded(1));
-        assert!(matches!(&outcomes[2], Outcome::Unreadable(why) if why.contains("can't read")), "{outcomes:?}");
-        let video = item(&clip, MediaKind::Video);
-        let frames = match stage.run_video(&video) {
-            Outcome::Embedded(n) => n,
-            other => panic!("{other:?}"),
-        };
-        assert_eq!(frames, 4, "a frame a second of a four-second video");
+        let plan = video::Plan { every_ms: 1000, max_frames: 8, scene_changes: false };
+        let facts = kestrel_media::Facts::default();
+        let picture = bgra(40, 30, [250, 10, 10]);
+        let photo = item(&red, Kind::Photo);
+        let with_picture = Input { facts: &facts, picture: Some(&picture) };
+        assert_eq!(describe(&Colours, 8, &store, &plan, &photo, &with_picture), Ok(1));
+        // Stored as it is now: not described again.
+        assert_eq!(describe(&Colours, 8, &store, &plan, &photo, &with_picture), Ok(0));
+        let rows = store.read().rows_of(volume_code(&photo.path).unwrap(), photo.file_id);
+        let v = store.read().vector(rows[0]).unwrap();
+        assert!(v[0] > v[1] && v[0] > v[2], "red, in RGB order: {v:?}");
+        // Without its picture (it couldn't be decoded), a photo can't be described.
+        assert!(describe(&Colours, 8, &store, &plan, &Item { mtime: 5, ..photo.clone() }, &Input { facts: &facts, picture: None }).is_err());
 
-        // Stored: the red photo is red, and the video's frames have their moments.
+        // A video: a frame a second, each with its moment.
+        let video = item(&clip, Kind::Video);
+        assert_eq!(describe(&Colours, 8, &store, &plan, &video, &Input { facts: &facts, picture: None }), Ok(4));
         let store_now = store.read();
-        let red_rows = store_now.rows_of(photos[0].key.volume, photos[0].key.file_id);
-        assert_eq!(red_rows.len(), 1);
-        let v = store_now.vector(red_rows[0]).unwrap();
-        assert!(v[0] > v[1] && v[0] > v[2], "{v:?}");
-        let moments: Vec<Option<u32>> =
-            store_now.rows_of(video.key.volume, video.key.file_id).iter().map(|&row| store_now.key(row).unwrap().at_ms).collect();
+        let moments: Vec<Option<u32>> = store_now
+            .rows_of(volume_code(&video.path).unwrap(), video.file_id)
+            .iter()
+            .map(|&row| store_now.key(row).unwrap().at_ms)
+            .collect();
         assert_eq!(moments.len(), 4);
         assert!(moments.iter().all(|at| at.is_some()));
         drop(store_now);
 
-        // Nothing is wanted again: stored as it is, or noted as unreadable as it is.
-        let skips = data::skips(&db, "fast").unwrap();
-        assert!(!photos.iter().any(|p| stage.wants(p, &skips)));
-        assert!(!stage.wants(&video, &skips));
-        // The text in the receipt was read and can be searched.
-        if ocr.is_some() {
-            let hits = data::search_text(&db, &["costco".into()], 5).unwrap();
-            assert_eq!(hits.len(), 1, "{hits:?}");
-            assert_eq!(hits[0].file.file_id, photos[3].key.file_id);
-        }
-
-        // A changed photo is wanted again, and its old vector replaced.
-        kestrel_embed::image::encode(&Rgb::filled(50, 30, [10, 250, 10]), &red, false).unwrap();
-        let changed = item(&red, MediaKind::Image);
-        assert!(stage.wants(&changed, &skips));
-        assert_eq!(stage.run_images(std::slice::from_ref(&changed), &HashMap::new()), [Outcome::Embedded(1)]);
-        let store_now = store.read();
-        let rows = store_now.rows_of(changed.key.volume, changed.key.file_id);
+        // Changed (another size or time): its old vector is replaced, not added to.
+        let green = bgra(50, 30, [10, 250, 10]);
+        let changed = Item { size: photo.size + 1, ..photo.clone() };
+        assert_eq!(describe(&Colours, 8, &store, &plan, &changed, &Input { facts: &facts, picture: Some(&green) }), Ok(1));
+        let rows = store.read().rows_of(volume_code(&photo.path).unwrap(), photo.file_id);
         assert_eq!(rows.len(), 1, "one live vector per photo");
-        let v = store_now.vector(rows[0]).unwrap();
-        assert!(v[1] > v[0], "now green: {v:?}");
-        drop(store_now);
-        // The store's files are mapped until it goes.
+        assert!(store.read().vector(rows[0]).unwrap()[1] > 0.9);
+
+        // Files the library no longer holds lose their vectors.
+        let keep = std::collections::HashSet::from([(volume_code(&photo.path).unwrap(), photo.file_id)]);
+        assert_eq!(sweep(&store, &keep), 4);
+        assert_eq!(store.read().live_files(), 1);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn placeholders_and_vanished_files_are_left_alone() {
-        let dir = scratch("placeholder");
-        let path = dir.join("gone.png");
-        let missing = MediaItem {
-            path: path.to_str().unwrap().to_owned(),
-            key: FileKey { volume: b'C' as u32, file_id: 9, size: 1, mtime: 1 },
-            kind: MediaKind::Image,
-        };
-        assert_eq!(check(&missing), Err(Outcome::Gone));
+    fn versions_follow_the_store_and_placeholders_are_known() {
+        assert_ne!(version_for("fast-abc"), version_for("fast-abd"));
+        assert_eq!(version_for("fast-abc"), version_for("fast-abc"));
+        assert_ne!(version_for(""), 0);
         assert!(is_placeholder(0x0040_1620), "OneDrive's online-only files");
         assert!(is_placeholder(0x1000));
         assert!(!is_placeholder(0x20));
@@ -415,6 +360,7 @@ mod tests {
         assert_eq!(kind_of("JPG"), Some(MediaKind::Image));
         assert_eq!(kind_of("mov"), Some(MediaKind::Video));
         assert_eq!(kind_of("txt"), None);
-        let _ = std::fs::remove_dir_all(&dir);
+        let network = Item { id: 1, volume: "".into(), file_id: 9, path: r"\\nas\photos\a.jpg".into(), kind: Kind::Photo, size: 1, mtime: 1 };
+        assert!(key_of(&network).is_err());
     }
 }

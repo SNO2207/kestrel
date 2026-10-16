@@ -14,6 +14,12 @@
 //! (`kestrel_media::scopes::defaults`). `KESTREL_MEDIA_SCOPES=none` (set by `e2e/dev.mjs` for test
 //! slots) leaves the defaults empty, so a test instance never reads the owner's photos.
 //! Development builds can replace every scope with a scratch folder (`media_dev_sandbox`).
+//!
+//! The pass is the one background reader of photos and videos: AI search's embedding stage is
+//! one of its stages (`semantic::stage`), so one decode feeds the facts, the thumbnail, the
+//! text and the description, one pause button stops all of it, and one progress counts it.
+//! Features that keep data of their own about the library's items tidy it after each plan
+//! (`after_plan`).
 
 pub mod gallery;
 mod thumbstage;
@@ -47,6 +53,9 @@ const SCAN_STEP: u32 = 1 << 18;
 
 pub type Shared<'a> = State<'a, Arc<Media>>;
 
+/// Run after each plan with the pipeline, whose items are then what is in the scopes.
+type AfterPlan = Arc<dyn Fn(&Pipeline) + Send + Sync>;
+
 #[derive(Default)]
 struct Inner {
     app: Option<AppHandle>,
@@ -73,6 +82,7 @@ pub struct Media {
     pipeline: Pipeline,
     inner: Mutex<Inner>,
     wake: Condvar,
+    after_plan: Mutex<Vec<AfterPlan>>,
 }
 
 impl Media {
@@ -82,14 +92,60 @@ impl Media {
         pipeline.register(Arc::new(kestrel_media::ocr::TextStage::new(db.clone())));
         pipeline.set_paused(db.setting::<bool>(PAUSED_SETTING).ok().flatten().unwrap_or(false));
         let custom = db.setting::<Vec<String>>(SCOPES_SETTING).ok().flatten();
-        Arc::new(Media { engine, db, pipeline, inner: Mutex::new(Inner { custom, ..Inner::default() }), wake: Condvar::new() })
+        Arc::new(Media {
+            engine,
+            db,
+            pipeline,
+            inner: Mutex::new(Inner { custom, ..Inner::default() }),
+            wake: Condvar::new(),
+            after_plan: Mutex::new(Vec::new()),
+        })
     }
 
     /// The pipeline, for features that add a stage of their own (`Pipeline::register`), such as
     /// the semantic search's embedding stage; see CLAUDE.md.
-    #[allow(dead_code)]
     pub fn pipeline(&self) -> &Pipeline {
         &self.pipeline
+    }
+
+    /// Runs `tidy` after every plan, on the library's own thread: a feature that keeps data about
+    /// the library's items drops what belongs to files no longer among them.
+    pub fn after_plan(&self, tidy: impl Fn(&Pipeline) + Send + Sync + 'static) {
+        self.after_plan.lock().push(Arc::new(tidy));
+    }
+
+    /// Pauses or resumes the pass, and remembers it for the next start. The one pause of every
+    /// stage, AI search's included.
+    pub fn set_paused(&self, paused: bool) -> Result<Progress, String> {
+        self.db.set_setting(PAUSED_SETTING, &paused)?;
+        self.pipeline.set_paused(paused);
+        let progress = self.progress();
+        self.emit("media-progress", progress.clone());
+        Ok(progress)
+    }
+
+    /// Sets the scopes (folders that exist, the outermost of nested ones), or with `None` goes
+    /// back to the defaults; the library follows at once.
+    pub fn set_scopes(&self, scopes: Option<Vec<String>>) -> Result<(), String> {
+        let scopes = scopes.map(|scopes| {
+            let folders = scopes.into_iter().map(|path| crate::engine::normalize(&path)).filter(|path| std::path::Path::new(path).is_dir()).collect();
+            kestrel_media::scopes::outermost(folders)
+        });
+        match &scopes {
+            Some(scopes) => self.db.set_setting(SCOPES_SETTING, scopes)?,
+            None => {
+                self.db.with(|c| c.execute("DELETE FROM settings WHERE key = ?1", [SCOPES_SETTING]))?;
+            }
+        }
+        self.inner.lock().custom = scopes;
+        self.kick();
+        Ok(())
+    }
+
+    /// Whether the scopes are the defaults (neither the owner's own list nor a test's sandbox).
+    pub fn default_scopes(&self) -> bool {
+        let inner = self.inner.lock();
+        inner.custom.is_none() && inner.sandbox.is_none()
     }
 
     /// Starts following the index, and the pass once Kestrel has settled.
@@ -186,8 +242,14 @@ impl Media {
             }
             let scopes = self.scopes();
             let candidates = scan(&self.engine, &scopes);
-            if let Err(error) = self.pipeline.plan(candidates) {
-                eprintln!("The media library couldn't be brought up to date: {error}");
+            match self.pipeline.plan(candidates) {
+                Ok(_) => {
+                    let tidies: Vec<AfterPlan> = self.after_plan.lock().clone();
+                    for tidy in tidies {
+                        tidy(&self.pipeline);
+                    }
+                }
+                Err(error) => eprintln!("The media library couldn't be brought up to date: {error}"),
             }
             let mut inner = self.inner.lock();
             inner.planned = kicks;
@@ -322,29 +384,14 @@ pub fn media_status(media: Shared) -> Status {
 /// Pauses or resumes the pass, and remembers it for the next start.
 #[tauri::command(async)]
 pub fn media_set_paused(media: Shared, paused: bool) -> Result<Progress, String> {
-    media.db.set_setting(PAUSED_SETTING, &paused)?;
-    media.pipeline.set_paused(paused);
-    let progress = media.progress();
-    media.emit("media-progress", progress.clone());
-    Ok(progress)
+    media.set_paused(paused)
 }
 
 /// Sets the scopes (folders that exist, the outermost of nested ones), or with `None` goes back
 /// to the defaults; the library follows at once.
 #[tauri::command(async)]
 pub fn media_set_scopes(media: Shared, scopes: Option<Vec<String>>) -> Result<Status, String> {
-    let scopes = scopes.map(|scopes| {
-        let folders = scopes.into_iter().map(|path| crate::engine::normalize(&path)).filter(|path| std::path::Path::new(path).is_dir()).collect();
-        kestrel_media::scopes::outermost(folders)
-    });
-    match &scopes {
-        Some(scopes) => media.db.set_setting(SCOPES_SETTING, scopes)?,
-        None => {
-            media.db.with(|c| c.execute("DELETE FROM settings WHERE key = ?1", [SCOPES_SETTING]))?;
-        }
-    }
-    media.inner.lock().custom = scopes;
-    media.kick();
+    media.set_scopes(scopes)?;
     Ok(status(&media))
 }
 

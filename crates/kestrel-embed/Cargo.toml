@@ -18,17 +18,13 @@ sha2 = "0.10"
 # authors do. `fancy-regex` instead of the default Oniguruma: no C library to build.
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
 # Windows ML (the documented ONNX Runtime with DirectML that ships with Windows), WIC for
-# images, Media Foundation for video frames, Windows.Media.Ocr; the WinRT collections their
-# results come in.
+# images, Media Foundation for video frames; the WinRT collections their results come in. Text
+# in pictures is read by the media library's text stage (`kestrel-media`), not here.
 windows = { version = "0.62", features = [
     "AI_MachineLearning",
     "Foundation",
     "Foundation_Collections",
-    "Globalization",
     "Graphics",
-    "Graphics_Imaging",
-    "Media_Ocr",
-    "Storage_Streams",
     "Win32_Foundation",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",

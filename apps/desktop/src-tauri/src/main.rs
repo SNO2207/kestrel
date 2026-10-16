@@ -413,8 +413,9 @@ fn main() {
     let projects = projects::Projects::new(engine.clone(), database.clone());
     let disk = disk::Disk::new(engine.clone(), database.clone());
     let cleanup = cleanup::Cleanup::new(engine.clone(), database.clone(), projects.clone());
-    // AI search: the model in use, its vectors and the describing in the background (semantic/).
-    let semantic = semantic::Semantic::new(engine.clone(), database.clone());
+    // AI search: the model in use and its vectors (semantic/). Its embedding stage joins the
+    // media library's pass, which describes photos and videos in the background.
+    let semantic = semantic::Semantic::new(database.clone(), media.clone());
     // The command palette's providers; other features register theirs in `setup` (palette.rs).
     let palette = Arc::new(palette::Palette::new(database.clone()));
     palette.register(Arc::new(palette::files::FilesProvider::new(engine.clone())));

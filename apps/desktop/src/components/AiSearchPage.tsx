@@ -13,7 +13,8 @@ import { formatCount, formatDate, formatSize } from "../lib/format";
 import { setLocationStatus, takeFocusIfFree, type LocationPageProps } from "../lib/locations";
 import { semanticApi, type ModelView, type SelfTestReport } from "../lib/semanticApi";
 import { refreshSemantic, semanticState, watchSemantic } from "../semantic";
-import { notify, places } from "../state";
+import { MEDIA_LIBRARY } from "../media";
+import { navigate, notify, places } from "../state";
 import { confirmAction } from "./ConfirmDialog";
 import { Icon } from "./Icon";
 
@@ -282,10 +283,12 @@ export function AiSearchPage(props: LocationPageProps) {
         return "Getting the model ready…";
       case "paused":
         return "Paused.";
+      case "waiting":
+        return `Waiting: ${index.error ?? "busy"}`;
       case "failed":
         return index.error ?? "It stopped.";
       case "working":
-        return `Describing: ${formatCount(index.done)} of ${formatCount(index.done + index.queued)} new or changed`;
+        return `Describing: ${formatCount(index.done)} of ${formatCount(index.media)}`;
       default:
         return index.media > 0 ? "Up to date." : "No photos or videos in these folders yet.";
     }
@@ -346,7 +349,7 @@ export function AiSearchPage(props: LocationPageProps) {
           </p>
         </Show>
         <div class="ai-scopes">
-          <span class="ai-scopes-label">Folders it looks in{state()?.defaultScopes ? " (your picture and video folders)" : ""}:</span>
+          <span class="ai-scopes-label">The media library's folders{state()?.defaultScopes ? " (Windows' own)" : ""}:</span>
           <ul>
             <For each={state()?.scopes ?? []}>
               {(scope) => (
@@ -366,11 +369,17 @@ export function AiSearchPage(props: LocationPageProps) {
             </button>
             <Show when={!state()?.defaultScopes}>
               <button class="ai-button" onClick={() => void semanticApi.setScopes(null).catch(notify)}>
-                Use the picture and video folders
+                Use the default folders
               </button>
             </Show>
+            <button class="ai-button ai-library-link" onClick={() => navigate(props.tabId, MEDIA_LIBRARY)}>
+              Media library settings
+            </button>
           </div>
-          <p class="ai-muted ai-scope-note">Files kept only in the cloud (OneDrive's online-only files) are skipped, never downloaded.</p>
+          <p class="ai-muted ai-scope-note">
+            Describing is a step of the media library's background reading, with its details, thumbnails and text: one Pause holds all of
+            it. Files kept only in the cloud (OneDrive's online-only files) are skipped, never downloaded.
+          </p>
         </div>
       </section>
 
