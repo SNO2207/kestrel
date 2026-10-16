@@ -329,16 +329,18 @@ try {
       const box = await item("c-two").boundingBox();
       const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
       await page.mouse.move(point.x, point.y);
-      const swaps = await swapCount();
       await page.evaluate(() => window.__kestrelStage.hold(true));
-      mkdirSync(join(PRESSED, `a-new-${++arrivals}`));
-      await page.waitForFunction(() => window.__kestrelStage.held() > 0);
-      return { point, swaps };
+      const arrival = `a-new-${++arrivals}`;
+      mkdirSync(join(PRESSED, arrival));
+      // The listing with the arrival has reached the tab (the status bar counts it), and waits
+      // at the gate.
+      await page.locator(".statusbar > span", { hasText: new RegExp(`^${3 + arrivals} items$`) }).waitFor();
+      return { point, arrival };
     };
     /** Draws the held listing, which has b-one where c-two was. */
-    const drawHeld = async ({ point, swaps }) => {
+    const drawHeld = async ({ point, arrival }) => {
       await page.evaluate(() => window.__kestrelStage.hold(false));
-      await page.waitForFunction((count) => window.__kestrelSwaps.length > count, swaps);
+      await item(arrival).waitFor();
       assert.equal(await nameAt(point), "b-one", "another folder is under the pointer now");
     };
     /** The folder the tab goes into. */

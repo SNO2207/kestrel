@@ -528,20 +528,22 @@ try {
     // so it comes in that order every time. Rows are drawn by place, and the menu used to be for
     // whatever was under the pointer when the button came up.
     const picker = page.locator(".tag-picker");
-    const rightClickAcross = async (arrival, late) => {
+    const rightClickAcross = async (arrival, items, late) => {
       const point = await centre(row("notes.txt"));
-      const swaps = await page.evaluate(() => window.__kestrelSwaps.length);
       await page.evaluate((late) => (late ? window.__kestrelStage.holdRows(true) : window.__kestrelStage.hold(true)), late);
       try {
         writeFileSync(at("Beta", arrival), "new");
+        // The listing with the arrival has reached the tab (the status bar counts it) and waits at
+        // the gate, so the press comes while it is on its way to the list.
+        await page.locator(".statusbar > span", { hasText: new RegExp(`^${items} items$`) }).waitFor();
         await page.waitForFunction(() => window.__kestrelStage.held() > 0);
         await page.mouse.move(point.x, point.y);
         await page.mouse.down({ button: "right" });
         // Drawn with its rows, or (`late`) as a listing whose rows don't come in time is, with
         // rows still loading.
         await page.evaluate((late) => (late ? window.__kestrelStage.late() : window.__kestrelStage.hold(false)), late);
-        await page.waitForFunction((count) => window.__kestrelSwaps.length > count, swaps);
-        if (!late) assert.equal(await nameAt(point), "big.bin", "another item is under the pointer now");
+        await row(arrival).waitFor();
+        assert.equal(await nameAt(point), "big.bin", "another item is under the pointer now");
         await page.mouse.up({ button: "right" });
       } finally {
         await page.evaluate(() => {
@@ -557,11 +559,11 @@ try {
     };
     await open(at("Beta"), "notes.txt");
     await row("small.txt").click();
-    await rightClickAcross("apple.txt", false);
+    await rightClickAcross("apple.txt", 4, false);
     // With big.bin selected before, and the listing drawn late: the menu is still for notes.txt,
     // not for big.bin, where the selection was before the press.
     await row("big.bin").click();
-    await rightClickAcross("aardvark.txt", true);
+    await rightClickAcross("aardvark.txt", 5, true);
     for (const name of ["apple.txt", "aardvark.txt"]) rmSync(at("Beta", name));
     await row("apple.txt").waitFor({ state: "detached" });
     await row("aardvark.txt").waitFor({ state: "detached" });
