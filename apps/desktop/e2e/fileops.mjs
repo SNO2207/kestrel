@@ -8,11 +8,12 @@
 // Start the app as described in smoke.mjs, then run: node e2e/fileops.mjs
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connectToKestrel } from "./connect.mjs";
+import { release } from "./slot.mjs";
 
 const out = join(dirname(fileURLToPath(import.meta.url)), "out");
 mkdirSync(out, { recursive: true });
@@ -177,6 +178,50 @@ try {
     assert(onDisk("beta - Copy.txt") && onDisk("beta.txt"));
     assert.deepEqual(await selectedNames(), ["beta - Copy.txt"]);
   });
+
+  if (!release) {
+    await step("Ctrl+V while the copy before it is still on its way pastes what was copied", async () => {
+      // Commands run on a pool of threads, so a paste could be handled before the copy sent just
+      // before it had put its files on the clipboard, and paste what was there before. Here the
+      // copy is held on its way (`__kestrelClipboard.hold`, development builds), so the paste
+      // always comes while it is.
+      const clip = join(sandbox, "Clip");
+      mkdirSync(clip);
+      writeFileSync(join(clip, "earlier.txt"), "earlier");
+      writeFileSync(join(clip, "later.txt"), "later");
+      await row("Clip").dblclick();
+      await page.locator(".crumb").last().filter({ hasText: /^Clip$/ }).waitFor();
+      await row("later.txt").waitFor();
+      // What the clipboard holds before: earlier.txt.
+      await row("earlier.txt").click();
+      await page.keyboard.press("Control+c");
+      await page.waitForFunction(() => window.__kestrelClipboard.writing() === 0);
+      await page.evaluate(() => window.__kestrelClipboard.hold(true));
+      try {
+        await row("later.txt").click();
+        await page.keyboard.press("Control+c");
+        await page.waitForFunction(() => window.__kestrelClipboard.writing() === 1);
+        await page.keyboard.press("Control+v");
+        // Either the paste waits for the copy, or it has gone ahead and pasted earlier.txt.
+        await page.waitForFunction(
+          () =>
+            window.__kestrelClipboard.waiting() === 1 ||
+            [...document.querySelectorAll(".tab-panel.active .row .label")].some((label) => label.textContent === "earlier - Copy.txt"),
+        );
+      } finally {
+        await page.evaluate(() => window.__kestrelClipboard.hold(false));
+      }
+      await panel.locator(".row .label", { hasText: / - Copy\.txt$/ }).first().waitFor();
+      assert.deepEqual(readdirSync(clip).sort(), ["earlier.txt", "later - Copy.txt", "later.txt"], "the paste brings what was copied last");
+      await row("later - Copy.txt").waitFor();
+      assert.deepEqual(await selectedNames(), ["later - Copy.txt"]);
+      await page.keyboard.press("Alt+ArrowUp");
+      await row("Clip").waitFor();
+      await row("gamma.txt").waitFor();
+    });
+  } else {
+    console.log("--  Ctrl+V while a copy is on its way skipped (a release build can't hold the copy)");
+  }
 
   await step("cut and paste moves a file into a folder", async () => {
     await row("gamma.txt").click();

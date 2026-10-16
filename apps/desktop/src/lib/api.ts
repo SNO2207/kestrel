@@ -186,6 +186,56 @@ export interface ShellChoice {
   invoked: boolean;
 }
 
+/**
+ * The last command that puts files on the clipboard, until it is done. Commands run on a pool of
+ * threads, so a paste sent while a copy was still on its way (Ctrl+C, then Ctrl+V at once) could
+ * read the clipboard first and paste what was on it before; every paste waits for it.
+ */
+let clipboardWrite: Promise<unknown> = Promise.resolve();
+/** Clipboard writes on their way, and pastes waiting for them (development builds show both). */
+let writing = 0;
+let waiting = 0;
+/** Development builds: clipboard writes wait here while a test holds them, before they are sent. */
+let writeGate: Promise<void> | null = null;
+let openWriteGate = () => {};
+
+/** Sends a command that puts files on the clipboard (`send`), as the write pastes wait for. */
+export function writesClipboard<T>(send: () => Promise<T>): Promise<T> {
+  writing++;
+  const write = import.meta.env.DEV && writeGate ? writeGate.then(send) : send();
+  clipboardWrite = write.then(
+    () => void writing--,
+    () => void writing--,
+  );
+  return write;
+}
+
+/** Waits for the clipboard's last write before pasting. */
+function afterClipboardWrite<T>(paste: () => Promise<T>): Promise<T> {
+  waiting++;
+  return clipboardWrite.then(() => {
+    waiting--;
+    return paste();
+  });
+}
+
+if (import.meta.env.DEV) {
+  Object.assign(window, {
+    __kestrelClipboard: {
+      /** Holds clipboard writes before they are sent, or sends those held, so a test can paste while a copy is on its way. */
+      hold: (hold: boolean) => {
+        if (hold && !writeGate) writeGate = new Promise((resolve) => (openWriteGate = resolve));
+        if (!hold) {
+          writeGate = null;
+          openWriteGate();
+        }
+      },
+      writing: () => writing,
+      waiting: () => waiting,
+    },
+  });
+}
+
 export const api = {
   indexStatus: () => invoke<IndexStatus>("index_status"),
   /**
@@ -216,10 +266,10 @@ export const api = {
   newFolder: (parent: string) => invoke<string>("new_folder", { parent }),
   /** Puts the rows on the clipboard as files; `cut` marks them to be moved on paste. */
   copyItems: (set: number, ranges: RowRange[], cut: boolean) =>
-    invoke<number>("copy_items", { set, ranges, cut }),
+    writesClipboard(() => invoke<number>("copy_items", { set, ranges, cut })),
   canPaste: () => invoke<boolean>("can_paste"),
-  /** Pastes the clipboard's files and resolves to the names pasted. */
-  pasteItems: (destination: string) => invoke<string[]>("paste_items", { destination }),
+  /** Pastes the clipboard's files, once any copy on its way is done, and resolves to the names pasted. */
+  pasteItems: (destination: string) => afterClipboardWrite(() => invoke<string[]>("paste_items", { destination })),
   showProperties: (path: string) => invoke<void>("show_properties", { path }),
   onDirChanged: (handler: (path: string) => void) =>
     listen<string>("dir-changed", (event) => handler(event.payload)),

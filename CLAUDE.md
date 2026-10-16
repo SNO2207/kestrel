@@ -551,9 +551,11 @@ Testing (every change ships with tests, and you run them):
   Look at your screenshots; a passing test with a broken-looking screen is not done.
 - Every suite makes its `step(title, run)` with `stepper` from `e2e/steps.mjs`. A failing step
   saves `e2e/out/failures/<suite>-<step>.png` and prints the focused element, open menus,
-  dialogs and notices, the active tab's address, the rows drawn and how many still have no
-  `data-path`, and the page's last 40 console messages, before the suite's `finally` blocks
-  change the window. Read that before guessing why a step failed.
+  dialogs and notices (and the app's own native windows, such as a shell dialog), the active
+  tab's address, the rows drawn and how many still have no `data-path`, the app's commands still
+  unanswered and those answered last, the last moves of the keyboard, and the page's last 40
+  console messages, before the suite's `finally` blocks change the window. Read that before
+  guessing why a step failed.
 - `fileops.mjs` uses the system clipboard; do not run it while other agents may be running
   tests. Whoever integrates branches runs every suite, one after another.
 - Things a script cannot do (a real mouse drag between apps, a native dialog) are listed as
@@ -985,3 +987,13 @@ Git:
   app closes; their options (case, regular expressions, the size limit) are remembered. A mode
   left on across a restart made every later search look inside files, and a whole e2e pass
   failed on it. Don't persist a new mode of that kind either.
+- Copy, Cut and a copy out of an archive put files on the clipboard through `writesClipboard`
+  (`lib/api.ts`), and `api.pasteItems` waits for the last of them: commands run on a pool of
+  threads, so a Ctrl+V sent right after Ctrl+C could be handled before the copy and paste what
+  the clipboard held before. A new command that writes files to the clipboard goes through
+  `writesClipboard` too. `__kestrelClipboard.hold` (development builds) holds writes so a test
+  can paste while one is on its way (`fileops.mjs`).
+- A process killed with `taskkill /F` is reported gone at once, but the web view's kept the
+  slot's debugging port for 4 to 9 s more, so a `start` straight after `stop` found the ports in
+  use (an e2e pass once lost every suite after `undo-restart.mjs` to it). `dev.mjs stop` returns
+  only once the slot's ports are free and its kestrel.exe is gone, which takes 8 to 15 s.

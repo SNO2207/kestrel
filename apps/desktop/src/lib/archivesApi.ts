@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import { writesClipboard } from "./api";
+
 let nextJob = 1;
 
 /**
@@ -76,8 +78,9 @@ export const archiveApi = {
   cancel: (job: number) => invoke<boolean>("archive_cancel", { job }),
   /** Opens a file inside an archive from a copy in the temp folder. Progress arrives for `job`. */
   open: (job: number, path: string, password: string | null) => invoke<void>("archive_open", { job, path, password }),
-  /** Puts items inside an archive on the clipboard, copied out first. */
-  copy: (job: number, paths: string[], password: string | null) => invoke<number>("archive_copy", { job, paths, password }),
+  /** Puts items inside an archive on the clipboard, copied out first; a paste meanwhile waits for it. */
+  copy: (job: number, paths: string[], password: string | null) =>
+    writesClipboard(() => invoke<number>("archive_copy", { job, paths, password })),
   /** Windows' folder picker; null if cancelled. */
   pickFolder: (start: string) => invoke<string | null>("archive_pick_folder", { start }),
   preferences: () => invoke<ArchivePreferences>("archive_preferences"),
