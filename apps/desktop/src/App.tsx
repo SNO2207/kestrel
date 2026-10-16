@@ -6,6 +6,9 @@ import { locationOf } from "./lib/locations";
 import { startPlaces } from "./placesSetup";
 // The Gallery and the media library's settings page (media.ts).
 import "./mediaSetup";
+// AI search: its page as a special location, and Find similar in an item's menu.
+import "./semanticSetup";
+import { similarEntries } from "./semantic";
 import { setDiskUsageHandler } from "./places";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { locationKey, setViewMode, shortcutView } from "./lib/views";
@@ -250,7 +253,10 @@ export function App() {
                 filter={tab.filter}
                 unfilteredTotal={tab.unfiltered?.total ?? null}
                 onFilter={(text) => setFilter(tab.id, text)}
-                menuExtras={{ items: () => otherPaneEntries(tab.id), folder: () => [groupByEntry(tab.id)] }}
+                menuExtras={{
+                  items: (sole) => [...otherPaneEntries(tab.id), ...similarEntries(tab.id, sole)],
+                  folder: () => [groupByEntry(tab.id)],
+                }}
                 onSort={(key) => setSort(tab.id, key)}
                 onOpen={(row, inNewTab) => open(tab.id, row, inNewTab)}
                 onStale={() => refresh(tab.id)}

@@ -132,6 +132,19 @@ Done and verified:
   TypeScript `.d.mts` taken for a video, is why `.mts` is no video extension); media searches take
   5-8 ms and the Gallery's data 30-50 ms over a 3.77 M-entry index.
 
+- **AI search** (`crates/kestrel-embed`, `crates/kestrel-vector`, `src-tauri/src/semantic/`,
+  `kestrel_db::semantic`, `kestrel_query` `like:`/`~`, `semantic.ts`, `semanticSetup.ts`,
+  `lib/semanticApi.ts`, `lib/moments.ts`, `AiSearchPage.tsx`, `DescribeToggle.tsx`,
+  `DescribeBar.tsx`, `MomentBadge.tsx`, `semantic.css`; branch `feature/semantic`): Describe in the
+  search box, the AI search page (a special location) with both SigLIP 2 models, downloads with
+  progress, resume, cancel and SHA-256 checks, the self-test, describing photos and video frames in
+  the background, OCR text and names in a hybrid score, the relevance slider, Find similar, and video
+  hits opening at their moment. Verified with the tiny test model only: **the real models were never
+  downloaded**, so their self-test (the golden check of preprocessing and tokenizer) first runs on
+  the owner's first download, and the slider's ranges (`catalog::Cutoffs`) are estimates until then.
+  WinML runs the tiny model on the RTX 5080 and on the CPU; vector search over 200,000 vectors takes
+  5 ms (768 dimensions) and 7 ms (1,152) in a release build (`kestrel-cli vector-bench`).
+
 Every feature branch is merged on `main`: views, undo, preview, dragdrop and shellmenu, then
 hardening, shortcuts, projects and palette, then places, layout, parity, archives, disk and
 cleanup (integrated 2026-10-15). Every unit test and all 23 e2e suites pass there in a dev build
@@ -334,6 +347,32 @@ see README); what else Explorer does that Kestrel does not is listed in
   settings page lists it by name (add a label to `STAGE_LABELS` in `media.ts`). Item ids, facts
   and text are in `kestrel_db::media`; a stage's output belongs in tables of its own, in a module
   of its own with `2026_10_20_<feature>_<what>` migrations.
+- AI search: `crates/kestrel-embed` holds the models' side: `catalog.rs` (the two SigLIP 2 models,
+  pinned files, sizes, SHA-256, input specs and the slider's cutoff ranges), `winml.rs` (Windows ML
+  sessions, GPU with CPU fallback), `image.rs` (WIC decode, EXIF orientation), `resize.rs` (Pillow's
+  bilinear, rounding and all), `preprocess.rs`, `tokenize.rs` (lower-case, pad to 64), `siglip.rs`
+  (the `Embedder`), `download.rs` (WinHTTP, resume, cancel, SHA-256), `video.rs` (Media Foundation
+  frames, and a test video writer), `ocr.rs` (`Windows.Media.Ocr`), `draw.rs` (GDI text),
+  `selftest.rs`, and `onnx.rs` (a protobuf writer and the tiny SigLIP-shaped test model).
+  `crates/kestrel-vector` is the store (vectors file + key table, append, tombstone, compact,
+  rayon + AVX2/F16C search). The app's half, `src-tauri/src/semantic/`: `mod.rs` (state, the loaded
+  model, settings, `semantic-state` events), `models.rs` (page data, downloads, delete, self-test,
+  development hooks), `stage.rs` (the embedding stage), `driver.rs` (stands in for the media
+  pipeline), `search.rs` (resolves `like:` for `Engine::search_ranked`, the hybrid score),
+  `scopes.rs`. The `search` command in main.rs calls `semantic::search::prepare` before the engine
+  holds the index and `Prepared::resolve` inside it, as tags are resolved; results with a
+  description come best first (`Engine::search_ranked`), and their video moments are kept per
+  result set (`semantic_moments`) for `MomentBadge` and the preview (`surfaceUrl` adds `t=`, the
+  viewer page a `#t=` media fragment). Front end: `semantic.ts` (Describe mode, Find similar, the
+  shared state), the page in `AiSearchPage.tsx`, the bar above results in `DescribeBar.tsx`
+  (mounted by FileList for any description query).
+- Folding the embedding stage into the media pipeline: the pipeline hands
+  `semantic::stage::EmbedStage` `MediaItem`s (path, `FileKey` = volume, file id, size, mtime, and
+  kind), asks `wants(item, skips)` first, batches photos into `run_images` and videos into
+  `run_video`, and owns scheduling, pausing and placeholders (the stage still re-checks a file's
+  attributes before opening it). `driver.rs` then goes, keeping `collect` and `sweep` (vectors of
+  files that went or changed are tombstoned) wherever the pipeline does its bookkeeping. OCR text
+  (`kestrel_db::semantic::{set_text, search_text}`) can come from the pipeline's own OCR instead.
 - Shortcuts: data in `kestrel_db::shortcuts` (pins and groups, frecency, saved searches, tags,
   workspaces), commands in `src-tauri/src/shortcuts/`, front end in `src/shortcuts.ts`,
   `lib/shortcutsApi.ts`, `shortcuts.css` and the `Pinned*`, `Shortcut*`, `GoToFolder`,
@@ -629,3 +668,30 @@ Git:
 - Windows' compression filter (WOF, `compact /exe`) hides its reparse point from user mode:
   attributes read 0x20 and `fsutil reparsepoint query` finds none. Only the file table (the
   broker's index) shows 0x620. Tests of such files set the attributes in the index.
+- Windows ML: a session on a model that failed to load crashed the process with an access
+  violation, so `winml::Session::load` checks the model loaded and declares inputs and outputs
+  first. Feed floats as f32 even to a float16 input (`TensorFloat16Bit` narrows them). COM and WinRT
+  work from any background thread because `kestrel_embed::com()` keeps an implicit multithreaded
+  apartment alive (`CoIncrementMTAUsage`); never call into WinML, WIC, Media Foundation or OCR from
+  the app's main thread (an STA). Load only through Windows ML, never `System32\onnxruntime.dll`.
+- SigLIP 2's text tower pools the last of exactly 64 positions and was trained on lower-case text:
+  `tokenize.rs` lower-cases and pads with the tokenizer's pad token. Images are resized with
+  Pillow's bilinear filter, rounded to 8 bits after each pass (`resize.rs`), not a plain 2 x 2
+  bilinear sample. Get either wrong and results quietly get worse; the self-test exists for that.
+- Synchronous `WinHttpReadData` waits until its whole buffer fills: `download.rs` asks
+  `WinHttpQueryDataAvailable` first, so progress and what a cancel keeps move as bytes arrive. A
+  cancel closes the request handle from the other thread (whoever takes it from `Cancel` closes it).
+- A test instance (`KESTREL_DATA_DIR` set, as every e2e slot but 0) downloads models only from this
+  computer (`models::policy`); development builds can point a model at local files
+  (`semantic_dev_setup`), and deleting a model drops that override. `semantic_dev_install_tiny`
+  installs the tiny test model; the suite deletes it at the end so no slot keeps describing.
+- Media Foundation seeks land on a key frame before the moment: `video.rs` accepts one up to a
+  quarter of the interval (a second at most) early and decodes forward otherwise, so a frame's
+  moment is not always the one asked for (tests compare moments with what was stored).
+- `tauri dev` (every e2e slot) also rebuilds and restarts the app when a workspace crate the app
+  uses changes, `crates/kestrel-embed` and `crates/kestrel-vector` included.
+- Model files and vectors are the app's own data in `data_dir()\models` and `data_dir()\semantic`;
+  `remove_own_folder` refuses anything else. Delete forgets the install first, then waits for the
+  describing thread to let go of the vector store (a mapped file can't be deleted).
+- The driver leaves out pictures under 4 KB (icons) but not videos (a short clip of plain colours
+  is smaller); the e2e fixtures pad their PNGs after the image end to pass that floor.

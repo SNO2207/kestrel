@@ -86,6 +86,16 @@ enum Command {
     },
     /// What the disk usage hub would show for a folder: its totals, types and ages.
     Usage { path: String },
+    /// Time AI search's brute-force vector search (kestrel-vector) at both models' sizes, on
+    /// random unit vectors written to a store under the temp folder.
+    VectorBench {
+        /// Vectors in the store.
+        #[arg(long, default_value_t = 200_000)]
+        count: usize,
+        /// Searches per size.
+        #[arg(long, default_value_t = 20)]
+        runs: usize,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -249,6 +259,54 @@ fn main() -> Result<()> {
         Command::Bench { runs } => bench(&snapshot_path, runs.max(1))?,
         Command::DiskBench { roots, runs } => disk::bench(&load(&snapshot_path)?, &roots, runs.max(1))?,
         Command::Usage { path } => disk::usage(&load(&snapshot_path)?, &path)?,
+        Command::VectorBench { count, runs } => vector_bench(count, runs.max(1))?,
+    }
+    Ok(())
+}
+
+/// Fills a store with `count` random vectors of each model's length and times searches over it.
+fn vector_bench(count: usize, runs: usize) -> Result<()> {
+    println!("kernel: {}", kestrel_vector::kernel_name());
+    for (model, dim) in [("Fast (SigLIP 2 base)", 768), ("Best (SigLIP 2 so400m)", 1152)] {
+        let dir = std::env::temp_dir().join(format!("kestrel-vector-bench-{}-{dim}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = kestrel_vector::Store::open(&dir, dim, "bench").map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+        };
+        let started = Instant::now();
+        for batch in 0..count.div_ceil(10_000) {
+            let rows: Vec<(kestrel_vector::Key, Vec<f32>)> = (0..10_000.min(count - batch * 10_000))
+                .map(|i| {
+                    let key = kestrel_vector::Key { volume: 67, file_id: (batch * 10_000 + i) as u64, size: 0, mtime: 0, at_ms: None };
+                    (key, (0..dim).map(|_| next()).collect())
+                })
+                .collect();
+            store.append(&rows)?;
+        }
+        let filled = started.elapsed();
+        let query: Vec<f32> = (0..dim).map(|_| next()).collect();
+        let mut times: Vec<Duration> = (0..runs)
+            .map(|_| {
+                let started = Instant::now();
+                std::hint::black_box(store.search(&query, 1000, -1.0));
+                started.elapsed()
+            })
+            .collect();
+        times.sort();
+        println!(
+            "{model}: {count} x {dim} ({} MB), filled in {filled:.1?}; search median {:.2?}, best {:.2?}, worst {:.2?}",
+            (count * dim * 2) >> 20,
+            times[times.len() / 2],
+            times[0],
+            times[times.len() - 1]
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
     }
     Ok(())
 }

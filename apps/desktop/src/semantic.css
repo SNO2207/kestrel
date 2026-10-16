@@ -1,0 +1,547 @@
+/* AI search: the Describe toggle, the describe bar above results, the moment badge on video
+ * hits, and the AI search page. Colours are the design tokens of styles.css. */
+
+/* ---------- the search box's toggle ---------- */
+
+.describe-toggle {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 24px;
+  border-radius: 3px;
+  color: var(--muted);
+}
+
+.describe-toggle:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.describe-toggle.on {
+  color: var(--accent);
+}
+
+/* ---------- above the results ---------- */
+
+.describe-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 10px 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.describe-bar > .icon {
+  color: var(--accent);
+}
+
+.describe-what {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.describe-what b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.describe-count,
+.describe-progress {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.describe-progress {
+  color: var(--accent);
+}
+
+.describe-spacer {
+  flex: 1;
+}
+
+.describe-cutoff {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.describe-cutoff input {
+  width: 140px;
+  accent-color: var(--accent);
+}
+
+.describe-settings,
+.describe-setup {
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--raised);
+  color: var(--text);
+}
+
+.describe-settings:hover,
+.describe-setup:hover {
+  border-color: var(--faint);
+}
+
+.describe-setup {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+/* ---------- a video hit's moment, beside its name in every view ---------- */
+
+.moment-badge {
+  flex: none;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--select);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- the AI search page ---------- */
+
+.ai-page {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 20px 28px 40px;
+  outline: 0;
+  user-select: text;
+}
+
+.ai-page > * {
+  max-width: 900px;
+}
+
+.ai-intro h1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.ai-intro h1 .icon {
+  color: var(--accent);
+}
+
+.ai-intro p {
+  margin: 0 0 6px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.ai-intro b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.ai-intro code,
+.ai-sha {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+.ai-intro code {
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--raised);
+  color: var(--text);
+}
+
+.ai-muted {
+  color: var(--muted);
+}
+
+.ai-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ai-error {
+  color: var(--danger);
+}
+
+.ai-status,
+.ai-model {
+  margin-top: 18px;
+  padding: 16px 18px;
+  background: var(--chrome);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.ai-status-head,
+.ai-model-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.ai-status h2,
+.ai-model h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ai-status-head .ai-button {
+  margin-left: auto;
+}
+
+.ai-status-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0 0;
+}
+
+.ai-device,
+.ai-current {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+.ai-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-scopes {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.ai-scopes-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ai-scopes ul {
+  margin: 6px 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-scopes li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  color: var(--muted);
+}
+
+.ai-scope-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.ai-scope-remove {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  color: var(--faint);
+}
+
+.ai-scope-remove:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.ai-scope-actions,
+.ai-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-scope-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.ai-models-title {
+  margin: 26px 0 2px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ai-models-note {
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-model.active {
+  border-color: var(--select-line);
+}
+
+.ai-model-sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ai-badge {
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ai-badge.ai-in-use {
+  background: var(--select);
+  color: var(--text);
+}
+
+.ai-summary {
+  margin: 8px 0 10px;
+  line-height: 1.45;
+}
+
+.ai-facts {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0 0 14px;
+  font-size: 12px;
+}
+
+.ai-facts dt {
+  color: var(--muted);
+}
+
+.ai-facts dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.ai-facts a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.ai-facts a:hover {
+  text-decoration: underline;
+}
+
+.ai-files {
+  margin-top: 4px;
+}
+
+.ai-files summary {
+  color: var(--muted);
+  cursor: default;
+}
+
+.ai-files ul {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-files li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+}
+
+.ai-file-path {
+  font-weight: 600;
+}
+
+.ai-sha {
+  grid-column: 1 / -1;
+  color: var(--faint);
+  overflow-wrap: anywhere;
+}
+
+.ai-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  white-space: nowrap;
+}
+
+.ai-button:hover:not(:disabled) {
+  border-color: var(--faint);
+}
+
+.ai-button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.ai-button.primary:hover:not(:disabled) {
+  border-color: var(--accent);
+  filter: brightness(1.08);
+}
+
+.ai-button:disabled {
+  opacity: 0.45;
+}
+
+.ai-installed {
+  font-size: 12px;
+}
+
+.ai-progress {
+  margin: 0 0 12px;
+}
+
+.ai-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--raised);
+  overflow: hidden;
+}
+
+.ai-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+.ai-progress-text {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-progress-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-progress-text .ai-button {
+  margin-left: auto;
+}
+
+.ai-message {
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+
+.ai-selftest {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.ai-selftest-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.ai-selftest-head .ai-button {
+  margin-left: auto;
+}
+
+.ai-selftest-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.ai-selftest-verdict.passed {
+  color: var(--text);
+}
+
+.ai-selftest-verdict.passed .icon {
+  color: var(--accent);
+}
+
+.ai-throughput {
+  font-size: 12px;
+}
+
+.ai-checks {
+  width: 100%;
+  margin-top: 10px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ai-checks th {
+  padding: 4px 8px 4px 0;
+  color: var(--muted);
+  font-weight: 400;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+
+.ai-checks td {
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.ai-checks tr.failed td {
+  color: var(--danger);
+}
+
+.ai-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ai-checks th.ai-num {
+  text-align: right;
+}
+
+.ai-check-mark {
+  display: inline-grid;
+  place-items: center;
+  margin-right: 6px;
+  vertical-align: -2px;
+  color: var(--danger);
+}
+
+.ai-check-mark.passed {
+  color: var(--accent);
+}

@@ -6,7 +6,8 @@ every folder and file, the projects on the drive with their git status, a folder
 sidebar, a disk usage hub that shows what uses the disk, what could be cleaned up and which
 files are duplicates, and a media library that reads your photos and videos in the background
 for the Gallery and for searches by date taken, camera, place, size, length and the text in
-them. Around it sits what File Explorer does: Home, This PC and the Recycle
+them. AI search finds photos and videos by describing them ("dog on a sofa"), on the graphics
+card, once you download a model. Around it sits what File Explorer does: Home, This PC and the Recycle
 Bin, tabs and a second pane, Group by, columns and a filter box, the command bar and details
 pane, archives that open like folders, and more windows (`docs/explorer-parity.md` lists
 Explorer's features one by one).
@@ -23,6 +24,8 @@ Explorer's features one by one).
 | `crates/kestrel-analyze` | Disk usage from the index: treemap layout, breakdowns by type and age, largest items, growth |
 | `crates/kestrel-cleanup` | Cleanup recommendations and the duplicate finder, over the index |
 | `crates/kestrel-media` | The media library: the background pass over photos and videos (facts, thumbnails, text), through Windows' own property system, WIC, Media Foundation and OCR |
+| `crates/kestrel-embed` | AI search's models: SigLIP 2 through Windows ML, image and text preprocessing, the downloader, video frames, text in pictures, the self-test |
+| `crates/kestrel-vector` | A memory-mapped store of f16 vectors, searched by brute force |
 | `crates/kestrel-cli` | Command-line front end and benchmark harness |
 | `apps/desktop` | The app: Tauri 2 backend in `src-tauri`, SolidJS front end in `src` |
 | `apps/broker` | Optional Windows service that reads drives' file tables for the app |
@@ -115,6 +118,9 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | `duration:>1m`, `duration:30s..2m`, `duration:<10s` | a video's length (`s`, `m`, `h`; a plain number is seconds) |
 | `geo:yes`, `geo:no` | a GPS position is known, or not |
 | `text:costco`, `text:"order 42.17"` | these words are in the picture (the last may be a beginning) |
+| `~a dog on a sofa` | photos and videos that look like it: the whole query is a description (AI search) |
+| `like:"a dog on a sofa"` | the same, as a clause that combines with others (`like:receipt dm:2025`) |
+| `like:"C:\Photos\dog.jpg"` | photos and videos that look like this picture (what Find similar searches for) |
 
 ## Keyboard
 
@@ -724,6 +730,57 @@ opening one downloads it: they show in the Gallery with their icon and are count
 Nothing is downloaded: Windows' property system, WIC, Media Foundation and OCR do the reading.
 Formats Windows has no codec for (HEIC and camera raw without their Store extensions) are listed
 as skipped with the reason.
+## AI search: describe a photo or video
+
+Turn on **Describe** in the search box (the sparkle button) and type what you are looking for:
+"dog on a sofa", "receipt", "sunset at the beach". A search that starts with `~` does the same
+without the button, and `like:"..."` is the clause form, which combines with every other filter
+(`like:receipt ext:jpg dm:2025`). Photos and videos come best match first in the ordinary result
+list, in every view, with their thumbnails; a column header still sorts them. A video is found
+by the moment that matched: the moment shows beside its name (`0:42`), and the preview pane and
+Quick Look start playing there. "Find similar" in a photo's or video's menu searches for what
+looks like it. A bar above the results says what was looked for and how many were found, and
+has the relevance slider, from **Fewer** (only close matches) to **More**.
+
+It needs a model, which nothing downloads until you ask. The **AI search page** (type "AI
+search" in the address bar, choose it in the palette, or click "AI search" on the bar) offers
+two, both Google's SigLIP 2 (licence Apache 2.0, converted to ONNX by onnx-community), pinned to
+a revision of their Hugging Face repositories and to each file's SHA-256:
+
+| Model | What | Size |
+|---|---|---|
+| Fast | SigLIP 2 base, 256 × 256 pixels ([onnx-community/siglip2-base-patch16-256-ONNX](https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX/tree/d1114256522a37ffa257a0a58017348ab0058db2)) | 785,356,945 bytes (749 MB) |
+| Best | SigLIP 2 so400m, 384 × 384 pixels ([onnx-community/siglip2-so400m-patch16-384-ONNX](https://huggingface.co/onnx-community/siglip2-so400m-patch16-384-ONNX/tree/29f74e673c298fd07482d8e20138179282001eb7)) | 2,307,594,564 bytes (2.1 GB) |
+
+Each card lists the model's files with their sizes and checksums. **Download** fetches them into
+the data folder's `models` folder (`%LOCALAPPDATA%\Kestrel\models\<fast|best>`) with progress and
+speed; **Cancel** stops at once and keeps what arrived, so the next attempt resumes from there
+(or "Discard what arrived" deletes it); each file is checked against its published SHA-256, and
+one that doesn't match is deleted and the page says so. Once every file is there the model is
+loaded and its **self-test** runs: Kestrel draws a plain red square, a plain blue square, a page
+of receipt text and the word STOP on red, and checks that each picture's best description among
+"a red square", "a blue square", "a receipt" and "a stop sign" is its own, and the other way
+round, which catches colour channels swapped and text not lower-cased or not padded as SigLIP 2
+needs; it also measures pictures per second, on the graphics card or the processor. Its results
+show on the page; **Run self-test** runs it again. **Delete** removes a model's files and the
+descriptions made with it, after asking. With both models downloaded, **Use this model** picks
+one.
+
+Everything runs on this PC: the models through Windows ML (the ONNX Runtime with DirectML that
+is part of Windows; nothing else is installed) on the high-performance graphics card, or on the
+processor when there is none (the page says so). No picture or description leaves the PC.
+
+In the background, at low priority, Kestrel describes the photos and videos in your picture,
+video and desktop folders (the page lists them; add or remove folders there): photos as one
+vector each, videos as a frame every five seconds (at most 24, spread further over long videos)
+plus one where the picture cuts between two of them, each with its moment. It reads the text in
+photos with Windows' own recogniser too, so a description's words found there ("costco 42.17")
+count toward a photo, as do words in its name. Files kept only in the cloud (OneDrive's
+online-only files) are skipped and never downloaded; hidden files and pictures under 4 KB are left
+out. A renamed or moved photo is known by its file id and not read again; an edited one is.
+**Pause** stops it. The vectors are kept per model in the data folder's `semantic` folder, a
+memory-mapped file searched in a few milliseconds (200,000 vectors: 5 ms for Fast's 768
+dimensions, 7 ms for Best's 1,152, `kestrel-cli vector-bench`).
 
 ## Testing
 
@@ -733,6 +790,7 @@ cargo run --release -p kestrel-cli -- index C:\       # crawl and save, with a j
 cargo run --release -p kestrel-cli -- catch-up        # apply journal changes since the save
 cargo run --release -p kestrel-cli -- bench
 cargo run --release -p kestrel-cli -- disk-bench          # treemap layouts, the disk usage overview, a growth sample
+cargo run --release -p kestrel-cli -- vector-bench        # AI search's vector search over 200,000 vectors, both models' sizes
 cargo run --release -p kestrel-cli -- usage C:\Users      # what the disk usage hub says about a folder
 cargo run --release -p kestrel-cli -- mft C:\ --compare   # as administrator: read the MFT, diff against the crawl
 cargo run --release -p kestrel-cli -- remote C:\      # ask the installed broker for an index
@@ -770,6 +828,7 @@ node e2e/disk.mjs           # the disk usage hub on a scratch folder of known co
 node e2e/cleanup.mjs        # cleanup recommendations and duplicates, in a scratch machine
 node e2e/navigation.mjs     # locations and archives in either pane, history, tabs, a window, the palette
 node e2e/media.mjs          # the media library, its searches and columns, the Gallery, pausing
+node e2e/semantic.mjs       # AI search on a tiny model: the page, Describe, the slider, video moments, Find similar, downloads
 node e2e/dev.mjs stop
 ```
 
@@ -779,7 +838,7 @@ instead: it runs `tauri build` (no installer) with the slot's identity and start
 `live-index.mjs`, `views.mjs`, `undo.mjs`, `batchrename.mjs`, `locked.mjs`, `preview.mjs`,
 `shellmenu.mjs` and `undo-restart.mjs` run against either; `dragdrop.mjs`, `integration.mjs`,
 `shortcuts.mjs`, `projects.mjs`, `palette.mjs`, `connections.mjs`, `places.mjs`, `layout.mjs`,
-`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs`, `navigation.mjs` and `media.mjs` need a dev build,
+`parity.mjs`, `archives.mjs`, `disk.mjs`, `cleanup.mjs`, `navigation.mjs`, `media.mjs` and `semantic.mjs` need a dev build,
 whose test hooks they use. A release build has the Windows menu's test hook only when started with
 `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
@@ -891,3 +950,14 @@ pass's keys (a rename is not read again, a change is), that online-only files ar
 (held open with no sharing, so any attempt would fail and be recorded), pausing, waiting while a
 full-screen app runs (simulated), and that items on screen are read first. A real full-screen
 game, battery saver and Windows' folder picker ("Browse…") are manual checks.
+`semantic.mjs` never downloads a real model and never contacts Hugging Face. A development hook
+installs a tiny test model, written by `kestrel_embed::onnx` with SigLIP 2's input and output names
+and shapes, as the Fast model "as if downloaded"; another points the describing at a scratch folder
+named `kestrel-test-e2e-semantic-*` of plain-colour PNGs and an MP4 that a hook encodes with Media
+Foundation. The suite checks the order Describe gives against the tiny model's arithmetic, done by
+hand, moves the slider, finds the video's moment and the preview starting there, runs Find similar,
+and drives the Download button against a web server it starts on 127.0.0.1 (cancel, resume with a
+`Range` request, a checksum mismatch, the self-test, Delete). It deletes the tiny models and puts
+the folders, the slider and the window's settings back at the end. A test instance (one with its own
+data folder, as every slot but 0 has) downloads only from this computer, whatever it is told. The
+real models' golden checks (their self-test) therefore run only when the owner first downloads one.

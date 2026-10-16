@@ -11,6 +11,7 @@ import { GitGlyph } from "./GitGlyph";
 import { LockGlyph } from "./LockGlyph";
 import { SyncGlyph } from "./SyncGlyph";
 import { TagDots } from "./TagDots";
+import { MomentBadge } from "./MomentBadge";
 
 /** One file or folder in the icon, list or tile views. Details rows are drawn by the list. */
 export function ViewItem(props: {
@@ -114,6 +115,7 @@ export function ViewItem(props: {
                     <Show when={props.git?.change}>{(change) => <GitGlyph change={change()} dir={row().dir} />}</Show>
                     <SyncGlyph row={row()} />
                     <TagDots path={row().path} />
+                    <MomentBadge path={row().path} />
                   </span>
                 }
               >

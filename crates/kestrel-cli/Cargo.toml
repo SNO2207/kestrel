@@ -12,4 +12,5 @@ clap = { workspace = true }
 kestrel-analyze = { workspace = true }
 kestrel-index = { workspace = true }
 kestrel-query = { workspace = true }
+kestrel-vector = { workspace = true }
 parking_lot = { workspace = true }

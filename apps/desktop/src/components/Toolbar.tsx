@@ -22,6 +22,8 @@ import { LayoutButtons } from "./Panes";
 import { ViewMenu } from "./ViewMenu";
 import { PreviewToggle } from "./PreviewPane";
 import { SaveSearchButton } from "./SaveSearchButton";
+import { DescribeToggle } from "./DescribeToggle";
+import { boxText, describing, queryFor } from "../semantic";
 
 /** Lets the app's keyboard shortcuts focus the address and search fields. */
 export const focusTargets: { address?: () => void; search?: () => void } = {};
@@ -114,10 +116,17 @@ export function Toolbar(props: { focusList: () => void }) {
         <input
           ref={searchInput}
           aria-label="Search"
-          placeholder={everywhere() || locationOf(tab()?.path ?? "") ? "Search everywhere" : "Search this folder"}
+          placeholder={
+            describing()
+              ? "Describe a photo or video"
+              : everywhere() || locationOf(tab()?.path ?? "")
+                ? "Search everywhere"
+                : "Search this folder"
+          }
           spellcheck={false}
-          value={tab()?.query ?? ""}
-          onInput={(event) => tab() && setQuery(tab()!.id, event.currentTarget.value)}
+          // Describe mode (semantic.ts) sends what is typed as a description, `~` first.
+          value={boxText(tab()?.query ?? "")}
+          onInput={(event) => tab() && setQuery(tab()!.id, queryFor(event.currentTarget.value))}
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               if (tab()) setQuery(tab()!.id, "");
@@ -130,6 +139,7 @@ export function Toolbar(props: { focusList: () => void }) {
           }}
         />
         <SaveSearchButton />
+        <DescribeToggle focusSearch={() => searchInput?.focus()} />
         <button
           class="scope"
           classList={{ on: everywhere() }}

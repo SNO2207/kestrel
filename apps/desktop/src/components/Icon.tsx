@@ -32,6 +32,8 @@ const PATHS = {
   "network-drive": "M2.5 2.5h11v5h-11ZM8 7.5v4M3 13.5h10M11 5h.01",
   "restore-item": "M5.5 3.5 2.5 6.5l3 3M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7",
   eject: "M3 9.5 8 4l5 5.5ZM3 12.5h10",
+  // AI search: Describe in the search box, and its page.
+  sparkle: "M7 2.5C7.4 5.2 8.8 6.6 11.5 7 8.8 7.4 7.4 8.8 7 11.5 6.6 8.8 5.2 7.4 2.5 7 5.2 6.6 6.6 5.2 7 2.5ZM12 10.5v3M10.5 12h3",
 } as const;
 
 export type IconName = keyof typeof PATHS;

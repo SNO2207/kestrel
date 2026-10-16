@@ -26,10 +26,13 @@ kestrel-analyze = { workspace = true }
 # Cleanup recommendations and the duplicate finder (cleanup/).
 kestrel-cleanup = { workspace = true }
 kestrel-db = { workspace = true }
+# AI search (semantic/): SigLIP 2 through Windows ML, and the vectors' memory-mapped store.
+kestrel-embed = { workspace = true }
 kestrel-index = { workspace = true }
 # The media library: the background pass over photos and videos, and the Gallery (media/).
 kestrel-media = { workspace = true }
 kestrel-query = { workspace = true }
+kestrel-vector = { workspace = true }
 memchr = { workspace = true }
 # The command palette's fuzzy ranking (palette.rs).
 nucleo-matcher = "0.3"

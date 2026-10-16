@@ -29,6 +29,7 @@ mod projects;
 mod recycle;
 mod recyclebin;
 mod remote;
+mod semantic;
 mod shellmenu;
 mod shortcuts;
 mod thispc;
@@ -101,12 +102,16 @@ fn list_dir(
     engine.list_dir_with(&path, sort, visibility)
 }
 
-/// Runs a search. `tag:` clauses are resolved to the items carrying the tag, and the media
-/// library's clauses (`width:`, `taken:`, `text:`...) to the items it knows them of.
+/// Runs a search. `tag:` clauses are resolved to the items carrying the tag, the media
+/// library's clauses (`width:`, `taken:`, `text:`...) to the items it knows them of, and
+/// descriptions (`like:`, or a query starting with `~`) to the photos and videos that look like
+/// them, which then come best first (semantic/search.rs).
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 fn search(
     engine: Shared,
     db: shortcuts::Data,
+    semantic: semantic::Shared,
     query: String,
     scope: Option<String>,
     sort: SortSpec,
@@ -114,10 +119,15 @@ fn search(
     show_protected: Option<bool>,
 ) -> Result<Listing, String> {
     let visibility = Visibility::from_request(show_hidden).with_protected(show_protected);
-    engine.search_resolving(&query, scope.as_deref(), sort, visibility, |query, index| {
+    // The model runs before the index is held.
+    let mut described = semantic::search::prepare(&semantic, &query)?;
+    let listing = engine.search_ranked(&query, scope.as_deref(), sort, visibility, |query, index| {
         shortcuts::tags::resolve(&db, query, index)?;
-        kestrel_media::query::resolve(&db, query, index)
-    })
+        kestrel_media::query::resolve(&db, query, index)?;
+        described.resolve(query, index)
+    })?;
+    semantic.remember_moments(listing.set, described.take_moments());
+    Ok(listing)
 }
 
 /// Maps a selection from one result set to another showing the same files.
@@ -386,6 +396,8 @@ fn main() {
     let projects = projects::Projects::new(engine.clone(), database.clone());
     let disk = disk::Disk::new(engine.clone(), database.clone());
     let cleanup = cleanup::Cleanup::new(engine.clone(), database.clone(), projects.clone());
+    // AI search: the model in use, its vectors and the describing in the background (semantic/).
+    let semantic = semantic::Semantic::new(engine.clone(), database.clone());
     // The command palette's providers; other features register theirs in `setup` (palette.rs).
     let palette = Arc::new(palette::Palette::new(database.clone()));
     palette.register(Arc::new(palette::files::FilesProvider::new(engine.clone())));
@@ -411,6 +423,7 @@ fn main() {
         .manage(disk.clone())
         .manage(cleanup)
         .manage(media.clone())
+        .manage(semantic.clone())
         .manage(palette)
         // This PC's drives, each asked about on a thread of its own (thispc.rs).
         .manage(Arc::new(thispc::Drives::default()))
@@ -624,6 +637,21 @@ fn main() {
             media::media_dev_sandbox,
             media::media_dev_fixtures,
             media::media_dev_wait,
+            semantic::semantic_state,
+            semantic::semantic_set_active,
+            semantic::semantic_set_paused,
+            semantic::semantic_set_cutoff,
+            semantic::semantic_set_scopes,
+            semantic::semantic_moments,
+            semantic::models::semantic_download,
+            semantic::models::semantic_cancel_download,
+            semantic::models::semantic_delete,
+            semantic::models::semantic_selftest,
+            semantic::models::semantic_dev_setup,
+            semantic::models::semantic_dev_tiny_files,
+            semantic::models::semantic_dev_install_tiny,
+            semantic::models::semantic_dev_write_video,
+            semantic::models::semantic_dev_downloads,
         ]))
         .on_window_event(|window, event| {
             dragdrop::on_window_event(event);
@@ -647,6 +675,9 @@ fn main() {
             disk.start(app.handle().clone());
             // The media library follows the index and starts its pass once Kestrel has settled.
             media.start(app.handle().clone());
+            // AI search: loads the model in use, if one is downloaded, and describes photos and
+            // videos in the background (semantic/).
+            semantic.start(app.handle().clone());
             // The quick launcher, its shortcut and the tray icon; never fatal.
             launcher::setup(app.handle(), database.clone());
             // Launching Kestrel again shows this one, wherever it is hiding.

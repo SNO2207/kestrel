@@ -11,5 +11,6 @@ import "./archives.css";
 import "./disk.css";
 import "./cleanup.css";
 import "./media.css";
+import "./semantic.css";
 
 render(() => <App />, document.getElementById("root")!);

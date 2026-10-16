@@ -156,6 +156,9 @@ pub fn compile(query: &Query, index: &Index) -> Result<Compiled, ParseError> {
             ClauseKind::Media(_) => {
                 return Err(ParseError("The media library must answer width:, taken:, text: and the like before searching".into()));
             }
+            ClauseKind::Like(description) => {
+                return Err(ParseError(format!("Descriptions must be resolved before searching (like:{description})")));
+            }
             ClauseKind::Entries(ids) => {
                 if !clause.negate && candidates.as_ref().is_none_or(|known: &Vec<EntryId>| ids.len() < known.len()) {
                     candidates = Some(ids.clone());

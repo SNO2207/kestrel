@@ -332,9 +332,13 @@ pub fn viewer(uri: &Uri) -> Response<Vec<u8>> {
     let (bg, raised, line, chrome) =
         (colour("bg", "#1b2129"), colour("raised", "#242c37"), colour("line", "#2c3541"), colour("chrome", "#151a21"));
     let scheme = if param("scheme") == Some("light") { "light" } else { "dark" };
+    // Where a video starts, in seconds: the moment an AI search matched (semantic/search.rs),
+    // as a media fragment, which the player honours.
+    let start = param("t").and_then(|t| t.parse::<f64>().ok()).filter(|t| t.is_finite() && *t > 0.0);
+    let fragment = start.map_or_else(String::new, |t| format!("#t={t:.3}"));
     let (element, background) = match param("kind") {
         Some("image") => (format!(r#"<img src="{src}" alt="">"#), &bg),
-        Some("video") => (format!(r#"<video src="{src}" controls preload="metadata"></video>"#), &chrome),
+        Some("video") => (format!(r#"<video src="{src}{fragment}" controls preload="metadata"></video>"#), &chrome),
         Some("audio") => (format!(r#"<audio src="{src}" controls preload="metadata"></audio>"#), &bg),
         _ => return status_only(StatusCode::BAD_REQUEST),
     };
@@ -1182,6 +1186,11 @@ mod tests {
         assert!(video.contains(r#"<video src="/?p=C%3A%5Cclip.webm&amp;v=7&amp;download=1" controls preload="metadata">"#), "{video}");
         let audio = String::from_utf8(page("kind=audio&p=C%3A%5Ctone.wav").body().clone()).unwrap();
         assert!(audio.contains(r#"<audio src="/?p=C%3A%5Ctone.wav&amp;v=0" controls"#), "{audio}");
+        // AI search's hits start at the moment that matched; anything but a number is ignored.
+        let at = String::from_utf8(page("kind=video&p=C%3A%5Cclip.mp4&t=4.5").body().clone()).unwrap();
+        assert!(at.contains(r#"<video src="/?p=C%3A%5Cclip.mp4&amp;v=0#t=4.500" controls"#), "{at}");
+        let bad = String::from_utf8(page("kind=video&p=C%3A%5Cclip.mp4&t=%22onload%3D").body().clone()).unwrap();
+        assert!(bad.contains(r#"<video src="/?p=C%3A%5Cclip.mp4&amp;v=0" controls"#), "{bad}");
 
         assert_eq!(page("kind=page&p=C%3A%5Cx.html").status(), StatusCode::BAD_REQUEST, "only images, video and sound");
         assert_eq!(page("kind=image").status(), StatusCode::BAD_REQUEST);
