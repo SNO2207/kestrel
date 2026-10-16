@@ -249,8 +249,16 @@ try {
     await shotBoth("tool-output");
     await dialog.locator(".dialog-button", { hasText: "Close" }).click();
     const records = await invoke("cleanup_dev_take");
-    // Told which folder to clean, whatever Cargo's environment or configuration names.
-    assert.deepEqual(records, [{ kind: "tool", program: "cargo", args: ["clean", "--target-dir", join(project, "target")], dir: project }]);
+    // Told which project and folder to clean, whatever Cargo's environment or configuration
+    // names, and run from the profile folder, so nothing in the project picks the toolchain.
+    assert.deepEqual(records, [
+      {
+        kind: "tool",
+        program: "cargo",
+        args: ["clean", "--manifest-path", join(project, "Cargo.toml"), "--target-dir", join(project, "target")],
+        dir: profile,
+      },
+    ]);
     assert(existsSync(join(project, "target")), "the hook ran nothing");
   });
 

@@ -120,8 +120,10 @@ pub struct Tool {
     /// The program's name, found on the PATH when it runs: `cargo`.
     pub program: String,
     pub args: Vec<String>,
-    /// The folder it runs in.
+    /// The folder it runs in; the owner's profile folder when `None`.
     pub dir: Option<String>,
+    /// The project the tool acts on, for showing, when that is not the folder it runs in.
+    pub project: Option<String>,
     /// The command, for showing: as it runs (`pnpm store prune`), or its program and verb when
     /// the rest is the item's own path (`cargo clean`).
     pub command: String,
@@ -131,12 +133,18 @@ impl Tool {
     fn new(program: &str, args: &[&str], dir: Option<&str>) -> Self {
         let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
         let command = std::iter::once(program.to_owned()).chain(args.iter().cloned()).collect::<Vec<_>>().join(" ");
-        Tool { program: program.to_owned(), args, dir: dir.map(str::to_owned), command }
+        Tool { program: program.to_owned(), args, dir: dir.map(str::to_owned), project: None, command }
     }
 
     /// The same tool, shown as `command`.
     fn shown_as(mut self, command: &str) -> Self {
         command.clone_into(&mut self.command);
+        self
+    }
+
+    /// The same tool, shown as acting on the project at `root`.
+    fn for_project(mut self, root: &str) -> Self {
+        self.project = Some(root.to_owned());
         self
     }
 }

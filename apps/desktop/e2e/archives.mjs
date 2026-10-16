@@ -368,6 +368,8 @@ try {
     await page.keyboard.press("F2");
     assert.equal(await panel.locator("input.rename").count(), 0, "no rename box inside an archive");
     await row("notes.txt").click({ button: "right" });
+    // The menu draws a moment after the click.
+    await menu.locator(".menu-item .menu-label").first().waitFor();
     const labels = await menu.locator(".menu-item .menu-label").allTextContents();
     assert.deepEqual(labels, ["Open", "Extract…", "Copy"]);
     await page.keyboard.press("Escape");

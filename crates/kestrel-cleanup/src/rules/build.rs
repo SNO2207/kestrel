@@ -179,9 +179,16 @@ pub fn recommend(index: &Index, context: &Context, guard: &Guard, claims: &mut C
                 let folder = index.path(index.parent(entry));
                 // Told which folder to clean: otherwise Cargo cleans the one its environment or
                 // configuration names (CARGO_TARGET_DIR, `build.target-dir`), which may be a
-                // build folder shared by every project, and leaves the one shown.
+                // build folder shared by every project, and leaves the one shown. Run from the
+                // owner's profile folder, not the project's: rustup picks the toolchain from a
+                // `rust-toolchain.toml` in the folder it runs in (one can name any program as
+                // the toolchain), and Cargo reads `.cargo/config.toml` there (which can name
+                // the `rustc` it runs). A downloaded project must not choose what a click runs.
                 let target = index.path(entry);
-                let tool = Tool::new("cargo", &["clean", "--target-dir", &target], Some(&folder)).shown_as("cargo clean");
+                let manifest = join(&folder, "Cargo.toml");
+                let tool = Tool::new("cargo", &["clean", "--manifest-path", &manifest, "--target-dir", &target], None)
+                    .shown_as("cargo clean")
+                    .for_project(&folder);
                 recs.push(
                     Recommendation::new(
                         format!("cargo:{}", fold_path(&folder)),
@@ -273,12 +280,23 @@ mod tests {
                 "users/me/code/rusty/web/node_modules",
             ]
         );
-        // Cargo's own tool for `target`, run in the project and told which folder to clean.
+        // Cargo's own tool for `target`, pointed at the project and told which folder to clean,
+        // but run outside the project, so nothing in it chooses the toolchain or configuration.
         let cargo = build.iter().find(|r| r.id.starts_with("cargo:")).unwrap();
         let Action::Tool(tool) = &cargo.action else { panic!("{cargo:?}") };
         assert_eq!(tool.command, "cargo clean");
-        assert_eq!(tool.args, ["clean", "--target-dir", sandbox.text(r"Users\me\code\rusty\target").as_str()]);
-        assert_eq!(tool.dir.as_deref(), Some(sandbox.text(r"Users\me\code\rusty").as_str()));
+        assert_eq!(
+            tool.args,
+            [
+                "clean",
+                "--manifest-path",
+                sandbox.text(r"Users\me\code\rusty\Cargo.toml").as_str(),
+                "--target-dir",
+                sandbox.text(r"Users\me\code\rusty\target").as_str()
+            ]
+        );
+        assert_eq!(tool.dir, None);
+        assert_eq!(tool.project.as_deref(), Some(sandbox.text(r"Users\me\code\rusty").as_str()));
         assert!(cargo.reason.contains("120 days"), "{}", cargo.reason);
         let web = build.iter().find(|r| r.title == "Build output in rusty").unwrap();
         assert_eq!(web.action, Action::Recycle);
@@ -319,7 +337,7 @@ mod tests {
         let program = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let ran = std::process::Command::new(program)
             .args(&tool.args)
-            .current_dir(tool.dir.as_deref().unwrap())
+            .current_dir(tool.dir.as_deref().map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir))
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("CARGO_BUILD_TARGET_DIR")
             .output()
@@ -327,6 +345,44 @@ mod tests {
         assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
         assert!(!sandbox.path(&format!(r"{project}\target")).exists(), "the folder shown is removed");
         assert!(shared.exists(), "the build folder Cargo is configured with is left alone");
+    }
+
+    /// A project's `rust-toolchain.toml` makes rustup run whatever toolchain it names (a
+    /// toolchain can be a path, so any program), and its `.cargo/config.toml` can name the
+    /// `rustc` Cargo runs. Neither may decide what a click on "Run" starts: the tool runs
+    /// outside the project, so rustup and Cargo never read them.
+    #[test]
+    fn cargo_clean_never_reads_the_projects_toolchain_or_configuration() {
+        let sandbox = Sandbox::new("build-cargo-toolchain");
+        let project = r"Users\me\code\downloaded";
+        sandbox.write_bytes(&format!(r"{project}\Cargo.toml"), b"[package]\nname = \"downloaded\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+        sandbox.write_bytes(&format!(r"{project}\src\main.rs"), b"fn main() {}\n");
+        sandbox.write(&format!(r"{project}\target\debug\downloaded.exe"), 9000, 1);
+        // A toolchain that does not exist: run inside the project, rustup refuses to start.
+        sandbox.write_bytes(&format!(r"{project}\rust-toolchain.toml"), b"[toolchain]\nchannel = \"kestrel-test-no-such-toolchain\"\n");
+        // A compiler that does not exist: Cargo fails if it reads this and asks rustc anything.
+        sandbox.write_bytes(&format!(r"{project}\.cargo\config.toml"), b"[build]\nrustc = 'kestrel-test-no-such-rustc.exe'\n");
+        sandbox.age_tree("Users", 120);
+        let mut context = sandbox.context();
+        context.projects = vec![Project { root: sandbox.text(project), dismissed: false }];
+        context.tools = Tools::with(&["cargo"]);
+        let recs = scan(&sandbox.index(), &context);
+        let cargo = recs.iter().find(|r| r.id.starts_with("cargo:")).unwrap();
+        let Action::Tool(tool) = &cargo.action else { panic!("{cargo:?}") };
+        assert_eq!(tool.dir, None, "it runs in the owner's profile folder, outside the project");
+
+        // `cargo` from the PATH is rustup's proxy, which honours toolchain files; under `cargo
+        // test` rustup sets RUSTUP_TOOLCHAIN, which would hide them, so it is removed.
+        let ran = std::process::Command::new("cargo")
+            .args(&tool.args)
+            .current_dir(std::env::temp_dir())
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .output()
+            .unwrap();
+        assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+        assert!(!sandbox.path(&format!(r"{project}\target")).exists(), "the folder shown is removed");
     }
 
     #[test]

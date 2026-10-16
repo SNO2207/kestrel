@@ -309,12 +309,16 @@ export function CleanupPanel(props: { root: string | null }) {
               onConfirm={() => void runTool(rec())}
               onCancel={() => setDialog(null)}
             >
-              <p class="cleanup-dialog-lead">Kestrel runs this command{toolOf(rec())?.dir ? " in the folder below" : ""}:</p>
+              <p class="cleanup-dialog-lead">
+                Kestrel runs this command{toolOf(rec())?.project ? " for the project below" : toolOf(rec())?.dir ? " in the folder below" : ""}:
+              </p>
               <pre class="cleanup-command-block">{toolOf(rec())?.command}</pre>
-              <Show when={toolOf(rec())?.dir}>
-                <p class="cleanup-dialog-path-line" title={toolOf(rec())?.dir ?? ""}>
-                  {toolOf(rec())?.dir}
-                </p>
+              <Show when={toolOf(rec())?.project ?? toolOf(rec())?.dir}>
+                {(folder) => (
+                  <p class="cleanup-dialog-path-line" title={folder()}>
+                    {folder()}
+                  </p>
+                )}
               </Show>
               <p class="cleanup-warning">
                 This can't be undone: what it removes doesn't go to the Recycle Bin. Up to {formatSize(rec().bytes)} is freed.

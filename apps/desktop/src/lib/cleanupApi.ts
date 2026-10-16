@@ -29,8 +29,10 @@ export interface CleanupItem {
 export interface CleanupTool {
   program: string;
   args: string[];
-  /** The folder it runs in. */
+  /** The folder it runs in; the owner's profile folder when null. */
   dir: string | null;
+  /** The project it acts on, for showing, when that is not the folder it runs in. */
+  project: string | null;
   /** The command exactly as it runs, such as `cargo clean`. */
   command: string;
 }
