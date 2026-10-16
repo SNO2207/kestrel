@@ -8,6 +8,7 @@ import { SYNC_LABELS, syncState } from "../lib/syncStatus";
 import { detailsOpen, setDetailsOpen } from "../parity";
 import { DEFAULT_PANE_WIDTH, MIN_PANE_WIDTH, focusedItem, paneOpen, paneWidth, setPaneWidth } from "../previewState";
 import { activeTab, isSearch, selectionOf } from "../state";
+import { MediaText } from "./MediaText";
 import { ParityIcon } from "./ParityIcon";
 
 /** Room always left for the file list beside the pane. */
@@ -184,6 +185,9 @@ function OneItem(props: { item: Extract<Subject, { kind: "one" }>["item"]; isFol
         <p class="details-failure">{String(details.error)}</p>
       </Show>
       <DetailLines lines={lines()} />
+      <Show when={!props.item.dir}>
+        <MediaText path={props.item.path} ext={props.item.ext} mtime={props.item.mtime} />
+      </Show>
     </div>
   );
 }

@@ -111,6 +111,9 @@ async function start() {
     // Test instances run side by side and must not fight over (or take from the owner) the
     // quick launcher's system-wide shortcut. Set it yourself to test the real one.
     KESTREL_GLOBAL_HOTKEY: process.env.KESTREL_GLOBAL_HOTKEY ?? "off",
+    // Nor do they read the owner's photos and videos in the background: the media library starts
+    // with no folders (media.mjs gives it a scratch folder). Set it to `default` to test the real ones.
+    KESTREL_MEDIA_SCOPES: process.env.KESTREL_MEDIA_SCOPES ?? "none",
   };
   const log = openSync(logFile, "w");
   const started = Date.now();

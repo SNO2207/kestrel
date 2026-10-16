@@ -21,6 +21,7 @@ import {
 import { VIEW_MODES, displayName, listingLocation, setViewMode, showExtensions, viewModeAt } from "../lib/views";
 import { archiveMenu, inArchive, notifyReadOnly, type ArchiveCommand } from "../archives";
 import { ColumnHeaders } from "./ColumnHeaders";
+import { MediaCell } from "./MediaCell";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import { FilterBar } from "./FilterBar";
 import { GitGlyph } from "./GitGlyph";
@@ -1096,6 +1097,10 @@ export function FileList(props: Props) {
         return <div class="cell attributes">{attributeLetters(data().attrs)}</div>;
       case "extension":
         return <div class="cell extension">{data().dir ? "" : data().ext}</div>;
+      case "taken":
+      case "dimensions":
+      case "duration":
+        return <MediaCell column={id} row={data()} />;
     }
   };
 

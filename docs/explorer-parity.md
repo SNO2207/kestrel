@@ -76,7 +76,7 @@ other features' suites are `e2e/places.mjs`, `layout.mjs`, `archives.mjs`, `disk
 | Home > Favorites | done | Kestrel's pins (`shortcuts`) |
 | Home > Recent | done | Windows' Recent items (shortcuts in `shell:recent`, read without touching their targets) and files opened through Kestrel (`kestrel_db::parity`); Remove from Recent hides an entry in Kestrel |
 | Home > Shared, Recommended | missing | Need a Microsoft account's cloud data |
-| Gallery | missing | A photo timeline over the Pictures folders; the icon views and `type:image in:<folder>` cover browsing; the planned photo search is its natural home |
+| Gallery | done | `Gallery.tsx`, `src-tauri/src/media/`, a special location ("Gallery", or Explorer's `shell:::{e88865ea-…}`): every photo and video in the media library's folders by month of date taken, justified rows, a timeline, All/Photos/Videos and a folder filter, Quick Look, the item menu; the library's folders are chosen on its settings page ("Media library"), as Explorer's Gallery keeps a folder list of its own. Beyond Explorer: searches by date taken, camera, size, length, place and the text in images |
 | This PC | done | `ThisPC.tsx`, `thispc.rs`: folders, devices and drives (names, usage bars, free space; slow drives fill in later), network locations; drives come and go by themselves; Eject; "Show disk usage" opens the disk usage hub on a drive |
 | Recycle Bin | done | `RecycleBin.tsx`, `recyclebin.rs`: every drive's bin, sortable columns, Restore (into the undo history), Restore all, Delete permanently and Empty Recycle Bin, each asking first where Explorer does |
 | OneDrive node | partial | The OneDrive folder is reachable like any folder; sync status shows in it (below) |
@@ -191,7 +191,6 @@ Every File Explorer shortcut Microsoft documents, and what Kestrel does with it.
 ## Left out, and why
 
 - **Share button**: needs the WinRT share sheet; Windows' own Share is one click away under Show more options.
-- **Gallery**: a large view of its own, better built with the planned photo search.
 - **Map network drive, Network neighbourhood, Libraries, WSL**: rarely used next to typed UNC paths and pins; This PC lists mapped drives but cannot map new ones yet.
 - **Ctrl+Space and Ctrl+arrows**: list-view selection refinements, little used with Ctrl+click.
 - **Check boxes, compact view, colour for compressed files, "always show icons"**: cosmetic view options.

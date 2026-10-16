@@ -2131,6 +2131,7 @@ dependencies = [
  "kestrel-cleanup",
  "kestrel-db",
  "kestrel-index",
+ "kestrel-media",
  "kestrel-query",
  "lzma-rust2 0.16.5",
  "memchr",
@@ -2160,6 +2161,21 @@ dependencies = [
  "kestrel-ntfs",
  "parking_lot",
  "rayon",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "kestrel-media"
+version = "0.1.0"
+dependencies = [
+ "kestrel-db",
+ "kestrel-index",
+ "kestrel-query",
+ "parking_lot",
+ "serde",
+ "windows",
+ "windows-core",
+ "windows-future",
  "windows-sys 0.61.2",
 ]
 

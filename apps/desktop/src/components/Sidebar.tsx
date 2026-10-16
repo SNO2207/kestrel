@@ -9,6 +9,7 @@ import { closeProjects, projectsOpen, toggleProjects } from "../projects";
 import { closeDiskUsage, diskOpen } from "../disk";
 import { DiskEntry } from "./DiskEntry";
 import { FolderTree } from "./FolderTree";
+import { GalleryEntry } from "./GalleryEntry";
 import { HomeEntry } from "./HomeEntry";
 import { Icon, hasIcon } from "./Icon";
 import { PinnedPlaces } from "./PinnedPlaces";
@@ -43,6 +44,7 @@ export function Sidebar() {
       <div ref={shelves} class="sidebar-shelves">
         <section>
           <HomeEntry />
+          <GalleryEntry />
           <button
             class="projects-entry"
             classList={{ current: projectsOpen() }}

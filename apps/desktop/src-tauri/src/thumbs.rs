@@ -124,6 +124,7 @@ impl Fnv128 {
 /// The answer to a thumbnail request.
 #[derive(Clone)]
 enum Thumb {
+    /// An encoded picture: PNG from the shell, or JPEG from the media library (`ThumbStore`).
     Png(Arc<Vec<u8>>),
     /// The file has no thumbnail, or must not be read for one; this icon stands in.
     Icon(IconKey),
@@ -492,9 +493,11 @@ pub fn parse(uri: &Uri) -> Option<Wanted> {
 /// year. A stand-in or a failure may change at any time, so the web view keeps neither.
 fn response(status: StatusCode, body: Vec<u8>, lasting: bool) -> Response<Vec<u8>> {
     let caching = if status == StatusCode::OK && lasting { "max-age=31536000, immutable" } else { "no-store" };
+    // The shell's thumbnails are PNG; the media library files JPEG ones (`ThumbStore`).
+    let kind = if body.starts_with(&[0xFF, 0xD8]) { "image/jpeg" } else { "image/png" };
     Response::builder()
         .status(status)
-        .header("Content-Type", "image/png")
+        .header("Content-Type", kind)
         .header("Cache-Control", caching)
         .body(body)
         .expect("static response parts are valid")
@@ -509,7 +512,34 @@ pub struct ThumbService {
     icons: Arc<IconService>,
 }
 
+/// Lets background work file thumbnails it made itself in the same cache, under the key a
+/// `thumb` request for that file, size and time looks for: the media library's thumbnail stage
+/// makes the Gallery's from the picture it has already decoded. They may be JPEG; the protocol
+/// says which by their first bytes.
+#[derive(Clone)]
+pub struct ThumbStore(Arc<Shared>);
+
+impl ThumbStore {
+    /// Whether the cache already holds this thumbnail, on disk or in memory.
+    pub fn has(&self, path: &str, size: u32, mtime_ms: i64) -> bool {
+        let key = Key::new(path, size, mtime_ms);
+        matches!(self.0.memory.lock().get(&key), Some(Thumb::Png(_))) || self.0.disk.dir.join(key.file_name()).is_file()
+    }
+
+    /// Files a thumbnail of `path` as it was at `mtime_ms`, fitting `size` pixels square.
+    pub fn put(&self, path: &str, size: u32, mtime_ms: i64, bytes: Vec<u8>) {
+        let key = Key::new(path, size, mtime_ms);
+        self.0.disk.put(&key, &bytes);
+        self.0.memory.lock().put(key, Thumb::Png(Arc::new(bytes)));
+    }
+}
+
 impl ThumbService {
+    /// A handle for filing thumbnails made elsewhere; see [`ThumbStore`].
+    pub fn store(&self) -> ThumbStore {
+        ThumbStore(self.shared.clone())
+    }
+
     /// Starts the rendering threads. `icons` provides the icons that stand in for thumbnails.
     pub fn start(icons: Arc<IconService>) -> Self {
         Self::with(icons, indexer::data_dir().join("thumbs"), STAND_IN_LIFETIME)
@@ -517,7 +547,7 @@ impl ThumbService {
 
     /// Starts the rendering threads with the disk cache in `cache_dir`, remembering stand-ins
     /// for `stand_in_lifetime`.
-    fn with(icons: Arc<IconService>, cache_dir: PathBuf, stand_in_lifetime: Duration) -> Self {
+    pub(crate) fn with(icons: Arc<IconService>, cache_dir: PathBuf, stand_in_lifetime: Duration) -> Self {
         let shared = Arc::new(Shared {
             queue: Mutex::default(),
             work: Condvar::new(),
@@ -692,6 +722,35 @@ mod tests {
         set_attributes(&photo, FILE_ATTRIBUTE_NORMAL);
         assert_eq!(FileState::read(&path).unwrap().mtime, mtime);
         assert!(matches!(ask(), Thumb::Png(_)), "the thumbnail replaces the stand-in");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The media library files JPEG thumbnails it made itself; a request for that file, size and
+    /// time gets them, said to be JPEG, without the shell being asked.
+    #[test]
+    fn thumbnails_filed_by_the_media_library_are_served_as_they_are() {
+        let dir = scratch("filed");
+        let service = ThumbService::with(Arc::new(IconService::start()), dir.join("cache"), Duration::ZERO);
+        let store = service.store();
+        let jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3];
+        // No such file: only the cache can answer.
+        let path = dir.join("gone.jpg").to_str().unwrap().to_owned();
+        assert!(!store.has(&path, 320, 42));
+        store.put(&path, 320, 42, jpeg.clone());
+        assert!(store.has(&path, 320, 42));
+        assert!(!store.has(&path, 320, 43), "another time is another thumbnail");
+        let (sender, answer) = std::sync::mpsc::channel();
+        service.request(Wanted { path: path.clone(), size: 320, mtime: 42 }, move |thumb| {
+            let _ = sender.send(thumb);
+        });
+        let Thumb::Png(bytes) = answer.recv_timeout(Duration::from_secs(10)).unwrap() else { panic!("the filed thumbnail") };
+        assert_eq!(*bytes, jpeg);
+        let served = response(StatusCode::OK, jpeg, true);
+        assert_eq!(served.headers()["content-type"], "image/jpeg");
+        assert_eq!(response(StatusCode::OK, vec![0x89, b'P'], true).headers()["content-type"], "image/png");
+        // A new service over the same folder finds it on disk.
+        let again = ThumbService::with(Arc::new(IconService::start()), dir.join("cache"), Duration::ZERO);
+        assert!(again.store().has(&path, 320, 42));
         fs::remove_dir_all(&dir).unwrap();
     }
 

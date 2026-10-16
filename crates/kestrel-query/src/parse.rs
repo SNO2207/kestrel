@@ -42,6 +42,59 @@ pub enum ClauseKind {
     Tag(String),
     /// Exactly these entries, in ascending id order: a tag, once resolved.
     Entries(Vec<EntryId>),
+    /// A fact the media library holds about photos and videos (`width:`, `taken:`, `text:`...).
+    /// The index knows none of them, so the caller resolves this to [`ClauseKind::Entries`]
+    /// with [`resolve_media`] before compiling, as it does tags.
+    Media(MediaClause),
+}
+
+/// What a media clause asks of the media library.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MediaClause {
+    /// Width as shown, in pixels, inclusive.
+    Width(u32, u32),
+    /// Height as shown, in pixels, inclusive.
+    Height(u32, u32),
+    /// When the photo was taken or the video recorded: a half-open range of FILETIMEs, read
+    /// as `dm:` reads dates.
+    Taken(i64, i64),
+    /// The camera's make or model contains this text.
+    Camera(String),
+    /// Length in milliseconds, inclusive.
+    Duration(u64, u64),
+    /// `kind:photo` or `kind:video`: what the media library holds of that kind.
+    Kind(MediaKind),
+    /// `geo:yes`: a GPS position is known; `geo:no`: none is.
+    Geo(bool),
+    /// Words recognised in an image (`text:costco`, `text:"order 42.17"`).
+    Text(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaKind {
+    Photo,
+    Video,
+}
+
+/// Replaces every media clause with the entries `resolve` finds for it, sorted.
+pub fn resolve_media(
+    query: &mut Query,
+    mut resolve: impl FnMut(&MediaClause) -> Result<Vec<EntryId>, ParseError>,
+) -> Result<(), ParseError> {
+    for clause in &mut query.clauses {
+        if let ClauseKind::Media(media) = &clause.kind {
+            let mut entries = resolve(media)?;
+            entries.sort_unstable();
+            entries.dedup();
+            clause.kind = ClauseKind::Entries(entries);
+        }
+    }
+    Ok(())
+}
+
+/// Whether a query has clauses only the media library can answer.
+pub fn has_media(query: &Query) -> bool {
+    query.clauses.iter().any(|clause| matches!(clause.kind, ClauseKind::Media(_)))
 }
 
 /// Replaces every `tag:` clause with the entries `resolve` finds for its tag name, sorted.
@@ -123,11 +176,32 @@ fn literal(text: &str) -> Option<ClauseKind> {
     Some(if folded.contains('\\') { ClauseKind::Path(folded) } else { ClauseKind::Name(folded) })
 }
 
+/// The media library's keys, whose values are read only once typed.
+const MEDIA_KEYS: &[&str] = &["width", "height", "taken", "camera", "duration", "length", "geo", "text"];
+
 fn clause(text: &str, clock: Clock) -> Result<Option<ClauseKind>, ParseError> {
     if let Some((key, value)) = text.split_once(':') {
+        if value.is_empty() && MEDIA_KEYS.contains(&key.to_ascii_lowercase().as_str()) {
+            return Ok(None);
+        }
         let filter = match key.to_ascii_lowercase().as_str() {
             "ext" => Some(extensions(value)),
+            // `kind:photo` and `kind:video` are the media library's; any other kind is a type.
+            "kind" if media_kind(value).is_some() => media_kind(value).map(|kind| ClauseKind::Media(MediaClause::Kind(kind))),
             "type" | "kind" => Some(category(value)?),
+            "width" => {
+                let (min, max) = pixels(value)?;
+                Some(ClauseKind::Media(MediaClause::Width(min, max)))
+            }
+            "height" => {
+                let (min, max) = pixels(value)?;
+                Some(ClauseKind::Media(MediaClause::Height(min, max)))
+            }
+            "taken" => Some(ClauseKind::Media(taken(value, clock)?)),
+            "camera" => Some(ClauseKind::Media(MediaClause::Camera(value.to_owned()))),
+            "duration" | "length" => Some(ClauseKind::Media(duration(value)?)),
+            "geo" => Some(ClauseKind::Media(MediaClause::Geo(yes_or_no(value)?))),
+            "text" => Some(ClauseKind::Media(MediaClause::Text(value.to_owned()))),
             "size" => Some(size(value)?),
             "dm" | "modified" | "date" => Some(modified(value, clock)?),
             "in" | "folder" => Some(ClauseKind::Within(value.to_owned())),
@@ -345,6 +419,89 @@ fn modified(value: &str, clock: Clock) -> Result<ClauseKind, ParseError> {
     Ok(ClauseKind::Modified(from, to))
 }
 
+/// `taken:` reads dates as `dm:` does.
+fn taken(value: &str, clock: Clock) -> Result<MediaClause, ParseError> {
+    match modified(value, clock)? {
+        ClauseKind::Modified(from, to) => Ok(MediaClause::Taken(from, to)),
+        _ => err(format!("\"{value}\" is not a date")),
+    }
+}
+
+/// `kind:photo`, `kind:videos` and their other spellings.
+fn media_kind(value: &str) -> Option<MediaKind> {
+    match value.to_ascii_lowercase().as_str() {
+        "photo" | "photos" => Some(MediaKind::Photo),
+        "video" | "videos" => Some(MediaKind::Video),
+        _ => None,
+    }
+}
+
+/// A whole number of pixels, or a comparison or range of them: `1920`, `>1000`, `<=600`,
+/// `1000..2000`.
+fn pixels(value: &str) -> Result<(u32, u32), ParseError> {
+    let number = |text: &str| -> Result<u32, ParseError> {
+        let text = text.trim_end_matches("px");
+        text.parse::<u32>().map_err(|_| ParseError(format!("\"{text}\" is not a number of pixels")))
+    };
+    Ok(match comparison(value) {
+        Cmp::Greater(v) => (number(v)?.saturating_add(1), u32::MAX),
+        Cmp::GreaterEq(v) => (number(v)?, u32::MAX),
+        Cmp::Less(v) => match number(v)? {
+            0 => (1, 0),
+            n => (0, n - 1),
+        },
+        Cmp::LessEq(v) => (0, number(v)?),
+        Cmp::Range(from, to) => (number(from)?, number(to)?),
+        Cmp::Plain(v) => (number(v)?, number(v)?),
+    })
+}
+
+/// A length such as `90`, `90s`, `1.5m` or `2h`, as milliseconds and the milliseconds of its
+/// unit. A plain number is seconds.
+fn length(text: &str) -> Result<(u64, u64), ParseError> {
+    let lower = text.to_ascii_lowercase();
+    let digits = lower.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    let unit: u64 = match &lower[digits.len()..] {
+        "" | "s" | "sec" | "secs" => 1000,
+        "m" | "min" | "mins" => 60_000,
+        "h" | "hr" | "hrs" => 3_600_000,
+        "ms" => 1,
+        _ => return err(format!("Unknown unit of time in \"{text}\" (use s, m or h)")),
+    };
+    match digits.parse::<f64>() {
+        Ok(n) if n >= 0.0 && n.is_finite() => Ok(((n * unit as f64) as u64, unit)),
+        _ => err(format!("\"{text}\" is not a length of time")),
+    }
+}
+
+/// `duration:>1m`, `duration:30s..2m`, `duration:<10s`; plain `duration:1m` means "shown as 1
+/// minute": from one minute up to the next whole minute.
+fn duration(value: &str) -> Result<MediaClause, ParseError> {
+    let (min, max) = match comparison(value) {
+        Cmp::Greater(v) => (length(v)?.0.saturating_add(1), u64::MAX),
+        Cmp::GreaterEq(v) => (length(v)?.0, u64::MAX),
+        Cmp::Less(v) => match length(v)?.0 {
+            0 => (1, 0),
+            n => (0, n - 1),
+        },
+        Cmp::LessEq(v) => (0, length(v)?.0),
+        Cmp::Range(from, to) => (length(from)?.0, length(to)?.0),
+        Cmp::Plain(v) => {
+            let (ms, unit) = length(v)?;
+            (ms, ms.saturating_add(unit - 1))
+        }
+    };
+    Ok(MediaClause::Duration(min, max))
+}
+
+fn yes_or_no(value: &str) -> Result<bool, ParseError> {
+    match value.to_ascii_lowercase().as_str() {
+        "yes" | "y" | "true" | "1" | "on" => Ok(true),
+        "no" | "n" | "false" | "0" | "off" => Ok(false),
+        other => err(format!("Use geo:yes or geo:no, not geo:{other}")),
+    }
+}
+
 /// 1 January of the year containing `day`.
 fn year_start(day: i64) -> i64 {
     days_from_civil(civil_from_days(day).0, 1, 1)
@@ -421,6 +578,72 @@ mod tests {
         ]);
         let mut unknown = parse("tag:nope", CLOCK).unwrap();
         assert!(resolve_tags(&mut unknown, |_| Err(ParseError("No tag is named \"nope\"".into()))).is_err());
+    }
+
+    #[test]
+    fn media_clauses_parse_and_resolve_to_entries() {
+        use MediaClause::*;
+        let media = |input: &str| -> Vec<MediaClause> {
+            kinds(input)
+                .into_iter()
+                .map(|kind| match kind {
+                    ClauseKind::Media(media) => media,
+                    other => panic!("{input}: {other:?} is not a media clause"),
+                })
+                .collect()
+        };
+        assert_eq!(media("width:1920 height:>1000 width:<=600 height:100..200"), [
+            Width(1920, 1920),
+            Height(1001, u32::MAX),
+            Width(0, 600),
+            Height(100, 200)
+        ]);
+        assert_eq!(media("width:<1"), [Width(0, 0)]);
+        assert_eq!(media("duration:>1m duration:30s..2m duration:<10s"), [
+            Duration(60_001, u64::MAX),
+            Duration(30_000, 120_000),
+            Duration(0, 9_999)
+        ]);
+        assert_eq!(media("duration:90 duration:1m length:1.5h"), [
+            Duration(90_000, 90_999),
+            Duration(60_000, 119_999),
+            Duration(5_400_000, 9_000_000 - 1)
+        ]);
+        assert_eq!(media(r#"camera:pixel camera:"canon eos" geo:yes geo:No"#), [
+            Camera("pixel".into()),
+            Camera("canon eos".into()),
+            Geo(true),
+            Geo(false)
+        ]);
+        assert_eq!(media(r#"text:costco text:"order 42.17""#), [Text("costco".into()), Text("order 42.17".into())]);
+        assert_eq!(media("kind:photo kind:Videos"), [Kind(MediaKind::Photo), Kind(MediaKind::Video)]);
+        // `taken:` reads dates as `dm:` does.
+        assert_eq!(media("taken:2026-02"), [Taken(local_midnight(2026, 2, 1), local_midnight(2026, 3, 1))]);
+        assert_eq!(media("taken:>2025"), [Taken(local_midnight(2026, 1, 1), i64::MAX)]);
+        // Other kinds are types, as before; `type:photo` is a type too.
+        assert!(matches!(&kinds("kind:image")[0], ClauseKind::Ext(e) if e.contains(&"png".to_owned())));
+        assert!(matches!(&kinds("type:photo")[0], ClauseKind::Ext(e) if e.contains(&"jpg".to_owned())));
+        // Empty values are ignored while being typed; bad ones are reported.
+        assert!(kinds("width: text: taken: geo:").is_empty());
+        for bad in ["width:wide", "duration:5x", "geo:maybe", "taken:soon", "height:>"] {
+            assert!(parse(bad, CLOCK).is_err(), "{bad}");
+        }
+
+        let mut query = parse("beach !geo:yes text:costco", CLOCK).unwrap();
+        assert!(has_media(&query));
+        resolve_media(&mut query, |clause| match clause {
+            Geo(true) => Ok(vec![5, 1, 5]),
+            Text(words) if words == "costco" => Ok(vec![9]),
+            other => Err(ParseError(format!("unexpected {other:?}"))),
+        })
+        .unwrap();
+        assert!(!has_media(&query));
+        let resolved: Vec<_> = query.clauses.iter().map(|c| (c.negate, c.kind.clone())).collect();
+        assert_eq!(resolved, [
+            (false, ClauseKind::Name("beach".into())),
+            (true, ClauseKind::Entries(vec![1, 5])),
+            (false, ClauseKind::Entries(vec![9])),
+        ]);
     }
 
     #[test]

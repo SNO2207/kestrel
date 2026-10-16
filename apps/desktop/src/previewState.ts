@@ -87,4 +87,19 @@ export function registerStepper(tabId: number, step: (delta: number) => void) {
   };
 }
 
-export const stepFocus = (delta: number) => steppers.get(activeId())?.(delta);
+/**
+ * The same for a special location's page (the Gallery), which wins over the list hidden beneath
+ * it while it shows. The function returned forgets it, and the focused item the page reported.
+ */
+const pageSteppers = new Map<number, (delta: number) => void>();
+
+export function registerPageStepper(tabId: number, step: (delta: number) => void) {
+  pageSteppers.set(tabId, step);
+  return () => {
+    if (pageSteppers.get(tabId) !== step) return;
+    pageSteppers.delete(tabId);
+    setFocusedRow(tabId, null);
+  };
+}
+
+export const stepFocus = (delta: number) => (pageSteppers.get(activeId()) ?? steppers.get(activeId()))?.(delta);

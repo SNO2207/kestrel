@@ -4,6 +4,8 @@ import { Dynamic } from "solid-js/web";
 import { api, type Row } from "./lib/api";
 import { locationOf } from "./lib/locations";
 import { startPlaces } from "./placesSetup";
+// The Gallery and the media library's settings page (media.ts).
+import "./mediaSetup";
 import { setDiskUsageHandler } from "./places";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { locationKey, setViewMode, shortcutView } from "./lib/views";
