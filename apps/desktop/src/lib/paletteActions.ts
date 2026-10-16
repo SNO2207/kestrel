@@ -15,6 +15,7 @@ import {
   activeTab,
   closeTab,
   cycleTab,
+  dual,
   everywhere,
   goBack,
   goForward,
@@ -23,13 +24,16 @@ import {
   openTab,
   refresh,
   setEverywhere,
+  setGrouping,
   setSortSpec,
   startsDescending,
   tabs,
 } from "../state";
 import { redoLast, undoLast } from "../undo";
+import { openFilter, sendToOtherPane, toggleSecondPane } from "../panes";
 import { recheckAccess } from "./access";
 import type { SortKey } from "./api";
+import type { GroupBy } from "./layoutApi";
 import type { PaletteContext, PaletteHit, PaletteItem, PaletteProvider } from "./palette";
 import { paletteApi } from "./paletteApi";
 import { VIEW_MODES, locationKey, setOption, setViewMode, showExtensions, showHidden } from "./views";
@@ -70,6 +74,13 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: "modified", label: "date modified" },
   { key: "type", label: "type" },
   { key: "size", label: "size" },
+];
+
+const GROUPINGS: { by: GroupBy; label: string }[] = [
+  { by: "name", label: "name" },
+  { by: "modified", label: "date modified" },
+  { by: "type", label: "type" },
+  { by: "size", label: "size" },
 ];
 
 /** Sends a key to the active tab's list, for commands that live inside the list. */
@@ -143,7 +154,7 @@ function actions(): Action[] {
         id: `view-${info.mode}`,
         title: info.label,
         hint: `Ctrl+Shift+${info.digit}`,
-        icon: info.mode === "details" || info.mode === "list" ? "view-details" : info.mode === "tiles" ? "view-tiles" : "view-icons",
+        icon: info.mode === "details" || info.mode === "list" ? "view-details" : info.mode === "tiles" || info.mode === "content" ? "view-tiles" : "view-icons",
         keywords: "view layout",
         run: () => {
           const current = activeTab();
@@ -191,6 +202,44 @@ function actions(): Action[] {
       keywords: "toggle preview pane",
       run: togglePane,
     },
+    // The second pane, the filter box and grouping (panes.ts, layout.rs).
+    {
+      id: "second-pane",
+      title: dual() ? "Hide the second pane" : "Show the second pane",
+      hint: "Ctrl+Shift+D",
+      keywords: "dual two panes split side by side",
+      mainOnly: true,
+      run: toggleSecondPane,
+    },
+    { id: "filter", title: "Filter by name", hint: "Ctrl+Shift+L", keywords: "narrow names wildcard", mainOnly: true, run: withTab(openFilter) },
+    {
+      id: "copy-to-other-pane",
+      title: "Copy to other pane",
+      hint: "Alt+C",
+      selection: true,
+      mainOnly: true,
+      when: dual,
+      run: withTab((id) => void sendToOtherPane(id, "copy")),
+    },
+    {
+      id: "move-to-other-pane",
+      title: "Move to other pane",
+      hint: "Alt+X",
+      selection: true,
+      mainOnly: true,
+      when: dual,
+      run: withTab((id) => void sendToOtherPane(id, "move")),
+    },
+    ...GROUPINGS.map(
+      ({ by, label }): Action => ({
+        id: `group-${by}`,
+        title: `Group by ${label}`,
+        keywords: "groups arrange",
+        mainOnly: true,
+        run: withTab((id) => setGrouping(id, { by, desc: by === "modified" || by === "size" })),
+      }),
+    ),
+    { id: "ungroup", title: "Ungroup", keywords: "groups none", mainOnly: true, run: withTab((id) => setGrouping(id, null)) },
     {
       id: "quick-look",
       title: "Quick Look",

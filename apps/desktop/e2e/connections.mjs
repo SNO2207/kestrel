@@ -209,7 +209,8 @@ try {
     const modes = [
       ["details", "Control+Shift+6"],
       ["list", "Control+Shift+5"],
-      ["tiles", "Control+Shift+8"],
+      // Explorer's Tiles; Ctrl+Shift+8 is its Content view.
+      ["tiles", "Control+Shift+7"],
       ["small", "Control+Shift+4"],
       ["medium", "Control+Shift+3"],
       ["large", "Control+Shift+2"],

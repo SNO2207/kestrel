@@ -6,10 +6,24 @@ import { checkGitBadges, gitBadge } from "../lib/gitBadges";
 import { dragOut, followPress, isDropRow } from "../dragdrop";
 import { formatDate, formatSize } from "../lib/format";
 import { Selection } from "../lib/selection";
-import { geometry, keyTarget, sameGeometry } from "../lib/viewLayout";
+import { GRID_PADDING, geometry, keyTarget, sameGeometry } from "../lib/viewLayout";
+import { ListLayout, groupedKeyTarget } from "../lib/listLayout";
+import { layoutApi, type GroupHeader as GroupInfo } from "../lib/layoutApi";
+import {
+  attributeLetters,
+  columnSet,
+  columnTemplate,
+  columnsWidth,
+  folderOf,
+  type ColumnId,
+  type ColumnKind,
+} from "../lib/columns";
 import { VIEW_MODES, displayName, listingLocation, setViewMode, showExtensions, viewModeAt } from "../lib/views";
+import { ColumnHeaders } from "./ColumnHeaders";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
+import { FilterBar } from "./FilterBar";
 import { GitGlyph } from "./GitGlyph";
+import { GroupHeader } from "./GroupHeader";
 import { LockGlyph } from "./LockGlyph";
 import type { ShortcutCommand } from "./ShortcutsLayer";
 import { TagDots } from "./TagDots";
@@ -31,6 +45,20 @@ const TYPE_AHEAD_RESET_MS = 700;
 const THUMB_DELAY_MS = 150;
 /** Wheel travel, with Ctrl held, that steps to the next view size. */
 const ZOOM_STEP = 100;
+/** A group's header in the views that scroll down, and the space before each group after the first. */
+const GROUP_HEADER = 36;
+const GROUP_GAP = 4;
+/** The band above the list view's columns that holds their groups' headers. */
+const GROUP_BAND = 28;
+/** Where the list view's first item sits below the top of the view. */
+const LIST_TOP = 4;
+/** Most group names asked for at once, as many as the backend answers in one call. */
+const HEADER_BATCH = 4096;
+/** How far the pointer moves before a press on empty space draws a selection rectangle. */
+const MARQUEE_THRESHOLD = 4;
+/** The band along the view's edges where a selection rectangle scrolls the list, and its fastest step. */
+const MARQUEE_EDGE = 28;
+const MARQUEE_STEP = 24;
 
 /** Actions the list asks its owner to carry out on the current selection or folder. */
 export type ListCommand =
@@ -60,6 +88,15 @@ interface Props {
   restore: Marks | null;
   /** Names to select as soon as they appear, because an operation just created them. */
   pending: { names: string[]; rename: boolean } | null;
+  /** Where each group starts, while the rows are grouped (see `setGrouping` in state.ts). */
+  groups?: number[] | null;
+  /** The filter box's text, or null while it is closed. */
+  filter?: string | null;
+  /** How many rows the listing had before the filter narrowed it. */
+  unfilteredTotal?: number | null;
+  onFilter?: (text: string | null) => void;
+  /** More entries for the item and folder menus, such as "Copy to other pane" and "Group by". */
+  menuExtras?: { items?: () => MenuEntry[]; folder?: () => MenuEntry[] };
   onSort: (key: SortKey) => void;
   onOpen: (row: Row, inNewTab: boolean) => void;
   onStale: () => void;
@@ -80,26 +117,7 @@ interface Props {
   stepRef?: (step: (delta: number) => void) => void;
 }
 
-interface Column {
-  id: string;
-  label: string;
-  sort?: SortKey;
-  numeric?: boolean;
-}
-
-const FOLDER_COLUMNS: Column[] = [
-  { id: "name", label: "Name", sort: "name" },
-  { id: "modified", label: "Date modified", sort: "modified" },
-  { id: "type", label: "Type", sort: "type" },
-  { id: "size", label: "Size", sort: "size", numeric: true },
-];
-
-const SEARCH_COLUMNS: Column[] = [
-  { id: "name", label: "Name", sort: "name" },
-  { id: "location", label: "Folder" },
-  { id: "modified", label: "Date modified", sort: "modified" },
-  { id: "size", label: "Size", sort: "size", numeric: true },
-];
+const sameRows = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((value, i) => value === b[i]);
 
 export function FileList(props: Props) {
   let viewport!: HTMLDivElement;
@@ -109,6 +127,8 @@ export function FileList(props: Props) {
   const [scrollPos, setScrollPos] = createSignal(0);
   /** Scroll offset in list pixels, which differs from `scrollPos` when the scrollbar is scaled. */
   const [offset, setOffset] = createSignal(0);
+  /** How far the details view's columns are scrolled sideways, which the column headers follow. */
+  const [shift, setShift] = createSignal(0);
   const [loadedTick, setLoadedTick] = createSignal(0);
   const [selection, setSelection] = createSignal(Selection.empty);
   const [focused, setFocused] = createSignal(-1);
@@ -117,6 +137,10 @@ export function FileList(props: Props) {
   const [menu, setMenu] = createSignal<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   /** The view is being scrolled, so thumbnails wait until it pauses. */
   const [scrolling, setScrolling] = createSignal(false);
+  /** The selection rectangle being drawn, in the viewport's own pixels. */
+  const [band, setBand] = createSignal<{ left: number; top: number; width: number; height: number } | null>(null);
+  /** Names of the groups collapsed to their headers. */
+  const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set());
   let anchor = -1;
   let scrollPause: number | undefined;
   /** Ctrl+wheel travel not yet turned into a change of view size. */
@@ -132,15 +156,55 @@ export function FileList(props: Props) {
 
   const total = () => props.listing?.total ?? 0;
   const isSearch = () => props.listing?.path === "";
-  const columns = () => (isSearch() ? SEARCH_COLUMNS : FOLDER_COLUMNS);
+  const columnKind = (): ColumnKind => (isSearch() ? "search" : "folder");
+  const columnOrder = () => columnSet(columnKind()).order;
   /** The view mode remembered for the folder, or the search, on screen. */
   const mode = () => viewModeAt(listingLocation(props.listing));
-  const layout = createMemo(() => geometry(mode(), width(), height()), undefined, { equals: sameGeometry });
+  const grouped = () => (props.groups?.length ?? 0) > 0;
+  const layout = createMemo(
+    () => geometry(mode(), width(), grouped() && mode() === "list" ? height() - GROUP_BAND : height()),
+    undefined,
+    { equals: sameGeometry },
+  );
   const vertical = () => layout().axis === "y";
   /** The viewport's extent along the scroll axis. */
   const extent = () => (vertical() ? height() : width());
-  const lineCount = () => Math.ceil(total() / layout().perLine);
-  const listExtent = () => lineCount() * layout().lineSize;
+
+  // ---------- groups ----------
+
+  /** Group names and sizes fetched for the rows on screen, by group. */
+  const headers = new Map<number, GroupInfo>();
+  const headersAsked = new Set<number>();
+  let headersFor = "";
+  const [headerTick, setHeaderTick] = createSignal(0);
+  const headerOf = (index: number): GroupInfo | undefined => {
+    headerTick();
+    groupCache();
+    return headers.get(index);
+  };
+  /** Empties the group names when the rows change, as `pages` does. */
+  const groupCache = () => {
+    const key = contentKey();
+    if (key !== headersFor) {
+      headersFor = key;
+      headers.clear();
+      headersAsked.clear();
+    }
+    return headers;
+  };
+  const isCollapsed = (index: number) => {
+    const label = headerOf(index)?.label;
+    return label !== undefined && collapsed().has(label);
+  };
+
+  const list = createMemo(
+    () =>
+      new ListLayout(layout(), total(), grouped() ? props.groups! : null, isCollapsed, {
+        header: vertical() ? GROUP_HEADER : 0,
+        gap: vertical() ? GROUP_GAP : 3 * GROUP_GAP,
+      }),
+  );
+  const listExtent = () => list().extent;
   const scrollExtent = () => Math.min(listExtent(), MAX_SCROLL_HEIGHT);
   const scale = () => {
     const scrollable = scrollExtent() - extent();
@@ -202,24 +266,44 @@ export function FileList(props: Props) {
     setScrollPos(ownScroll);
   };
 
-  /** Scrolls just far enough to show the whole line holding `row`. */
+  /** Scrolls just far enough to show the whole line holding `row`, and its group's header atop the first line. */
   const reveal = (row: number) => {
-    const { perLine, lineSize } = layout();
-    const start = Math.floor(row / perLine) * lineSize;
+    const { lineSize } = layout();
+    let start = list().lineStart(row);
+    const slot = list().slotOfRow(row);
+    // The first line of a group comes into view with its header, as in Explorer.
+    if (grouped() && vertical() && start === slot.items) start = slot.start;
+    const end = list().lineStart(row) + (slot.collapsed ? GROUP_HEADER : lineSize);
     if (start < offset()) scrollTo(start);
-    else if (start + lineSize > offset() + extent()) scrollTo(start + lineSize - extent());
+    else if (end > offset() + extent()) scrollTo(end - extent());
+  };
+
+  /** The first row in view, to keep in view when the layout changes. */
+  const firstInView = (layoutBefore: ListLayout) => {
+    const slot = layoutBefore.slotAt(offset());
+    const line = Math.max(0, Math.floor((offset() - slot.items) / layoutBefore.g.lineSize));
+    return Math.min(slot.first + line * layoutBefore.g.perLine, Math.max(0, total() - 1));
   };
 
   // A new view mode, or a resize that changes how many items fit in a line, keeps the same
   // items in view: the focused one if there is one, otherwise the first one showing.
   createEffect(
-    on(layout, (next, previous) => {
+    on(layout, (_next, previous) => {
       if (!previous) return;
-      const first = Math.floor(offset() / previous.lineSize) * previous.perLine;
+      const before = new ListLayout(previous, total(), grouped() ? props.groups! : null, isCollapsed, {
+        header: previous.axis === "y" ? GROUP_HEADER : 0,
+        gap: previous.axis === "y" ? GROUP_GAP : 3 * GROUP_GAP,
+      });
+      const atTop = offset() <= 0;
+      const first = firstInView(before);
       // A position along the other axis belongs to the previous view.
       viewport.scrollTop = 0;
       viewport.scrollLeft = 0;
-      scrollTo(Math.floor(first / next.perLine) * next.lineSize);
+      setShift(0);
+      // A group's first line comes with its header.
+      const slot = list().slotOfRow(first);
+      const line = list().lineStart(first);
+      scrollTo(atTop || total() === 0 ? 0 : line === slot.items ? slot.start : line);
       if (focused() >= 0) reveal(focused());
     }),
   );
@@ -258,7 +342,10 @@ export function FileList(props: Props) {
       const refreshed = view === viewId;
       // An open menu acts on the selection, which a refresh preserves, so it only needs to
       // close when the view itself changes.
-      if (!refreshed) setMenu(null);
+      if (!refreshed) {
+        setMenu(null);
+        setCollapsed(new Set<string>());
+      }
       scrollTo(refreshed && (order === sortId || focused() >= 0) ? offset() : 0);
       if (refreshed && order !== sortId && focused() >= 0) reveal(focused());
       viewId = view;
@@ -270,47 +357,76 @@ export function FileList(props: Props) {
   createEffect(() => props.onSelectionChange(selection(), focused()));
   createEffect(() => props.onRenaming(renaming() >= 0));
 
-  const overscan = () => Math.max(1, Math.ceil(OVERSCAN_PX / layout().lineSize));
-  const firstLine = createMemo(() => Math.max(0, Math.floor(offset() / layout().lineSize) - overscan()));
-  const lastLine = createMemo(() =>
-    Math.min(lineCount() - 1, Math.ceil((offset() + extent()) / layout().lineSize) + overscan()),
-  );
-  /** The first and last items rendered: whole lines, from just before the view to just after it. */
-  const firstRow = () => firstLine() * layout().perLine;
-  const lastRow = () => Math.min(total() - 1, (lastLine() + 1) * layout().perLine - 1);
-  const visibleRows = createMemo(() => {
-    const rows: number[] = [];
-    for (let row = firstRow(); row <= lastRow(); row++) rows.push(row);
-    return rows;
-  });
-  /** Where the first rendered line sits inside the scrolled content. */
-  const translate = () => {
-    const start = firstLine() * layout().lineSize;
-    return scale() === 1 ? start : scrollPos() + start - offset();
+  /** The groups that reach into the view, with the lines of each in it. */
+  const blocks = createMemo(() => list().blocks(offset() - OVERSCAN_PX, offset() + extent() + OVERSCAN_PX));
+  const shownGroups = createMemo(() => blocks().map((block) => block.slot.index), [], { equals: sameRows });
+  const rowsOfGroup = (index: number) => {
+    const block = blocks().find((each) => each.slot.index === index);
+    return block ? list().rowsOf(block.slot, block.firstLine, block.lastLine) : [];
   };
-  /** Places the rendered lines: rows for details, a grid of cells, or the list view's columns. */
-  const linesStyle = () => {
+  const visibleRows = createMemo(() => blocks().flatMap((block) => list().rowsOf(block.slot, block.firstLine, block.lastLine)), [], {
+    equals: sameRows,
+  });
+  /** Where a position in the list is drawn inside the scrolled content. */
+  const place = (position: number) => (scale() === 1 ? position : scrollPos() + position - offset());
+  /** Places a group's rendered lines: rows for details and content, a grid of cells, or the list view's columns. */
+  const blockStyle = (index: number) => {
+    const block = blocks().find((each) => each.slot.index === index);
     const { perLine, lineSize, itemSize } = layout();
-    if (mode() === "details") return { transform: `translateY(${translate()}px)` };
+    const start = block ? block.slot.items + block.firstLine * lineSize : 0;
+    if (mode() === "details" || mode() === "content") return { transform: `translateY(${place(start)}px)` };
     if (vertical()) {
       // Cells share out the width left over, so a row fills the view.
       return {
-        transform: `translateY(${translate()}px)`,
+        transform: `translateY(${place(start)}px)`,
         "grid-template-columns": `repeat(${perLine}, minmax(0, 1fr))`,
         "grid-auto-rows": `${lineSize}px`,
       };
     }
     return {
-      transform: `translateX(${translate()}px)`,
+      transform: `translateX(${place(start)}px)`,
+      top: `${LIST_TOP + (grouped() ? GROUP_BAND : 0)}px`,
       "grid-template-rows": `repeat(${perLine}, ${itemSize}px)`,
       "grid-auto-columns": `${lineSize}px`,
     };
+  };
+  /** Places a group's header: a line of its own, or the band above the list view's columns. */
+  const headerStyle = (index: number) => {
+    const slot = list().slots[index];
+    if (!slot) return {};
+    if (vertical()) return { transform: `translateY(${place(slot.start)}px)`, height: `${GROUP_HEADER}px` };
+    return { transform: `translateX(${place(slot.start)}px)`, width: `${slot.end - slot.start}px`, height: `${GROUP_BAND}px` };
   };
 
   const rowAt = (row: number): Row | undefined => {
     loadedTick();
     return pages().get(Math.floor(row / PAGE_SIZE))?.[row % PAGE_SIZE];
   };
+
+  // Group names are asked for the groups in view only, so a search of a million rows grouped
+  // by type sends a few dozen names, not thousands. With any group collapsed, every name is
+  // needed to place the groups, and all are asked for.
+  createEffect(() => {
+    const listing = props.listing;
+    if (!listing || !grouped()) return;
+    const key = contentKey();
+    const cache = groupCache();
+    const count = props.groups!.length;
+    const wanted = collapsed().size > 0 ? Array.from({ length: Math.min(count, HEADER_BATCH) }, (_, i) => i) : shownGroups();
+    const missing = wanted.filter((index) => !cache.has(index) && !headersAsked.has(index));
+    if (missing.length === 0) return;
+    const from = Math.min(...missing);
+    const to = Math.max(...missing);
+    for (let index = from; index <= to; index++) headersAsked.add(index);
+    void (async () => {
+      for (let start = from; start <= to; start += HEADER_BATCH) {
+        const found = await layoutApi.groupHeaders(listing.set, start, Math.min(HEADER_BATCH, to - start + 1)).catch(() => []);
+        if (contentKey() !== key) return;
+        found.forEach((header, i) => cache.set(start + i, header));
+      }
+      setHeaderTick((tick) => tick + 1);
+    })();
+  });
 
   // Whether the rows on screen sit in folders this account can't open is asked lazily, for
   // those rows only, so even a search with millions of results stays instant.
@@ -342,9 +458,8 @@ export function FileList(props: Props) {
     if (!listing || total() === 0) return;
     const key = contentKey();
     const loaded = pages();
-    const from = Math.floor(firstRow() / PAGE_SIZE);
-    const to = Math.floor(lastRow() / PAGE_SIZE);
-    for (let page = from; page <= to; page++) {
+    const pagesWanted = new Set(visibleRows().map((row) => Math.floor(row / PAGE_SIZE)));
+    for (const page of pagesWanted) {
       if (loaded.has(page) || requested.has(page)) continue;
       requested.add(page);
       api
@@ -371,6 +486,7 @@ export function FileList(props: Props) {
   });
 
   const onScroll = () => {
+    if (mode() === "details") setShift(viewport.scrollLeft);
     const top = readScroll();
     setScrollPos(top);
     holdThumbnails();
@@ -525,6 +641,8 @@ export function FileList(props: Props) {
         run: () => props.onShellMenu(x, y, onItems, false),
       },
     ];
+    const extraItems = props.menuExtras?.items?.() ?? [];
+    const extraFolder = props.menuExtras?.folder?.() ?? [];
     const forItems: MenuEntry[] = [
       { label: "Open", hint: "Enter", disabled: !sole, run: () => open(soleRow()) },
       ...(sole?.dir ? [{ label: "Open in new tab", run: () => open(soleRow(), true) }] : []),
@@ -535,6 +653,7 @@ export function FileList(props: Props) {
       { label: "Cut", hint: "Ctrl+X", run: command("cut") },
       { label: "Copy", hint: "Ctrl+C", run: command("copy") },
       { label: count > 1 ? "Copy as paths" : "Copy as path", hint: "Ctrl+Shift+C", run: command("copy-path") },
+      ...(extraItems.length > 0 ? (["separator", ...extraItems] as MenuEntry[]) : []),
       "separator",
       count > 1
         ? { label: `Rename ${count} items`, hint: "F2", run: command("batch-rename") }
@@ -545,6 +664,8 @@ export function FileList(props: Props) {
       ...moreOptions(true),
     ];
     const forFolder: MenuEntry[] = [
+      ...extraFolder,
+      ...(extraFolder.length > 0 ? (["separator"] as MenuEntry[]) : []),
       { label: "New folder", hint: "Ctrl+Shift+N", disabled: !browsing, run: command("new-folder") },
       { label: "Paste", hint: "Ctrl+V", disabled: !canPaste, run: command("paste") },
       { label: "Pin this folder", hint: "Ctrl+D", disabled: !browsing, run: command("pin-folder") },
@@ -605,6 +726,7 @@ export function FileList(props: Props) {
     const current = focused();
     if (event.ctrlKey && event.key.toLowerCase() === "a") {
       event.preventDefault();
+      // Every item, in every group, collapsed or not.
       if (total() > 0) setSelection(Selection.range(0, total() - 1));
       return;
     }
@@ -613,11 +735,13 @@ export function FileList(props: Props) {
     if (!isCharacter) resetTypeAhead();
     // A page is a viewful of lines, less one so that the line at the edge stays in sight.
     const { perLine, lineSize } = layout();
-    const page = Math.max(1, Math.floor(extent() / lineSize) - 1) * perLine;
-    const target = keyTarget(event.key, current, total(), layout(), page);
+    const pageLines = Math.max(1, Math.floor(extent() / lineSize) - 1);
+    const target = grouped()
+      ? groupedKeyTarget(event.key, current, list(), pageLines)
+      : keyTarget(event.key, current, total(), layout(), pageLines * perLine);
     if (target !== null) {
       event.preventDefault();
-      select(target, { extend: event.shiftKey });
+      if (target >= 0) select(target, { extend: event.shiftKey });
       return;
     }
     switch (event.key) {
@@ -679,34 +803,246 @@ export function FileList(props: Props) {
     else void openMenu(event.clientX, event.clientY, true);
   };
 
-  return (
-    <div class="filelist" classList={{ results: isSearch() }} data-view={mode()}>
-      <div class="list-header" role="row">
-        <For each={columns()}>
-          {(column) => (
-            <Show
-              when={column.sort}
-              fallback={<div class="column-header" classList={{ [column.id]: true }}>{column.label}</div>}
-            >
-              {(key) => (
-                <button
-                  class="column-header"
-                  classList={{ [column.id]: true, numeric: column.numeric, sorted: props.sort.key === key() }}
-                  aria-sort={props.sort.key === key() ? (props.sort.desc ? "descending" : "ascending") : "none"}
-                  onClick={() => props.onSort(key())}
-                >
-                  <span>{column.label}</span>
-                  <Show when={props.sort.key === key()}>
-                    <svg class="sort-arrow" classList={{ desc: props.sort.desc }} width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
-                      <path d="M1 5.5 4 2.5l3 3" fill="none" stroke="currentColor" stroke-width="1.3" />
-                    </svg>
-                  </Show>
-                </button>
-              )}
+  // ---------- groups' headers ----------
+
+  const toggleGroup = (index: number) => {
+    const label = headerOf(index)?.label;
+    if (label === undefined) return;
+    const next = new Set(collapsed());
+    if (next.has(label)) next.delete(label);
+    else next.add(label);
+    setCollapsed(next);
+  };
+
+  /** Clicking a group's header selects its items, as in Explorer; Ctrl adds them. */
+  const selectGroup = (index: number, event: MouseEvent) => {
+    const slot = list().slots[index];
+    if (!slot || slot.count === 0) return;
+    const range = [slot.first, slot.first + slot.count - 1] as const;
+    setSelection(event.ctrlKey ? selection().add(range[0], range[1]) : Selection.range(range[0], range[1]));
+    setFocused(slot.first);
+    anchor = slot.first;
+    viewport.focus();
+  };
+
+  const groupMenu = (index: number, event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const shut = isCollapsed(index);
+    const setAll = async (close: boolean) => {
+      const listing = props.listing;
+      if (!listing || !close) return setCollapsed(new Set<string>());
+      const all = await layoutApi.groupHeaders(listing.set, 0, HEADER_BATCH).catch(() => []);
+      setCollapsed(new Set(all.map((header) => header.label)));
+    };
+    setMenu({
+      x: event.clientX,
+      y: event.clientY,
+      entries: [
+        { label: shut ? "Expand group" : "Collapse group", run: () => toggleGroup(index) },
+        "separator",
+        { label: "Expand all groups", run: () => void setAll(false) },
+        { label: "Collapse all groups", run: () => void setAll(true) },
+      ],
+    });
+  };
+
+  // ---------- the selection rectangle ----------
+
+  /** Where cells sit across the scroll axis, for finding the items a rectangle meets. */
+  const crossCells = () => {
+    const { perLine, itemSize } = layout();
+    if (vertical()) return { start: GRID_PADDING, size: Math.max(1, (width() - 2 * GRID_PADDING) / perLine) };
+    return { start: LIST_TOP + (grouped() ? GROUP_BAND : 0), size: itemSize };
+  };
+
+  /**
+   * Draws a selection rectangle from a press on empty space. It selects the items it meets,
+   * found by position, so items scrolled out of the DOM are included; Ctrl adds them to the
+   * selection, and the list scrolls when the pointer nears or passes its edges.
+   */
+  const startMarquee = (start: MouseEvent) => {
+    const base = start.ctrlKey ? selection() : Selection.empty;
+    const box = () => viewport.getBoundingClientRect();
+    /** A point of the window in list pixels: along the scroll axis, and across it. */
+    const toList = (x: number, y: number) => {
+      const rect = box();
+      return vertical()
+        ? { along: offset() + y - rect.top, across: x - rect.left + viewport.scrollLeft }
+        : { along: offset() + x - rect.left, across: y - rect.top };
+    };
+    const origin = toList(start.clientX, start.clientY);
+    let pointer = { x: start.clientX, y: start.clientY };
+    let drawing = false;
+    let frame = 0;
+
+    const update = () => {
+      const now = toList(pointer.x, pointer.y);
+      const along: [number, number] = [Math.min(origin.along, now.along), Math.max(origin.along, now.along)];
+      const across: [number, number] = [Math.min(origin.across, now.across), Math.max(origin.across, now.across)];
+      // The ranges come sorted and apart, so without Ctrl they are the selection as they are.
+      const ranges = list().rowsInRect(along, across, crossCells());
+      setSelection(base.count === 0 ? Selection.of(ranges) : ranges.reduce((next, [from, to]) => next.add(from, to), base));
+      // Back to the viewport's pixels for drawing, clipped to the view.
+      const startAlong = Math.max(along[0] - offset(), -2);
+      const endAlong = Math.min(along[1] - offset(), extent() + 2);
+      const crossShift = vertical() ? viewport.scrollLeft : 0;
+      const rect = vertical()
+        ? { left: across[0] - crossShift, top: startAlong, width: across[1] - across[0], height: Math.max(0, endAlong - startAlong) }
+        : { left: startAlong, top: across[0], width: Math.max(0, endAlong - startAlong), height: across[1] - across[0] };
+      setBand(rect);
+    };
+
+    const tick = () => {
+      const rect = box();
+      const [at, low, high] = vertical() ? [pointer.y, rect.top, rect.bottom] : [pointer.x, rect.left, rect.right];
+      let step = 0;
+      if (at < low + MARQUEE_EDGE) step = -Math.min(1, (low + MARQUEE_EDGE - at) / MARQUEE_EDGE) * MARQUEE_STEP;
+      else if (at > high - MARQUEE_EDGE) step = Math.min(1, (at - (high - MARQUEE_EDGE)) / MARQUEE_EDGE) * MARQUEE_STEP;
+      if (step !== 0) {
+        const before = offset();
+        scrollTo(offset() + Math.sign(step) * Math.max(1, Math.round(Math.abs(step))));
+        if (offset() !== before) update();
+      }
+      frame = requestAnimationFrame(tick);
+    };
+
+    const move = (event: PointerEvent) => {
+      if ((event.buttons & 1) === 0) return finish();
+      pointer = { x: event.clientX, y: event.clientY };
+      if (!drawing) {
+        const far = Math.max(Math.abs(pointer.x - start.clientX), Math.abs(pointer.y - start.clientY)) > MARQUEE_THRESHOLD;
+        if (!far) return;
+        drawing = true;
+        frame = requestAnimationFrame(tick);
+      }
+      update();
+    };
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      window.removeEventListener("blur", finish);
+      cancelAnimationFrame(frame);
+      setBand(null);
+      if (drawing && selection().count > 0) {
+        // The keyboard carries on from the first item the rectangle took.
+        const first = selection().ranges.find(([from, to]) => !base.has(from) || !base.has(to))?.[0] ?? selection().first;
+        setFocused(first);
+        anchor = first;
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    window.addEventListener("blur", finish);
+  };
+
+  // ---------- columns ----------
+
+  /** The width a column's content needs, from the rows rendered and its header. */
+  const measure = (id: ColumnId): number => {
+    const header = viewport.closest(".filelist")?.querySelector<HTMLElement>(`.column-header.${id} .column-label`);
+    let widest = (header?.scrollWidth ?? 0) + 34;
+    if (id === "size") widest = Math.max(widest, 140);
+    for (const cell of viewport.querySelectorAll<HTMLElement>(`.row .cell.${id}`)) {
+      let need = cell.scrollWidth;
+      if (id === "name") {
+        const parts = [...cell.children] as HTMLElement[];
+        need = 16 + parts.reduce((sum, part) => sum + Math.max(part.scrollWidth, part.getBoundingClientRect().width), 0) + 9 * Math.max(0, parts.length - 1);
+      }
+      if (id !== "size") widest = Math.max(widest, need + 4);
+    }
+    return Math.ceil(widest);
+  };
+
+  const cell = (id: ColumnId, data: () => Row, index: number) => {
+    switch (id) {
+      case "name":
+        return (
+          <div class="cell name">
+            <img src={iconUrl(data())} width="16" height="16" alt="" draggable={false} />
+            <Show when={renaming() === index} fallback={<span class="label">{displayName(data(), showExtensions())}</span>}>
+              <input
+                class="rename"
+                aria-label="New name"
+                spellcheck={false}
+                value={data().name}
+                ref={(input) =>
+                  queueMicrotask(() => {
+                    input.focus();
+                    // Pre-select the name without its extension, as Explorer does.
+                    const dot = data().dir ? -1 : data().name.lastIndexOf(".");
+                    input.setSelectionRange(0, dot > 0 ? dot : data().name.length);
+                  })
+                }
+                onBlur={(event) => finishRename(index, event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") finishRename(index, event.currentTarget.value);
+                  if (event.key === "Escape") finishRename(index, null);
+                }}
+              />
             </Show>
-          )}
-        </For>
-      </div>
+            <Show when={isLocked(data())}>
+              <LockGlyph />
+            </Show>
+            <Show when={badgeOf(data())?.change}>{(change) => <GitGlyph change={change()} dir={data().dir} />}</Show>
+            <TagDots path={data().path} />
+          </div>
+        );
+      case "location":
+        return (
+          <div class="cell location" title={folderOf(data())}>
+            {folderOf(data())}
+          </div>
+        );
+      case "modified":
+        return <div class="cell modified">{formatDate(data().mtime)}</div>;
+      case "type":
+        return <div class="cell type">{typeLabel(data())}</div>;
+      case "size":
+        return (
+          <div class="cell size">
+            <span class="weight-track">
+              <span class="weight" classList={{ folder: data().dir }} style={{ width: `${sizeBar(data())}%` }} />
+            </span>
+            <span class="amount">{data().dir && data().size === 0 ? "" : formatSize(data().size)}</span>
+          </div>
+        );
+      case "alloc":
+        return <div class="cell alloc">{data().dir && data().alloc === 0 ? "" : formatSize(data().alloc)}</div>;
+      case "attributes":
+        return <div class="cell attributes">{attributeLetters(data().attrs)}</div>;
+      case "extension":
+        return <div class="cell extension">{data().dir ? "" : data().ext}</div>;
+    }
+  };
+
+  const details = () => mode() === "details";
+  /** The details view's columns scroll sideways once they need more room than the view has. */
+  const columnsOverflow = () => details() && columnsWidth(columnKind()) > width();
+
+  return (
+    <div
+      class="filelist"
+      classList={{ results: isSearch(), grouped: grouped() }}
+      data-view={mode()}
+      style={{ "--columns": columnTemplate(columnKind()) }}
+    >
+      <Show when={props.filter !== null && props.filter !== undefined}>
+        <FilterBar
+          text={props.filter ?? ""}
+          shown={total()}
+          of={props.unfilteredTotal ?? null}
+          onChange={(text) => props.onFilter?.(text)}
+          onClose={() => {
+            props.onFilter?.(null);
+            viewport.focus();
+          }}
+          onDone={() => viewport.focus()}
+        />
+      </Show>
+      <ColumnHeaders kind={columnKind()} sort={props.sort} shift={shift()} onSort={props.onSort} measure={measure} />
 
       <Show when={props.error}>
         <div class="list-error" role="alert">{props.error}</div>
@@ -716,16 +1052,20 @@ export function FileList(props: Props) {
         ref={viewport}
         class="list-viewport"
         tabindex="0"
-        role={mode() === "details" ? "grid" : "listbox"}
-        aria-rowcount={mode() === "details" ? total() : undefined}
+        role={details() ? "grid" : "listbox"}
+        aria-rowcount={details() ? total() : undefined}
         aria-multiselectable="true"
+        style={{ "overflow-x": columnsOverflow() ? "auto" : undefined }}
         onScroll={onScroll}
         onWheel={onWheel}
         onKeyDown={onKeyDown}
         onMouseDown={(event) => {
           if (event.button === 0 && isBackground(event.target)) {
-            setSelection(Selection.empty);
-            setFocused(-1);
+            if (!event.ctrlKey) {
+              setSelection(Selection.empty);
+              setFocused(-1);
+            }
+            startMarquee(event);
           }
         }}
         onContextMenu={(event) => {
@@ -740,128 +1080,133 @@ export function FileList(props: Props) {
       >
         <div
           class="list-spacer"
-          style={vertical() ? { height: `${scrollExtent()}px` } : { width: `${scrollExtent()}px`, height: "100%" }}
+          style={
+            vertical()
+              ? { height: `${scrollExtent()}px`, "min-width": columnsOverflow() ? `${columnsWidth(columnKind())}px` : undefined }
+              : { width: `${scrollExtent()}px`, height: "100%" }
+          }
         >
-          <div
-            class="list-rows"
-            classList={{ "view-cells": mode() !== "details" && vertical(), "view-columns": !vertical() }}
-            style={linesStyle()}
-          >
-            <For each={mode() === "details" ? visibleRows() : []}>
-              {(index) => {
-                const row = createMemo(() => rowAt(index));
-                const locked = () => {
-                  const data = row();
-                  return data !== undefined && isLocked(data);
-                };
-                return (
-                  <div
-                    class="row"
-                    classList={{
-                      selected: selection().has(index),
-                      focused: focused() === index,
-                      dimmed: row()?.hidden || locked() || badgeOf(row())?.ignored,
-                      locked: locked(),
-                      "drop-target": isDropRow(row()?.path),
-                    }}
-                    title={locked() ? LOCKED_MESSAGE : undefined}
-                    role="row"
-                    aria-rowindex={index + 1}
-                    aria-selected={selection().has(index)}
-                    data-index={index}
-                    data-path={row()?.path}
-                    data-folder={row()?.dir ? "" : undefined}
-                    onMouseDown={(event) => onItemMouseDown(index, event)}
-                    onDblClick={(event) => onItemDblClick(index, event)}
-                    onContextMenu={(event) => onItemContextMenu(index, event)}
-                  >
-                    <Show when={row()}>
-                      {(data) => (
-                        <>
-                          <div class="cell name">
-                            <img src={iconUrl(data())} width="16" height="16" alt="" draggable={false} />
-                            <Show when={renaming() === index} fallback={<span class="label">{displayName(data(), showExtensions())}</span>}>
-                              <input
-                                class="rename"
-                                aria-label="New name"
-                                spellcheck={false}
-                                value={data().name}
-                                ref={(input) =>
-                                  queueMicrotask(() => {
-                                    input.focus();
-                                    // Pre-select the name without its extension, as Explorer does.
-                                    const dot = data().dir ? -1 : data().name.lastIndexOf(".");
-                                    input.setSelectionRange(0, dot > 0 ? dot : data().name.length);
-                                  })
-                                }
-                                onBlur={(event) => finishRename(index, event.currentTarget.value)}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter") finishRename(index, event.currentTarget.value);
-                                  if (event.key === "Escape") finishRename(index, null);
-                                }}
-                              />
-                            </Show>
-                            <Show when={locked()}>
-                              <LockGlyph />
-                            </Show>
-                            <Show when={badgeOf(data())?.change}>{(change) => <GitGlyph change={change()} dir={data().dir} />}</Show>
-                            <TagDots path={data().path} />
-                          </div>
-                          <Show when={isSearch()}>
-                            <div class="cell location" title={data().location ?? ""}>{data().location}</div>
-                          </Show>
-                          <div class="cell modified">{formatDate(data().mtime)}</div>
-                          <Show when={!isSearch()}>
-                            <div class="cell type">{typeLabel(data())}</div>
-                          </Show>
-                          <div class="cell size">
-                            <span class="weight-track">
-                              <span class="weight" classList={{ folder: data().dir }} style={{ width: `${sizeBar(data())}%` }} />
-                            </span>
-                            <span class="amount">{data().dir && data().size === 0 ? "" : formatSize(data().size)}</span>
-                          </div>
-                        </>
-                      )}
-                    </Show>
-                  </div>
-                );
-              }}
-            </For>
-            <For each={mode() === "details" ? [] : visibleRows()}>
-              {(index) => (
-                <ViewItem
-                  index={index}
-                  row={rowAt(index)}
-                  mode={mode()}
-                  visual={layout().visual}
-                  selected={selection().has(index)}
-                  focused={focused() === index}
-                  renaming={renaming() === index}
-                  showExtension={showExtensions()}
-                  locked={(() => {
-                    const data = rowAt(index);
-                    return data !== undefined && isLocked(data);
-                  })()}
-                  dropTarget={isDropRow(rowAt(index)?.path)}
-                  git={badgeOf(rowAt(index))}
-                  loadThumbs={!scrolling()}
-                  onMouseDown={(event) => onItemMouseDown(index, event)}
-                  onDblClick={(event) => onItemDblClick(index, event)}
-                  onContextMenu={(event) => onItemContextMenu(index, event)}
-                  onRenameDone={(name) => finishRename(index, name)}
-                />
-              )}
-            </For>
-          </div>
+          <For each={shownGroups()}>
+            {(group) => {
+              const rows = createMemo(() => rowsOfGroup(group), [], { equals: sameRows });
+              return (
+                <>
+                  <Show when={grouped()}>
+                    <GroupHeader
+                      index={group}
+                      header={headerOf(group)}
+                      count={list().slots[group]?.count ?? 0}
+                      collapsed={isCollapsed(group)}
+                      across={!vertical()}
+                      style={headerStyle(group)}
+                      onToggle={() => toggleGroup(group)}
+                      onSelect={(event) => selectGroup(group, event)}
+                      onMenu={(event) => groupMenu(group, event)}
+                    />
+                  </Show>
+                  <Show when={rows().length > 0}>
+                    <div
+                      class="list-rows"
+                      classList={{ "view-cells": !details() && mode() !== "content" && vertical(), "view-columns": !vertical() }}
+                      style={blockStyle(group)}
+                    >
+                      <For each={details() ? rows() : []}>
+                        {(index) => {
+                          const row = createMemo(() => rowAt(index));
+                          const locked = () => {
+                            const data = row();
+                            return data !== undefined && isLocked(data);
+                          };
+                          return (
+                            <div
+                              class="row"
+                              classList={{
+                                selected: selection().has(index),
+                                focused: focused() === index,
+                                dimmed: row()?.hidden || locked() || badgeOf(row())?.ignored,
+                                locked: locked(),
+                                "drop-target": isDropRow(row()?.path),
+                              }}
+                              title={locked() ? LOCKED_MESSAGE : undefined}
+                              role="row"
+                              aria-rowindex={index + 1}
+                              aria-selected={selection().has(index)}
+                              data-index={index}
+                              data-path={row()?.path}
+                              data-folder={row()?.dir ? "" : undefined}
+                              onMouseDown={(event) => onItemMouseDown(index, event)}
+                              onDblClick={(event) => onItemDblClick(index, event)}
+                              onContextMenu={(event) => onItemContextMenu(index, event)}
+                            >
+                              <Show when={row()}>{(data) => <For each={columnOrder()}>{(id) => cell(id, data, index)}</For>}</Show>
+                            </div>
+                          );
+                        }}
+                      </For>
+                      <For each={details() ? [] : rows()}>
+                        {(index) => (
+                          <ViewItem
+                            index={index}
+                            row={rowAt(index)}
+                            mode={mode()}
+                            visual={layout().visual}
+                            selected={selection().has(index)}
+                            focused={focused() === index}
+                            renaming={renaming() === index}
+                            showExtension={showExtensions()}
+                            locked={(() => {
+                              const data = rowAt(index);
+                              return data !== undefined && isLocked(data);
+                            })()}
+                            dropTarget={isDropRow(rowAt(index)?.path)}
+                            git={badgeOf(rowAt(index))}
+                            loadThumbs={!scrolling()}
+                            onMouseDown={(event) => onItemMouseDown(index, event)}
+                            onDblClick={(event) => onItemDblClick(index, event)}
+                            onContextMenu={(event) => onItemContextMenu(index, event)}
+                            onRenameDone={(name) => finishRename(index, name)}
+                          />
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                </>
+              );
+            }}
+          </For>
         </div>
+
+        <Show when={band()}>
+          {(rect) => (
+            <div
+              class="marquee"
+              style={{
+                left: `${rect().left + (vertical() ? viewport.scrollLeft : viewport.scrollLeft)}px`,
+                top: `${rect().top + (vertical() ? viewport.scrollTop : 0)}px`,
+                width: `${rect().width}px`,
+                height: `${rect().height}px`,
+              }}
+            />
+          )}
+        </Show>
 
         <Show when={props.listing && total() === 0 && !props.error}>
           <div class="list-empty">
-            <Show when={isSearch()} fallback={<p>This folder is empty.</p>}>
-              <p>Nothing matches “{props.query}”.</p>
+            <Show
+              when={(props.filter ?? "").trim() !== ""}
+              fallback={
+                <Show when={isSearch()} fallback={<p>This folder is empty.</p>}>
+                  <p>Nothing matches “{props.query}”.</p>
+                  <p class="hint">
+                    Try fewer words, or filters such as <code>ext:pdf</code>, <code>size:&gt;100mb</code> or{" "}
+                    <code>dm:thisweek</code>.
+                  </p>
+                </Show>
+              }
+            >
+              <p>No names here contain “{props.filter}”.</p>
               <p class="hint">
-                Try fewer words, or filters such as <code>ext:pdf</code>, <code>size:&gt;100mb</code> or{" "}
-                <code>dm:thisweek</code>.
+                <code>*</code> and <code>?</code> match any text and any one character, over the whole name.
               </p>
             </Show>
           </div>

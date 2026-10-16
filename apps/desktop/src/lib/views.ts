@@ -8,8 +8,9 @@
 import { createSignal } from "solid-js";
 
 import type { Listing, Row, SortSpec } from "./api";
+import type { GroupSpec } from "./layoutApi";
 
-export type ViewMode = "xl" | "large" | "medium" | "small" | "list" | "details" | "tiles";
+export type ViewMode = "xl" | "large" | "medium" | "small" | "list" | "details" | "tiles" | "content";
 
 export interface ViewModeInfo {
   mode: ViewMode;
@@ -18,7 +19,11 @@ export interface ViewModeInfo {
   digit: number;
 }
 
-/** Largest first, which is also Explorer's order, so Ctrl+wheel steps through them in turn. */
+/**
+ * Largest first, which is also Explorer's order, so Ctrl+wheel steps through them in turn. The
+ * digits are Explorer's own, read from shell32.dll's accelerator table and View menu: Tiles is
+ * Ctrl+Shift+7 and Content Ctrl+Shift+8.
+ */
 export const VIEW_MODES: readonly ViewModeInfo[] = [
   { mode: "xl", label: "Extra large icons", digit: 1 },
   { mode: "large", label: "Large icons", digit: 2 },
@@ -26,7 +31,8 @@ export const VIEW_MODES: readonly ViewModeInfo[] = [
   { mode: "small", label: "Small icons", digit: 4 },
   { mode: "list", label: "List", digit: 5 },
   { mode: "details", label: "Details", digit: 6 },
-  { mode: "tiles", label: "Tiles", digit: 8 },
+  { mode: "tiles", label: "Tiles", digit: 7 },
+  { mode: "content", label: "Content", digit: 8 },
 ];
 
 export const DEFAULT_VIEW: ViewMode = "details";
@@ -47,6 +53,8 @@ export function shortcutView(event: KeyboardEvent): ViewMode | null {
 export interface ViewMemory {
   mode?: ViewMode;
   sort?: SortSpec;
+  /** "Group by", or null once grouping was turned off; see lib/layoutApi.ts. */
+  group?: GroupSpec | null;
 }
 
 type Stored = Record<string, ViewMemory & { at: number }>;
@@ -96,8 +104,14 @@ export const listingLocation = (listing: Listing | null): string | null =>
 const isSort = (value: unknown): value is SortSpec =>
   typeof value === "object" &&
   value !== null &&
-  ["name", "size", "modified", "type"].includes((value as SortSpec).key) &&
+  ["name", "size", "modified", "type", "alloc", "attributes", "extension", "path"].includes((value as SortSpec).key) &&
   typeof (value as SortSpec).desc === "boolean";
+
+const isGroup = (value: unknown): value is GroupSpec =>
+  typeof value === "object" &&
+  value !== null &&
+  ["name", "modified", "type", "size"].includes((value as GroupSpec).by) &&
+  typeof (value as GroupSpec).desc === "boolean";
 
 /** What is remembered for a location; empty for one never changed. */
 export function recall(location: string): ViewMemory {
@@ -107,8 +121,13 @@ export function recall(location: string): ViewMemory {
   return {
     mode: isViewMode(stored.mode) ? stored.mode : undefined,
     sort: isSort(stored.sort) ? stored.sort : undefined,
+    group: isGroup(stored.group) ? stored.group : undefined,
   };
 }
+
+/** How a location is grouped; ungrouped unless it was grouped. */
+export const groupAt = (location: string | null): GroupSpec | null =>
+  (location === null ? undefined : recall(location).group) ?? null;
 
 export function remember(location: string, change: ViewMemory) {
   memory[location] = { ...memory[location], ...change, at: Date.now() };

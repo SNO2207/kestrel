@@ -10,7 +10,8 @@ use std::time::Instant;
 
 use kestrel_index::walk::{self, DirItem};
 use kestrel_index::{EntryId, Index, IndexBuilder, attr, fold, natural_cmp};
-use kestrel_query::{Clause, ClauseKind, Clock, Query, Sort, SortKey, compile, parse, search, sort};
+use kestrel_query::group::attribute_key;
+use kestrel_query::{Clause, ClauseKind, Clock, Group, Grouping, Query, Sort, SortKey, compile, parse, search, sort};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +30,12 @@ pub enum SortField {
     Size,
     Modified,
     Type,
+    /// The details view's extra columns (`layout.rs`): allocated size, attribute letters,
+    /// extension and the folder an item is in.
+    Alloc,
+    Attributes,
+    Extension,
+    Path,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -43,7 +50,11 @@ impl SortSpec {
             SortField::Name => SortKey::Name,
             SortField::Size => SortKey::Size,
             SortField::Modified => SortKey::Modified,
-            SortField::Type => SortKey::Type,
+            // The Type column is the extension's, so the two sort alike.
+            SortField::Type | SortField::Extension => SortKey::Type,
+            SortField::Alloc => SortKey::Alloc,
+            SortField::Attributes => SortKey::Attributes,
+            SortField::Path => SortKey::Path,
         };
         Sort { key, descending: self.desc, folders_first }
     }
@@ -94,6 +105,9 @@ pub struct Row {
     pub mtime: i64,
     pub ext: String,
     pub hidden: bool,
+    /// Bytes allocated on disk, and the attribute bits: the details view's extra columns.
+    pub alloc: u64,
+    pub attrs: u32,
 }
 
 #[derive(Clone, Serialize)]
@@ -116,6 +130,8 @@ enum Rows {
 struct ResultSet {
     rows: Rows,
     is_search: bool,
+    /// The sort the rows follow, and how they are grouped; see `layout.rs`.
+    arranged: Arranged,
 }
 
 #[derive(Default)]
@@ -301,7 +317,7 @@ impl Engine {
         drop(index);
 
         let total = rows.len();
-        let set = self.store(ResultSet { rows, is_search: false });
+        let set = self.store(ResultSet { rows, is_search: false, arranged: Arranged::sorted(sort_spec) });
         Ok(Listing { set, total, path: shown_path, max_size, took_us: started.elapsed().as_micros() as u64 })
     }
 
@@ -355,7 +371,7 @@ impl Engine {
         drop(index);
 
         let total = rows.len();
-        let set = self.store(ResultSet { rows, is_search: true });
+        let set = self.store(ResultSet { rows, is_search: true, arranged: Arranged::sorted(spec.resolve(false)) });
         Ok(Listing { set, total, path: String::new(), max_size, took_us: started.elapsed().as_micros() as u64 })
     }
 
@@ -379,11 +395,11 @@ impl Engine {
         let mut sets = self.sets.lock();
         let entry = sets.map.get_mut(&set).ok_or("stale")?;
         let kept = entry.rows.capture(&index, marks, false);
-        let sort_spec = spec.resolve(!entry.is_search);
-        match &mut entry.rows {
-            Rows::Indexed(ids) => sort(&index, ids, sort_spec),
-            Rows::Live { items, .. } => sort_live(items, sort_spec),
-        }
+        // A grouped set stays grouped, now sorted this way within each group.
+        let grouping = entry.arranged.groups.as_ref().map(|(grouping, _)| *grouping);
+        entry.ungroup();
+        entry.sort_by(&index, spec.resolve(!entry.is_search));
+        entry.group_by(&index, grouping);
         Ok(entry.rows.locate(&index, &kept))
     }
 
@@ -447,6 +463,8 @@ impl Engine {
                         mtime: unix_ms(index.mtime(id)),
                         ext: index.ext_name(index.ext(id)).to_owned(),
                         hidden: is_hidden(index.attrs(id)),
+                        alloc: index.alloc(id),
+                        attrs: index.attrs(id),
                     }
                 })
                 .collect(),
@@ -467,6 +485,8 @@ impl Engine {
                         mtime: unix_ms(item.meta.mtime),
                         ext,
                         hidden: is_hidden(item.meta.attrs),
+                        alloc: item.meta.alloc,
+                        attrs: item.meta.attrs,
                     }
                 })
                 .collect(),
@@ -546,6 +566,189 @@ impl Rows {
     }
 }
 
+// ---------- grouping and the filter box (`layout.rs`) ----------
+
+/// A group of a result set, as the list draws its header.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct GroupHeader {
+    pub label: String,
+    pub start: u32,
+    pub count: u32,
+}
+
+/// How a set's rows are grouped, and the plain sorted order behind the groups, so changing the
+/// grouping (or the sort within it) never has to sort a million rows again from scratch.
+#[derive(Default)]
+struct Arranged {
+    /// The sort the rows follow (or, while an indexed set is grouped, `plain` follows), when
+    /// known.
+    sorted: Option<Sort>,
+    groups: Option<(Grouping, Vec<Group>)>,
+    /// While an indexed set is grouped, its rows in plain sorted order.
+    plain: Option<Vec<EntryId>>,
+}
+
+impl Arranged {
+    fn sorted(sort: Sort) -> Self {
+        Self { sorted: Some(sort), ..Self::default() }
+    }
+
+    fn starts(&self) -> Vec<u32> {
+        self.groups.as_ref().map_or_else(Vec::new, |(_, groups)| groups.iter().map(|g| g.start).collect())
+    }
+}
+
+impl ResultSet {
+    /// Puts the rows back in plain sorted order, out of any groups.
+    fn ungroup(&mut self) {
+        let was_grouped = self.arranged.groups.take().is_some();
+        match (&mut self.rows, self.arranged.plain.take()) {
+            (Rows::Indexed(ids), Some(plain)) => *ids = plain,
+            // Grouping rearranged a folder listed from disk; it is sorted again, which is cheap.
+            (Rows::Live { .. }, _) if was_grouped => self.arranged.sorted = None,
+            _ => {}
+        }
+    }
+
+    /// Sorts the (ungrouped) rows, unless they already are sorted that way.
+    fn sort_by(&mut self, index: &Index, spec: Sort) {
+        if self.arranged.sorted == Some(spec) {
+            return;
+        }
+        match &mut self.rows {
+            Rows::Indexed(ids) => sort(index, ids, spec),
+            Rows::Live { items, .. } => sort_live(items, spec),
+        }
+        self.arranged.sorted = Some(spec);
+    }
+
+    /// Groups the (ungrouped, sorted) rows, keeping the plain order of an indexed set aside.
+    fn group_by(&mut self, index: &Index, grouping: Option<Grouping>) {
+        let Some(grouping) = grouping else { return };
+        match &self.rows {
+            Rows::Indexed(ids) => self.arranged.plain = Some(ids.clone()),
+            Rows::Live { .. } => self.arranged.sorted = None,
+        }
+        self.arranged.groups = Some((grouping, self.rows.group(index, grouping)));
+    }
+}
+
+impl Engine {
+    /// Sorts a set by `spec` and groups it by `grouping`, or leaves it ungrouped with `None`,
+    /// and reports where the marked rows went and where each group starts.
+    pub fn group_set(
+        &self,
+        set: u32,
+        spec: SortSpec,
+        grouping: Option<Grouping>,
+        marks: &Marks,
+    ) -> Result<(Marks, Vec<u32>), String> {
+        let index = self.index.read();
+        let mut sets = self.sets.lock();
+        let entry = sets.map.get_mut(&set).ok_or("stale")?;
+        let kept = entry.rows.capture(&index, marks, false);
+        entry.ungroup();
+        entry.sort_by(&index, spec.resolve(!entry.is_search));
+        entry.group_by(&index, grouping);
+        Ok((entry.rows.locate(&index, &kept), entry.arranged.starts()))
+    }
+
+    /// The groups `from` to `from + count` of a grouped set, for the headers in view.
+    pub fn group_headers(&self, set: u32, from: u32, count: u32) -> Result<Vec<GroupHeader>, String> {
+        let sets = self.sets.lock();
+        let entry = sets.map.get(&set).ok_or("stale")?;
+        let Some((_, groups)) = &entry.arranged.groups else { return Ok(Vec::new()) };
+        let total = entry.rows.len();
+        let from = (from as usize).min(groups.len());
+        let to = (from + count as usize).min(groups.len());
+        Ok((from..to)
+            .map(|i| {
+                let end = groups.get(i + 1).map_or(total, |next| next.start);
+                GroupHeader { label: groups[i].label.clone(), start: groups[i].start, count: end - groups[i].start }
+            })
+            .collect())
+    }
+
+    /// A new set holding the rows of `base` whose names pass `filter`, sorted by `spec` and
+    /// grouped by `grouping`. `base` is left as it is, so the filter can change and be applied
+    /// to it again.
+    pub fn filter_set(
+        &self,
+        base: u32,
+        filter: &kestrel_query::NameFilter,
+        spec: SortSpec,
+        grouping: Option<Grouping>,
+    ) -> Result<(Listing, Vec<u32>), String> {
+        use rayon::prelude::*;
+        let started = Instant::now();
+        let index = self.index.read();
+        let sets = self.sets.lock();
+        let entry = sets.map.get(&base).ok_or("stale")?;
+        let is_search = entry.is_search;
+        // Taken from the plain sorted order, so the narrowed rows are sorted already.
+        let rows = match (&entry.rows, &entry.arranged.plain) {
+            (Rows::Indexed(_), Some(plain)) | (Rows::Indexed(plain), None) => {
+                Rows::Indexed(plain.par_iter().copied().filter(|&id| filter.matches(index.lower_bytes(id))).collect())
+            }
+            (Rows::Live { dir, items }, _) => Rows::Live {
+                dir: dir.clone(),
+                items: items.iter().filter(|item| filter.matches(fold(&item.name).as_bytes())).cloned().collect(),
+            },
+        };
+        let mut narrowed = ResultSet { rows, is_search, arranged: Arranged { sorted: entry.arranged.sorted, ..Arranged::default() } };
+        drop(sets);
+        narrowed.sort_by(&index, spec.resolve(!is_search));
+        narrowed.group_by(&index, grouping);
+        let max_size = match &narrowed.rows {
+            Rows::Indexed(ids) => ids.iter().map(|&id| index.size(id)).max().unwrap_or(0),
+            Rows::Live { items, .. } => items.iter().map(|item| item.meta.size).max().unwrap_or(0),
+        };
+        drop(index);
+        let starts = narrowed.arranged.starts();
+        let total = narrowed.rows.len();
+        let set = self.store(narrowed);
+        let took_us = started.elapsed().as_micros() as u64;
+        Ok((Listing { set, total, path: String::new(), max_size, took_us }, starts))
+    }
+}
+
+impl Rows {
+    /// Groups the rows, keeping their order within each group.
+    fn group(&mut self, index: &Index, grouping: Grouping) -> Vec<Group> {
+        let edges = kestrel_query::DateEdges::local();
+        match self {
+            Rows::Indexed(ids) => kestrel_query::group::group(index, ids, grouping, &edges),
+            Rows::Live { items, .. } => {
+                let exts: Vec<String> = items.iter().map(live_extension).collect();
+                let mut order: Vec<u32> = (0..items.len() as u32).collect();
+                let groups = kestrel_query::group::group_rows(
+                    &mut order,
+                    |&i| kestrel_query::group::Facts {
+                        name: &items[i as usize].name,
+                        ext: &exts[i as usize],
+                        dir: items[i as usize].meta.attrs & attr::DIRECTORY != 0,
+                        size: items[i as usize].meta.size,
+                        mtime: items[i as usize].meta.mtime,
+                    },
+                    grouping,
+                    &edges,
+                );
+                let arranged = order.iter().map(|&i| items[i as usize].clone()).collect();
+                *items = arranged;
+                groups
+            }
+        }
+    }
+}
+
+/// The lower-case extension of an item listed from disk, as the Type column shows it.
+fn live_extension(item: &DirItem) -> String {
+    match item.name.rsplit_once('.') {
+        Some((stem, ext)) if item.meta.attrs & attr::DIRECTORY == 0 && !stem.is_empty() => ext.to_ascii_lowercase(),
+        _ => String::new(),
+    }
+}
+
 fn sort_live(items: &mut [DirItem], spec: Sort) {
     let is_dir = |item: &DirItem| item.meta.attrs & attr::DIRECTORY != 0;
     let by_name = |a: &DirItem, b: &DirItem| {
@@ -560,6 +763,10 @@ fn sort_live(items: &mut [DirItem], spec: Sort) {
             SortKey::Size => a.meta.size.cmp(&b.meta.size),
             SortKey::Modified => a.meta.mtime.cmp(&b.meta.mtime),
             SortKey::Type => extension(a).cmp(&extension(b)),
+            SortKey::Alloc => a.meta.alloc.cmp(&b.meta.alloc),
+            SortKey::Attributes => attribute_key(a.meta.attrs).cmp(&attribute_key(b.meta.attrs)),
+            // Everything listed from disk is in the same folder.
+            SortKey::Path => Ordering::Equal,
         };
         let ordering = by_key.then_with(|| by_name(a, b));
         let ordering = if spec.descending { ordering.reverse() } else { ordering };

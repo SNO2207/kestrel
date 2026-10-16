@@ -59,11 +59,7 @@ impl Watcher {
         if current.as_ref().is_some_and(|(watched, _)| watched.eq_ignore_ascii_case(path)) {
             return;
         }
-        if let Some((_, old)) = current.take() {
-            old.stopped.store(true, Ordering::Relaxed);
-            // SAFETY: `old` keeps the handle open; this completes its thread's pending read.
-            unsafe { CancelIoEx(old.handle, null_mut()) };
-        }
+        Self::cancel(&mut current);
 
         let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
         // SAFETY: `wide` is NUL-terminated and outlives the call.
@@ -143,6 +139,19 @@ impl Watcher {
             let _ = wait_for_armed.recv();
         }
     }
+
+    /// Stops watching, as when the second pane closes (`layout.rs`).
+    pub fn stop(&self) {
+        Self::cancel(&mut self.current.lock());
+    }
+
+    fn cancel(current: &mut Option<(String, Arc<Watch>)>) {
+        if let Some((_, old)) = current.take() {
+            old.stopped.store(true, Ordering::Relaxed);
+            // SAFETY: `old` keeps the handle open; this completes its thread's pending read.
+            unsafe { CancelIoEx(old.handle, null_mut()) };
+        }
+    }
 }
 
 #[cfg(test)]
@@ -187,5 +196,17 @@ mod tests {
         assert!(receiver.recv_timeout(Duration::from_millis(500)).is_err(), "the first folder is no longer watched");
         fs::remove_dir_all(&first).unwrap();
         fs::remove_dir_all(&second).unwrap();
+    }
+
+    #[test]
+    fn stops_reporting_once_stopped() {
+        let (dir, path) = scratch("stopped");
+        let watcher = Watcher::default();
+        let (sender, receiver) = mpsc::channel();
+        watcher.watch(&path, move |changed| drop(sender.send(changed.to_owned())));
+        watcher.stop();
+        fs::write(dir.join("unseen.txt"), b"x").unwrap();
+        assert!(receiver.recv_timeout(Duration::from_millis(500)).is_err());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

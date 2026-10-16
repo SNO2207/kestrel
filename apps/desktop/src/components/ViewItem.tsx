@@ -1,7 +1,8 @@
 import { Show, createEffect, createSignal } from "solid-js";
 
 import { iconUrl, thumbUrl, type Row } from "../lib/api";
-import { formatSize } from "../lib/format";
+import { formatDate, formatSize } from "../lib/format";
+import { hasDimensions, imageSize } from "../lib/imageSizes";
 import { iconPixels, showsThumbnails, thumbPixels } from "../lib/viewLayout";
 import { LOCKED_MESSAGE } from "../lib/access";
 import { displayName, type ViewMode } from "../lib/views";
@@ -120,11 +121,51 @@ export function ViewItem(props: {
                 <span class="view-item-detail">{typeLabel(row())}</span>
                 <span class="view-item-detail">{row().dir && row().size === 0 ? "" : formatSize(row().size)}</span>
               </Show>
+              <Show when={props.mode === "content"}>
+                <span class="view-item-detail">{typeLabel(row())}</span>
+              </Show>
             </span>
+            <Show when={props.mode === "content"}>
+              <ContentDetails row={row()} load={props.loadThumbs} />
+            </Show>
           </>
         )}
       </Show>
     </div>
+  );
+}
+
+/**
+ * The Content view's two columns of details, as Explorer lays them out: date modified and size,
+ * then an image's dimensions, read from its header when it comes into view.
+ */
+function ContentDetails(props: { row: Row; load: boolean }) {
+  // Like thumbnails, sizes are only asked for once scrolling pauses.
+  const dimensions = () => (hasDimensions(props.row) ? imageSize(props.row, props.load) : null);
+  return (
+    <>
+      <span class="content-details">
+        <Show when={props.row.mtime > 0}>
+          <span class="content-detail">
+            <span class="content-key">Date modified:</span> {formatDate(props.row.mtime)}
+          </span>
+        </Show>
+        <Show when={!(props.row.dir && props.row.size === 0)}>
+          <span class="content-detail">
+            <span class="content-key">Size:</span> {formatSize(props.row.size)}
+          </span>
+        </Show>
+      </span>
+      <span class="content-details">
+        <Show when={dimensions()}>
+          {(size) => (
+            <span class="content-detail">
+              <span class="content-key">Dimensions:</span> {size()[0]} x {size()[1]}
+            </span>
+          )}
+        </Show>
+      </span>
+    </>
   );
 }
 

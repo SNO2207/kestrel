@@ -4,5 +4,6 @@ import { App } from "./App";
 import "./styles.css";
 import "./shortcuts.css";
 import "./projects.css";
+import "./layout.css";
 
 render(() => <App />, document.getElementById("root")!);

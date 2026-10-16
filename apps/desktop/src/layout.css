@@ -1,0 +1,498 @@
+/*
+ * The window's layout features: two panes and the bar between them, the filter box, column
+ * headers that resize and move, group headers, the selection rectangle and the Content view.
+ * Colours come from the tokens in styles.css.
+ */
+
+/* ---------- two panes ---------- */
+
+/*
+ * The panes share the content area beside the preview pane. --split (set by App.tsx) is the
+ * first pane's share of that room; the bar between them is 6px wide.
+ */
+.content {
+  --preview-space: 0px;
+  --pane-bar: 36px;
+}
+
+.content:has(> .preview-pane) {
+  --preview-space: min(var(--preview-width, 380px), calc(100% - 300px));
+}
+
+.content.dual > .tab-panel.current {
+  display: block;
+}
+
+.content.dual > .tab-panel[data-pane="0"],
+.content.dual > .pane-bar[data-pane="0"] {
+  left: 0;
+  right: calc((100% - var(--preview-space)) * (1 - var(--split, 0.5)) + var(--preview-space) + 3px);
+}
+
+.content.dual > .tab-panel[data-pane="1"],
+.content.dual > .pane-bar[data-pane="1"] {
+  left: calc((100% - var(--preview-space)) * var(--split, 0.5) + 3px);
+  right: var(--preview-space);
+}
+
+.content.dual > .tab-panel {
+  top: var(--pane-bar);
+}
+
+.pane-bar {
+  position: absolute;
+  top: 0;
+  height: var(--pane-bar);
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 0 4px 0 6px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--line);
+}
+
+.pane-tabs {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pane-bar .tab {
+  height: 30px;
+  min-width: 64px;
+  max-width: 200px;
+  margin-bottom: -1px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+}
+
+/* The tab each pane shows joins its list; the active pane's also carries the accent. */
+.pane-bar .pane-tab.shown {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+.pane-bar.active .pane-tab.shown {
+  color: var(--text);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.pane-bar .pane-tab.shown .tab-close {
+  visibility: visible;
+}
+
+.pane-bar .tab-new {
+  margin: 0 0 4px 2px;
+}
+
+.pane-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-bottom: 5px;
+  border-radius: var(--radius);
+  color: var(--faint);
+}
+
+.pane-close:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+/*
+ * The pane without the keyboard shows its selection in grey, as Windows does, and its column
+ * headers recede.
+ */
+.content.dual > .tab-panel.current:not(.active) .row.selected,
+.content.dual > .tab-panel.current:not(.active) .view-item.selected {
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+}
+
+.content.dual > .tab-panel.current:not(.active) .column-header {
+  color: var(--faint);
+}
+
+.pane-splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc((100% - var(--preview-space)) * var(--split, 0.5) - 3px);
+  z-index: 2;
+  width: 6px;
+  cursor: col-resize;
+  outline: 0;
+}
+
+.pane-splitter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2.5px;
+  width: 1px;
+  background: var(--line);
+}
+
+.pane-splitter:hover::after,
+.pane-splitter:focus-visible::after,
+.pane-splitter.dragging::after {
+  left: 2px;
+  width: 2px;
+  background: var(--accent);
+}
+
+.titlebar-name {
+  align-self: center;
+  padding-left: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The toolbar's buttons for the filter box and the second pane, beside the View button. */
+.toolbar-toggle {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+.toolbar-toggle:hover:not(:disabled) {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.toolbar-toggle.on {
+  color: var(--accent);
+}
+
+.toolbar-toggle:disabled {
+  color: var(--faint);
+}
+
+/* Where a list's two scrollbars meet. */
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---------- the filter box ---------- */
+
+.filter-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 10px 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.filter-bar input {
+  flex: 1;
+  min-width: 0;
+  max-width: 420px;
+  height: 26px;
+  padding: 0 8px;
+  background: var(--chrome);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  outline: 0;
+  color: var(--text);
+  user-select: text;
+}
+
+.filter-bar input:focus {
+  border-color: var(--accent);
+}
+
+.filter-bar input::placeholder {
+  color: var(--faint);
+}
+
+.filter-count {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  border-radius: var(--radius);
+}
+
+.filter-close:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+/* ---------- columns ---------- */
+
+/* The rows scroll sideways under the column headers, which follow; nothing may spill out. */
+.filelist {
+  overflow: hidden;
+}
+
+.list-header {
+  position: relative;
+}
+
+.column-cell {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.column-cell > .column-header {
+  flex: 1;
+  min-width: 0;
+}
+
+.column-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.column-cell.dragging > .column-header {
+  opacity: 0.45;
+}
+
+.column-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 1;
+  width: 8px;
+  cursor: col-resize;
+}
+
+.column-resizer::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 3.5px;
+  width: 1px;
+  background: var(--line);
+}
+
+.column-resizer:hover::after,
+.list-header.resizing .column-resizer:hover::after {
+  top: 4px;
+  bottom: 4px;
+  left: 3px;
+  width: 2px;
+  background: var(--accent);
+}
+
+.list-header.moving {
+  cursor: grabbing;
+}
+
+.column-drop {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.cell.alloc {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cell.attributes {
+  letter-spacing: 0.06em;
+}
+
+/* ---------- groups ---------- */
+
+.group-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 0 14px 7px 8px;
+  will-change: transform;
+}
+
+.group-header.across {
+  right: auto;
+  align-items: center;
+  padding: 0 8px;
+}
+
+.group-toggle {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+.group-toggle:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.group-toggle svg {
+  transition: transform 0.12s ease;
+}
+
+.group-header.collapsed .group-toggle svg {
+  transform: rotate(-90deg);
+}
+
+.group-label {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.group-count {
+  flex: none;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--raised);
+  font-size: 11.5px;
+  line-height: 18px;
+  text-align: center;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.group-rule {
+  flex: 1;
+  height: 1px;
+  margin-bottom: 8.5px;
+  background: var(--line);
+}
+
+.group-header.across .group-rule {
+  margin-bottom: 0;
+}
+
+.group-header:hover .group-label {
+  color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .group-toggle svg {
+    transition: none;
+  }
+}
+
+/* ---------- the selection rectangle ---------- */
+
+.marquee {
+  position: absolute;
+  z-index: 3;
+  border: 1px solid var(--select-line);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  pointer-events: none;
+}
+
+/* ---------- the Content view ---------- */
+
+/*
+ * One wide row per item: the thumbnail or icon, the name and type, then two columns of details,
+ * as Explorer lays them out.
+ */
+.filelist[data-view="content"] .view-item {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 0.8fr);
+  align-items: center;
+  gap: 16px;
+  height: 66px;
+  margin: 0 8px;
+  padding: 0 14px 0 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  border-radius: var(--radius);
+}
+
+.filelist[data-view="content"] .view-item-text {
+  align-items: flex-start;
+  gap: 4px;
+  text-align: left;
+}
+
+.filelist[data-view="content"] .view-item-name {
+  justify-content: flex-start;
+}
+
+.filelist[data-view="content"] .view-item .label {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13.5px;
+}
+
+.filelist[data-view="content"] .view-item .rename {
+  height: 22px;
+  margin-left: -5px;
+  text-align: left;
+}
+
+.content-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.content-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.content-key {
+  color: var(--muted);
+}
+
+/* ---------- submenus ---------- */
+
+.menu-more {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--muted);
+}
+
+.menu-item.open:not(:disabled) {
+  background: var(--select);
+}

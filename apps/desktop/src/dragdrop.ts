@@ -20,8 +20,8 @@ import { activateTab, activeTab, isSearch, navigate, notify, selectInFolder, tab
 import { pinPaths } from "./shortcuts";
 
 export type DropTarget =
-  /** A folder row in the list on screen. */
-  | { kind: "row"; path: string }
+  /** A folder row in the list on screen; `tabId` is the tab whose list it is in. */
+  | { kind: "row"; path: string; tabId?: number }
   /** The folder the list on screen shows: the drop lands on empty space or on a file. */
   | { kind: "folder"; path: string; tabId: number }
   /** A place or drive in the sidebar, with the name it shows there. */
@@ -131,7 +131,10 @@ function targetAt(x: number, y: number): DropTarget | null | typeof LOADING {
     return { kind: "pin", path: "", group, name: pins.dataset.pinZone || "Pinned" };
   }
 
-  if (!element.closest(".tab-panel.active .filelist")) return null;
+  // The list on screen: the active tab's, or with two panes either pane's (panes.ts).
+  const panel = element.closest<HTMLElement>(".tab-panel.active, .tab-panel.current");
+  if (!panel || !element.closest(".filelist")) return null;
+  const tab = tabs.find((each) => each.id === Number(panel.dataset.panelTab)) ?? activeTab();
   // A details row, or an item of the icon, list and tile views.
   const row = element.closest<HTMLElement>(".row[data-index], .view-item[data-index]");
   if (row && row.dataset.path === undefined) return LOADING;
@@ -139,9 +142,8 @@ function targetAt(x: number, y: number): DropTarget | null | typeof LOADING {
     // A folder that can't take the drop (one being dragged, say) doesn't pass it on to the
     // folder around it, as in Explorer.
     const path = row.dataset.path ?? "";
-    return accepts(path) ? { kind: "row", path } : null;
+    return accepts(path) ? { kind: "row", path, tabId: tab?.id } : null;
   }
-  const tab = activeTab();
   return tab && !isSearch(tab) && accepts(tab.path) ? { kind: "folder", path: tab.path, tabId: tab.id } : null;
 }
 
@@ -179,7 +181,8 @@ function retarget() {
 function springOpen(opened: DropTarget) {
   if (!session || !sameTarget(target(), opened)) return;
   if (opened.kind === "tab") return activateTab(opened.tabId);
-  const tab = activeTab();
+  // A folder row opens in the pane it is in.
+  const tab = (opened.kind === "row" && tabs.find((each) => each.id === opened.tabId)) || activeTab();
   if (tab) navigate(tab.id, opened.path);
 }
 
@@ -202,7 +205,9 @@ const whole = (step: number) => Math.sign(step) * Math.max(1, Math.round(Math.ab
  */
 function autoScroll() {
   const point = session?.point;
-  const viewport = document.querySelector<HTMLElement>(".tab-panel.active .list-viewport");
+  // The list under the cursor, which with two panes may be either pane's; else the active one.
+  const under = point ? document.elementFromPoint(point.x, point.y)?.closest(".tab-panel.current, .tab-panel.active") : null;
+  const viewport = (under ?? document.querySelector(".tab-panel.active"))?.querySelector<HTMLElement>(".list-viewport");
   if (!point || !viewport) return;
   const box = viewport.getBoundingClientRect();
   if (viewport.closest(".filelist")?.getAttribute("data-view") === "list") {

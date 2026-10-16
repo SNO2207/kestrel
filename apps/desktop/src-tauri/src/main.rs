@@ -11,6 +11,7 @@ mod icons;
 mod indexer;
 mod instance;
 mod launcher;
+mod layout;
 mod lru;
 mod navigation;
 mod palette;
@@ -343,6 +344,8 @@ fn main() {
         .plugin(launcher::shortcut_plugin())
         .manage(engine.clone())
         .manage(Watcher::default())
+        // The second pane's folder is watched too (layout.rs).
+        .manage(layout::OtherPaneWatcher::default())
         // The undo history is kept in the database, and brought back in `setup`.
         .manage(Journal::with_store(database.clone()))
         .manage(database.clone())
@@ -465,6 +468,16 @@ fn main() {
             launcher::launcher_dev_hotkey,
             launcher::launcher_dev_windows,
             launcher::launcher_dev_tray,
+            layout::group_set,
+            layout::group_headers,
+            layout::filter_set,
+            layout::transfer_items,
+            layout::image_sizes,
+            layout::layout_load,
+            layout::layout_save,
+            layout::watch_other_pane,
+            layout::watch_active_folder,
+            layout::folders_exist,
         ]))
         .on_window_event(|window, event| {
             dragdrop::on_window_event(event);

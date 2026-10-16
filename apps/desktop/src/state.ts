@@ -14,8 +14,9 @@ import {
   type SortSpec,
 } from "./lib/api";
 import { parentPath } from "./lib/format";
+import { layoutApi, type GroupSpec } from "./lib/layoutApi";
 import { Selection } from "./lib/selection";
-import { SEARCH_LOCATION, folderKey, locationKey, recall, remember } from "./lib/views";
+import { SEARCH_LOCATION, folderKey, groupAt, listingLocation, locationKey, recall, remember } from "./lib/views";
 
 export interface Tab {
   id: number;
@@ -42,6 +43,14 @@ export interface Tab {
   pending: { names: string[]; rename: boolean } | null;
   /** A name is being edited in place, so the list must not be refreshed underneath it. */
   renaming: boolean;
+  /** The pane the tab belongs to: 0, or 1 for the second pane (panes.ts). */
+  pane: number;
+  /** The filter box's text, or null while the box is closed (FilterBar.tsx). */
+  filter: string | null;
+  /** The listing as it was before the filter narrowed it, while one does. */
+  unfiltered: Listing | null;
+  /** Where each group of the listing starts, while it is grouped. */
+  groups: number[] | null;
 }
 
 const DEFAULT_SORT: SortSpec = { key: "name", desc: false };
@@ -51,6 +60,12 @@ const MAX_COPIED_PATHS = 5000;
 
 const [tabs, setTabs] = createStore<Tab[]>([]);
 const [activeId, setActiveId] = createSignal(0);
+/**
+ * Whether the second pane is shown, and the tab each pane shows. The active tab is always the
+ * one its pane shows; the other pane's tab is on screen too, and watched (panes.ts).
+ */
+const [dual, setDual] = createSignal(false);
+const [paneTabs, setPaneTabs] = createSignal<readonly [number, number]>([0, 0]);
 const [status, setStatus] = createSignal<IndexStatus>({
   state: "loading",
   entries: 0,
@@ -63,10 +78,20 @@ const [notice, setNotice] = createSignal<string | null>(null);
 /** Whether the notice reports a failure or simply says what happened. */
 const [noticeTone, setNoticeTone] = createSignal<"error" | "info">("error");
 
-export { tabs, activeId, status, places, everywhere, notice, noticeTone };
+export { tabs, activeId, status, places, everywhere, notice, noticeTone, dual };
 
 export const activeTab = () => tabs.find((tab) => tab.id === activeId());
 export const isSearch = (tab: Tab) => tab.listing?.path === "";
+/** The pane the active tab is in. */
+export const activePane = () => activeTab()?.pane ?? 0;
+/** The tab a pane shows. */
+export const shownTab = (pane: number) => paneTabs()[pane === 1 ? 1 : 0];
+/** Whether a tab is on screen: the active one, or the one the other pane shows. */
+export const onScreen = (tabId: number) => tabId === activeId() || (dual() && paneTabs().includes(tabId));
+
+function showInPane(pane: number, tabId: number) {
+  setPaneTabs((current) => (pane === 1 ? [current[0], tabId] : [tabId, current[1]]));
+}
 
 let nextTabId = 1;
 let noticeTimer: number | undefined;
@@ -146,6 +171,7 @@ async function carryMarks(tabId: number, listing: Listing): Promise<Marks> {
 /** Shows a new listing in the tab and frees the one it replaces. */
 function show(tabId: number, listing: Listing, restore: Marks, change: (tab: Tab) => void = () => {}) {
   const previous = find(tabId)?.listing?.set;
+  const previousBase = find(tabId)?.unfiltered?.set;
   patch(tabId, (tab) => {
     change(tab);
     tab.listing = listing;
@@ -156,7 +182,49 @@ function show(tabId: number, listing: Listing, restore: Marks, change: (tab: Tab
   });
   // Released only now that the tab shows the new listing, so a late row request for the old
   // one is simply ignored rather than read as a stale index.
-  if (previous !== undefined) void api.releaseSet(previous);
+  if (previous !== undefined && previous !== listing.set) void api.releaseSet(previous);
+  // The listing a filter narrowed goes too, once nothing is narrowed from it any more.
+  const base = find(tabId)?.unfiltered?.set;
+  if (previousBase !== undefined && previousBase !== base && previousBase !== listing.set) void api.releaseSet(previousBase);
+}
+
+/** A listing as the tab shows it: grouped as its location is, and narrowed by the tab's filter. */
+interface Arranged {
+  listing: Listing;
+  unfiltered: Listing | null;
+  groups: number[] | null;
+}
+
+/**
+ * Groups a new listing as its folder (or search results) remembers, and narrows it by the
+ * tab's filter, before it is shown; see `layout.rs`.
+ */
+async function arrange(tabId: number, listing: Listing, sort: SortSpec): Promise<Arranged> {
+  const group = groupAt(listingLocation(listing));
+  const filter = find(tabId)?.filter?.trim() ?? "";
+  try {
+    if (filter !== "") {
+      const narrowed = await layoutApi.filterSet(listing.set, filter, sort, group);
+      const shown = { ...narrowed.listing, path: listing.path, took_us: listing.took_us + narrowed.listing.took_us };
+      return { listing: shown, unfiltered: listing, groups: group ? narrowed.starts : null };
+    }
+    if (!group) return { listing, unfiltered: null, groups: null };
+    const grouped = await layoutApi.groupSet(listing.set, sort, group, NO_MARKS);
+    return { listing, unfiltered: null, groups: grouped.starts };
+  } catch (error) {
+    // The listing will never be shown.
+    void api.releaseSet(listing.set);
+    throw error;
+  }
+}
+
+/**
+ * Lists a folder for a tab, watching it when the tab is on screen: the active tab's folder by
+ * `list_dir` itself, the other pane's by a watch of its own, armed first.
+ */
+async function listFolder(tabId: number, path: string, sort: SortSpec): Promise<Listing> {
+  if (tabId !== activeId() && onScreen(tabId)) await layoutApi.watchOtherPane(path).catch(() => {});
+  return api.listDir(path, sort, tabId === activeId());
 }
 
 type NavigateMode = "push" | "keep";
@@ -169,12 +237,17 @@ export function navigate(tabId: number, path: string, mode: NavigateMode = "push
     try {
       // Re-listing the folder already on screen is a refresh, which keeps the selection.
       const refreshing = !isSearch(tab) && tab.listing !== null && samePath(path, tab.path);
+      // The filter narrows the folder it was typed in; another folder opens unfiltered.
+      if (!samePath(path, tab.path) && tab.filter !== null) patch(tabId, (tab) => void (tab.filter = null));
       // Each folder keeps the sort it was last given.
       const sort = { ...(recall(folderKey(path)).sort ?? DEFAULT_SORT) };
-      // Only the tab on screen is watched for changes; others catch up when activated.
-      const listing = await api.listDir(path, sort, tabId === activeId());
+      // Only the tabs on screen are watched for changes; others catch up when activated.
+      const shown = await arrange(tabId, await listFolder(tabId, path, sort), sort);
+      const listing = shown.listing;
       const restore = refreshing ? await carryMarks(tabId, listing) : NO_MARKS;
       show(tabId, listing, restore, (tab) => {
+        tab.unfiltered = shown.unfiltered;
+        tab.groups = shown.groups;
         tab.sort = sort;
         if (mode === "push" && tab.history[tab.cursor] !== listing.path) {
           tab.history.splice(tab.cursor + 1);
@@ -202,8 +275,13 @@ function runSearch(tabId: number, keepSelection = false) {
       const scope = everywhere() ? null : tab.path;
       // Search results keep a sort of their own, separate from any folder's.
       const sort = { ...(recall(SEARCH_LOCATION).sort ?? DEFAULT_SORT) };
-      const listing = await api.search(tab.query, scope, sort);
-      show(tabId, listing, keepSelection ? await carryMarks(tabId, listing) : NO_MARKS, (tab) => void (tab.sort = sort));
+      const shown = await arrange(tabId, await api.search(tab.query, scope, sort), sort);
+      const listing = shown.listing;
+      show(tabId, listing, keepSelection ? await carryMarks(tabId, listing) : NO_MARKS, (tab) => {
+        tab.unfiltered = shown.unfiltered;
+        tab.groups = shown.groups;
+        tab.sort = sort;
+      });
     } catch (error) {
       patch(tabId, (tab) => void (tab.error = String(error)));
     }
@@ -324,6 +402,62 @@ export function setSortSpec(tabId: number, sort: SortSpec) {
   });
 }
 
+/**
+ * Groups the tab's rows (Explorer's "Group by"), or ungroups them with `null`, remembering it
+ * for the folder, or for search results, as the view and sort are.
+ */
+export function setGrouping(tabId: number, group: GroupSpec | null) {
+  const tab = find(tabId);
+  if (!tab) return;
+  remember(locationKey(tab), { group });
+  enqueue(tabId, async () => {
+    const tab = find(tabId);
+    if (!tab?.listing) return;
+    try {
+      const grouped = await layoutApi.groupSet(tab.listing.set, tab.sort, group, marksOf(tabId) ?? NO_MARKS);
+      patch(tabId, (tab) => {
+        tab.groups = group ? grouped.starts : null;
+        tab.restore = grouped.marks;
+        tab.revision += 1;
+      });
+    } catch {
+      refresh(tabId);
+    }
+  });
+}
+
+/**
+ * Opens the filter box with `text`, narrowing the tab's listing to the names that contain it
+ * (or match it, with `*` and `?`), or closes it with `null`. The selection follows its items.
+ */
+export function setFilter(tabId: number, text: string | null) {
+  const tab = find(tabId);
+  if (!tab || tab.filter === text) return;
+  const wasNarrowed = tab.unfiltered !== null;
+  patch(tabId, (tab) => void (tab.filter = text));
+  if (text === null || text.trim() === "") {
+    // Back to everything: listed again, so the order is the one the tab sorts by now.
+    if (wasNarrowed) refresh(tabId);
+    return;
+  }
+  enqueue(tabId, async () => {
+    const tab = find(tabId);
+    const base = tab?.unfiltered ?? tab?.listing;
+    if (!tab || !base || tab.filter === null) return;
+    try {
+      const group = groupAt(listingLocation(base));
+      const narrowed = await layoutApi.filterSet(base.set, tab.filter, tab.sort, group);
+      const listing = { ...narrowed.listing, path: base.path, took_us: narrowed.listing.took_us };
+      show(tabId, listing, await carryMarks(tabId, listing), (tab) => {
+        tab.unfiltered = base;
+        tab.groups = group ? narrowed.starts : null;
+      });
+    } catch {
+      refresh(tabId);
+    }
+  });
+}
+
 /** Called by a tab's list whenever its selection or focused row changes. */
 export function reportSelection(tabId: number, selection: Selection, focus: number) {
   selections.set(tabId, { selection, focus, version: (selections.get(tabId)?.version ?? 0) + 1 });
@@ -347,6 +481,12 @@ function selected(tabId: number) {
   const held = selections.get(tabId);
   if (!tab?.listing || !held || held.selection.count === 0) return null;
   return { tab, set: tab.listing.set, selection: held.selection, ranges: held.selection.ranges as RowRange[] };
+}
+
+/** The set and ranges of a tab's selection, for commands that act on it, or `null` if none. */
+export function selectionOf(tabId: number): { set: number; ranges: RowRange[] } | null {
+  const current = selected(tabId);
+  return current && { set: current.set, ranges: current.ranges };
 }
 
 /** Fetches the selected rows, lowest first, up to `limit`. */
@@ -469,7 +609,17 @@ export async function openWith(tabId: number) {
 
 // ---------- tabs ----------
 
-export function openTab(path?: string) {
+/**
+ * Opens a tab on `path` (the active tab's folder by default) in a pane, the active one unless
+ * given, and makes it the active tab unless `activate` is false; then it is only the tab its
+ * pane shows.
+ */
+export function openTab(path?: string, pane: number = activePane(), activate = true) {
+  addTab(path, pane, activate);
+}
+
+/** `openTab`, resolving to the new tab's id. */
+export function addTab(path?: string, pane: number = activePane(), activate = true): number {
   const id = nextTabId++;
   const start = path ?? activeTab()?.path ?? places().home;
   setTabs(tabs.length, {
@@ -487,40 +637,124 @@ export function openTab(path?: string) {
     restore: null,
     pending: null,
     renaming: false,
+    pane,
+    filter: null,
+    unfiltered: null,
+    groups: null,
   });
-  setActiveId(id);
+  // A tab opened behind the others shows only in a pane that had none to show.
+  const shown = shownTab(pane);
+  if (activate || !tabs.some((tab) => tab.id === shown && tab.pane === pane)) showInPane(pane, id);
+  if (activate) setActiveId(id);
   navigate(id, start);
+  return id;
 }
+
+/** Makes a tab the one its pane shows, without moving the keyboard to that pane. */
+export function revealTab(tabId: number) {
+  const tab = find(tabId);
+  if (!tab || shownTab(tab.pane) === tabId) return;
+  if (tab.pane === activePane()) return activateTab(tabId);
+  showInPane(tab.pane, tabId);
+  if (!isSearch(tab) && !tab.renaming) refresh(tabId);
+}
+
+/** The tabs of a pane, in order. */
+export const tabsIn = (pane: number) => tabs.filter((tab) => tab.pane === pane);
 
 export function closeTab(tabId: number) {
-  if (tabs.length === 1) {
-    void getCurrentWindow().close();
+  const tab = find(tabId);
+  if (!tab) return;
+  const siblings = tabsIn(tab.pane);
+  if (siblings.length === 1) {
+    // The last tab of the second pane closes the pane; the last tab of all, the window.
+    if (dual()) closePane(tab.pane);
+    else void getCurrentWindow().close();
     return;
   }
-  const position = tabs.findIndex((tab) => tab.id === tabId);
-  if (activeId() === tabId) activateTab(tabs[position === 0 ? 1 : position - 1].id);
-  const set = find(tabId)?.listing?.set;
-  setTabs((all) => all.filter((tab) => tab.id !== tabId));
+  const position = siblings.findIndex((each) => each.id === tabId);
+  const next = siblings[position === 0 ? 1 : position - 1].id;
+  if (activeId() === tabId) activateTab(next);
+  else if (shownTab(tab.pane) === tabId) showInPane(tab.pane, next);
+  forget(tabId);
+}
+
+/** Removes a tab and frees what it held. */
+function forget(tabId: number) {
+  const tab = find(tabId);
+  const sets = [tab?.listing?.set, tab?.unfiltered?.set];
+  setTabs((all) => all.filter((each) => each.id !== tabId));
   queues.delete(tabId);
   selections.delete(tabId);
-  if (set !== undefined) void api.releaseSet(set);
+  for (const set of sets) if (set !== undefined) void api.releaseSet(set);
 }
 
-/** Switches to a tab, bringing it up to date: only the tab on screen is watched for changes. */
+/**
+ * Shows or hides the second pane. Shown, it opens on `paths` (one tab each), or on the active
+ * tab's folder; hidden, its tabs close, and their folders are returned so it can open on them
+ * again. Either way the first pane keeps its tabs.
+ */
+export function setDualPane(on: boolean, paths: string[] = []): string[] {
+  if (on === dual()) return [];
+  if (on) {
+    setDual(true);
+    // The first tab opened is the one the pane shows.
+    for (const path of paths.length > 0 ? paths : [activeTab()?.path ?? places().home]) openTab(path, 1, false);
+    return [];
+  }
+  return closePane(1);
+}
+
+/**
+ * Closes a pane with all its tabs, leaving one pane; the second pane's tabs move to the first
+ * when the first is closed. Returns the folders of the tabs that closed.
+ */
+export function closePane(pane: number): string[] {
+  if (!dual()) return [];
+  const closing = tabsIn(pane);
+  const kept = pane === 0 ? 1 : 0;
+  if (activePane() === pane) activateTab(shownTab(kept));
+  if (pane === 0) {
+    setTabs((tab) => tab.pane === 1, "pane", 0);
+    showInPane(0, shownTab(1));
+  }
+  setDual(false);
+  void layoutApi.watchOtherPane(null).catch(() => {});
+  const paths = closing.map((tab) => tab.path);
+  closing.forEach((tab) => forget(tab.id));
+  return paths;
+}
+
+/** Switches to a tab, bringing it up to date: only the tabs on screen are watched for changes. */
 export function activateTab(tabId: number) {
   if (activeId() === tabId) return;
-  setActiveId(tabId);
+  const previous = activeTab();
   const tab = find(tabId);
-  if (tab && !isSearch(tab) && !tab.renaming) refresh(tabId);
+  // A tab the other pane already shows is watched and current; only the watches change places.
+  const watched = tab !== undefined && onScreen(tabId);
+  setActiveId(tabId);
+  if (tab) showInPane(tab.pane, tabId);
+  // The tab the other pane shows now is watched by the other pane's watch.
+  if (dual() && previous && tab && previous.pane !== tab.pane && !isSearch(previous)) {
+    void layoutApi.watchOtherPane(previous.path).catch(() => {});
+  }
+  if (!tab || isSearch(tab) || tab.renaming) return;
+  if (watched && tab.listing) void layoutApi.watchActiveFolder(tab.path).catch(() => {});
+  else refresh(tabId);
 }
 
-/** Moves to the next or previous tab, wrapping around. */
+/** Moves to the next or previous tab of the active pane, wrapping around. */
 export function cycleTab(step: 1 | -1) {
-  const position = tabs.findIndex((tab) => tab.id === activeId());
-  activateTab(tabs[(position + step + tabs.length) % tabs.length].id);
+  const siblings = tabsIn(activePane());
+  const position = siblings.findIndex((tab) => tab.id === activeId());
+  activateTab(siblings[(position + step + siblings.length) % siblings.length].id);
 }
 
-export async function start() {
+/**
+ * Loads what the window needs and opens its tabs: with `open`, as it says (the layout kept from
+ * the last run, panes.ts), or one tab in the home folder.
+ */
+export async function start(open: (home: string) => Promise<void> = async (home) => void openTab(home)) {
   const [initialStatus, initialPlaces] = await Promise.all([api.indexStatus(), api.places()]);
   setStatus(initialStatus);
   setPlaces(initialPlaces);
@@ -535,5 +769,5 @@ export async function start() {
       if (!isSearch(tab) && !tab.renaming && samePath(tab.path, path)) refresh(tab.id);
     }
   });
-  openTab(initialPlaces.home);
+  await open(initialPlaces.home);
 }

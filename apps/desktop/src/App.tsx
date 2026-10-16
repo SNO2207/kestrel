@@ -17,7 +17,15 @@ import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { TitleBar } from "./components/TitleBar";
 import { Toolbar, focusTargets } from "./components/Toolbar";
+import { groupByEntry } from "./components/GroupMenu";
+import { PaneBar, Splitter } from "./components/Panes";
+import type { MenuEntry } from "./components/ContextMenu";
+import { bindListFocus, layoutKey, openLayout, otherPaneFolder, sendToOtherPane, split, startPanes } from "./panes";
 import {
+  activateTab,
+  dual,
+  setFilter,
+  shownTab,
   activeId,
   activeTab,
   clearPending,
@@ -55,6 +63,18 @@ export function App() {
   /** Focus functions for each tab's list, so shortcuts can hand focus back to the files. */
   const listFocus = new Map<number, () => void>();
   const focusList = () => listFocus.get(activeId())?.();
+  bindListFocus((tabId) => listFocus.get(tabId)?.());
+  startPanes();
+
+  /** The item menu's commands for the other pane, while there is one. */
+  const otherPaneEntries = (tabId: number): MenuEntry[] => {
+    if (!dual()) return [];
+    const none = otherPaneFolder(tabId) === null;
+    return [
+      { label: "Copy to other pane", hint: "Alt+C", disabled: none, run: () => void sendToOtherPane(tabId, "copy") },
+      { label: "Move to other pane", hint: "Alt+X", disabled: none, run: () => void sendToOtherPane(tabId, "move") },
+    ];
+  };
 
   const open = (tabId: number, row: Row, inNewTab: boolean) => {
     if (isLocked(row)) notify(LOCKED_MESSAGE, "info");
@@ -108,6 +128,8 @@ export function App() {
     const key = event.key.toLowerCase();
     const handled = () => event.preventDefault();
 
+    // The second pane, the filter box and copying or moving to the other pane (panes.ts).
+    if (layoutKey(event)) return handled();
     if (event.altKey && key === "arrowleft") return handled(), goBack(tab.id);
     if (event.altKey && key === "arrowright") return handled(), goForward(tab.id);
     if (event.altKey && key === "arrowup") return handled(), goUp(tab.id);
@@ -137,7 +159,7 @@ export function App() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("contextmenu", onContextMenu);
     });
-    void start().then(focusList);
+    void start(openLayout).then(focusList);
     const stopDrops = listenForDrops();
     onCleanup(() => void stopDrops.then((stop) => stop()));
   });
@@ -147,10 +169,22 @@ export function App() {
       <TitleBar />
       <Toolbar focusList={focusList} />
       <Sidebar />
-      <main class="content">
+      <main class="content" classList={{ dual: dual() }} style={{ "--split": String(split()) }}>
         <For each={tabs}>
           {(tab) => (
-            <div class="tab-panel" classList={{ active: tab.id === activeId(), "drop-target": isDropFolder(tab.id) }}>
+            <div
+              class="tab-panel"
+              classList={{
+                active: tab.id === activeId(),
+                current: dual() && tab.id === shownTab(tab.pane),
+                "drop-target": isDropFolder(tab.id),
+              }}
+              data-pane={tab.pane}
+              data-panel-tab={tab.id}
+              // A click or the keyboard arriving in the other pane gives that pane the keyboard.
+              onFocusIn={() => tab.id !== activeId() && dual() && activateTab(tab.id)}
+              onMouseDown={() => tab.id !== activeId() && dual() && activateTab(tab.id)}
+            >
               <FileList
                 listing={tab.listing}
                 revision={tab.revision}
@@ -159,6 +193,11 @@ export function App() {
                 error={tab.error}
                 restore={tab.restore}
                 pending={tab.pending}
+                groups={tab.groups}
+                filter={tab.filter}
+                unfilteredTotal={tab.unfiltered?.total ?? null}
+                onFilter={(text) => setFilter(tab.id, text)}
+                menuExtras={{ items: () => otherPaneEntries(tab.id), folder: () => [groupByEntry(tab.id)] }}
                 onSort={(key) => setSort(tab.id, key)}
                 onOpen={(row, inNewTab) => open(tab.id, row, inNewTab)}
                 onStale={() => refresh(tab.id)}
@@ -178,6 +217,11 @@ export function App() {
             </div>
           )}
         </For>
+        <Show when={dual()}>
+          <PaneBar pane={0} />
+          <PaneBar pane={1} />
+          <Splitter />
+        </Show>
         <PreviewPane />
         <ProjectsHub />
         <DropHint />

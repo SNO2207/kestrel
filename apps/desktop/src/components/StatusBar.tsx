@@ -8,14 +8,21 @@ export function StatusBar() {
   const count = () => tab()?.listing?.total ?? 0;
   const noun = () => {
     const current = tab();
-    const plural = count() === 1 ? "" : "s";
+    const plural = (of() ?? count()) === 1 ? "" : "s";
     return current && isSearch(current) ? `result${plural}` : `item${plural}`;
+  };
+
+  /** While the filter box narrows the listing, how many items there are without it. */
+  const of = () => {
+    const current = tab();
+    return current?.unfiltered && (current.filter ?? "").trim() !== "" ? current.unfiltered.total : null;
   };
 
   return (
     <footer class="statusbar">
       <span>
-        {formatCount(count())} {noun()}
+        {formatCount(count())}
+        <Show when={of() !== null}> of {formatCount(of()!)}</Show> {noun()}
       </span>
       <Show when={(tab()?.selected ?? 0) > 0}>
         <span>{formatCount(tab()!.selected)} selected</span>
