@@ -77,7 +77,13 @@ async function open(path, expectName) {
   await page.locator(".address-input").fill(path);
   await page.keyboard.press("Enter");
   await page.locator(".crumb", { hasText: basename(path) }).last().waitFor();
-  await row(expectName).waitFor();
+  // By full path: the list keeps the previous folder's rows drawn until the new ones are in,
+  // and the previous folder may hold an item of the same name.
+  await page.waitForFunction(
+    (wanted) =>
+      [...document.querySelectorAll(".tab-panel.active [data-path]")].some((element) => element.getAttribute("data-path").toLowerCase() === wanted),
+    join(path, expectName).toLowerCase(),
+  );
 }
 
 /** Captures the window through the debugging protocol, in the given colour scheme. */

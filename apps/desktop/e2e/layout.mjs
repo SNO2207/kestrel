@@ -137,8 +137,15 @@ async function open(path, expectName) {
     const crumbs = document.querySelectorAll(".crumbs .crumb");
     return crumbs.length > 0 && crumbs[crumbs.length - 1].textContent === name;
   }, basename(path));
-  if (expectName) await item(expectName).waitFor();
-  else await active().locator(".list-empty").waitFor();
+  // By full path: the list keeps the previous folder's rows drawn until the new ones are in,
+  // and the previous folder may hold a file of the same name.
+  if (expectName) {
+    await page.waitForFunction(
+      (wanted) =>
+        [...document.querySelectorAll(".tab-panel.active [data-path]")].some((element) => element.getAttribute("data-path").toLowerCase() === wanted),
+      join(path, expectName).toLowerCase(),
+    );
+  } else await active().locator(".list-empty").waitFor();
 }
 
 /** Chooses an entry of the View menu, or of its Group by submenu. */
