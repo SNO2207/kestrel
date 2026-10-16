@@ -4,6 +4,7 @@
  * Actions run in the main window. The quick launcher lists them too, minus those that act on
  * the selected files, and hands a chosen one to the main window (palette.ts).
  */
+import { inArchive } from "../archives";
 import type { ListCommand } from "../components/FileList";
 import { openGoto } from "../components/GoToFolder";
 import { askName } from "../components/ShortcutDialogs";
@@ -278,6 +279,9 @@ function actions(): Action[] {
     { id: "pin", title: "Pin to sidebar", hint: "Ctrl+D", icon: "shortcut:pin", selection: true, keywords: "pinned places favourites bookmark", run: (host) => host.runCommand("pin") },
     { id: "pin-folder", title: "Pin this folder", icon: "shortcut:pin", folder: true, keywords: "pinned places favourites bookmark sidebar", run: (host) => host.runCommand("pin-folder") },
     { id: "tags", title: "Tags…", icon: "shortcut:tag", selection: true, keywords: "tag label colour color", run: (host) => host.runCommand("tags") },
+    { id: "compress-zip", title: "Compress to ZIP file", selection: true, folder: true, mainOnly: true, keywords: "zip archive pack", when: () => !inArchive(activeTab()?.listing), run: (host) => host.runCommand("compress-zip") },
+    { id: "compress-to", title: "Compress to…", selection: true, folder: true, mainOnly: true, keywords: "zip 7z tar gz archive pack", when: () => !inArchive(activeTab()?.listing), run: (host) => host.runCommand("compress-to") },
+    { id: "extract-all", title: "Extract all…", mainOnly: true, keywords: "unzip unpack archive", when: () => inArchive(activeTab()?.listing), run: (host) => host.runCommand("extract-all") },
     { id: "save-workspace", title: "Save tabs as a workspace", icon: "shortcut:workspace", keywords: "workspaces session tabs keep", run: () => void saveTheTabs() },
     { id: "folder-properties", title: "Folder properties", folder: true, run: (host) => host.runCommand("folder-properties") },
     { id: "select-all", title: "Select all", hint: "Ctrl+A", mainOnly: true, run: (host) => pressInList(host, "a", { ctrlKey: true }) },

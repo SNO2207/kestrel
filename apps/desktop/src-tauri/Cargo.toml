@@ -14,6 +14,14 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Archives (`archive/`): zip, 7z and tar with its compressed forms are read and written in Rust.
+# RAR is read through Windows' own tar.exe (libarchive), which no crate here replaces.
+bzip2 = "0.6.1"
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
+lzma-rust2 = { version = "0.16", default-features = false, features = ["std", "xz"] }
+sevenz-rust2 = { version = "0.20.2", default-features = false, features = ["aes256", "bzip2", "compress", "deflate", "ppmd", "util"] }
+tar = { version = "0.4.46", default-features = false }
+zip = { version = "9.0.3", default-features = false, features = ["aes-crypto", "bzip2", "deflate-flate2-zlib-rs", "deflate64", "lzma", "ppmd", "xz"] }
 kestrel-db = { workspace = true }
 kestrel-index = { workspace = true }
 kestrel-query = { workspace = true }
@@ -74,6 +82,8 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Registry",
     # One Kestrel per data folder: a named mutex and events (instance.rs).
     "Win32_System_Threading",
+    # Zip archives keep local times; converting them (archive/time.rs).
+    "Win32_System_Time",
     "Win32_UI_Controls",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

@@ -12,7 +12,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { MenuEntry } from "./components/ContextMenu";
 import { iconUrl } from "./lib/api";
-import { isHome } from "./lib/home";
+import { inArchive } from "./archives";
+import { locationOf } from "./lib/locations";
 import { parityApi, type NewKind } from "./lib/parityApi";
 import { selector } from "./lib/selectionOps";
 import { paneOpen, setPaneOpen } from "./previewState";
@@ -21,8 +22,12 @@ import { activeTab, isSearch, navigate, notify, refresh, renameWhenListed, selec
 
 const find = (tabId: number) => tabs.find((tab) => tab.id === tabId);
 
-/** Whether the tab shows a folder new things can be made in: not search results, not Home. */
-export const inFolder = (tab: Tab | undefined): tab is Tab => !!tab && !isSearch(tab) && !isHome(tab.path) && !!tab.listing;
+/**
+ * Whether the tab shows a folder new things can be made in: not search results, a special
+ * location (Home, This PC, the Recycle Bin), or the inside of an archive, which is read-only.
+ */
+export const inFolder = (tab: Tab | undefined): tab is Tab =>
+  !!tab && !isSearch(tab) && !locationOf(tab.path) && !!tab.listing && !inArchive(tab.listing);
 
 // ---------- New ----------
 

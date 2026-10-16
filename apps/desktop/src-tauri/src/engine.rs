@@ -70,6 +70,9 @@ pub struct Listing {
     /// Largest size in the set, for scaling the size bars.
     pub max_size: u64,
     pub took_us: u64,
+    /// For a folder inside an archive, the archive's path on disk; such a listing is read-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive: Option<String>,
 }
 
 /// Selected rows and the focused row of a result set, as inclusive ranges of positions.
@@ -320,7 +323,20 @@ impl Engine {
 
         let total = rows.len();
         let set = self.store(ResultSet { rows, is_search: false, arranged: Arranged::sorted(sort_spec) });
-        Ok(Listing { set, total, path: shown_path, max_size, took_us: started.elapsed().as_micros() as u64 })
+        Ok(Listing { set, total, path: shown_path, max_size, took_us: started.elapsed().as_micros() as u64, archive: None })
+    }
+
+    /// Shows items that are not on disk as a folder at `dir`: the contents of a folder inside
+    /// the archive at `archive`. Rows are paged, sorted, grouped and selected as any folder's are.
+    pub fn show_items(&self, dir: String, mut items: Vec<DirItem>, spec: SortSpec, visibility: Visibility, archive: String) -> Listing {
+        let started = Instant::now();
+        let sort_spec = spec.resolve(true);
+        items.retain(|item| visibility.shows(item.meta.attrs));
+        sort_live(&mut items, sort_spec);
+        let max_size = items.iter().map(|item| item.meta.size).max().unwrap_or(0);
+        let total = items.len() as u32;
+        let set = self.store(ResultSet { rows: Rows::Live { dir: dir.clone(), items }, is_search: false, arranged: Arranged::sorted(sort_spec) });
+        Listing { set, total, path: dir, max_size, took_us: started.elapsed().as_micros() as u64, archive: Some(archive) }
     }
 
     /// Runs a query, optionally restricted to the folder `scope`. Hidden items are included,
@@ -374,7 +390,7 @@ impl Engine {
 
         let total = rows.len();
         let set = self.store(ResultSet { rows, is_search: true, arranged: Arranged::sorted(spec.resolve(false)) });
-        Ok(Listing { set, total, path: String::new(), max_size, took_us: started.elapsed().as_micros() as u64 })
+        Ok(Listing { set, total, path: String::new(), max_size, took_us: started.elapsed().as_micros() as u64, archive: None })
     }
 
     /// Finds where the rows marked in the set `from` sit in the set `to`, so a selection can
@@ -710,7 +726,7 @@ impl Engine {
         let total = narrowed.rows.len();
         let set = self.store(narrowed);
         let took_us = started.elapsed().as_micros() as u64;
-        Ok((Listing { set, total, path: String::new(), max_size, took_us }, starts))
+        Ok((Listing { set, total, path: String::new(), max_size, took_us, archive: None }, starts))
     }
 }
 

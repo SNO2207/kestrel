@@ -19,6 +19,7 @@ import {
   type ColumnKind,
 } from "../lib/columns";
 import { VIEW_MODES, displayName, listingLocation, setViewMode, showExtensions, viewModeAt } from "../lib/views";
+import { archiveMenu, inArchive, notifyReadOnly, type ArchiveCommand } from "../archives";
 import { ColumnHeaders } from "./ColumnHeaders";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
 import { FilterBar } from "./FilterBar";
@@ -81,7 +82,8 @@ export type ListCommand =
   | "redo"
   | "batch-rename"
   | "open-with"
-  | ShortcutCommand;
+  | ShortcutCommand
+  | ArchiveCommand;
 
 interface Props {
   listing: Listing | null;
@@ -449,7 +451,8 @@ export function FileList(props: Props) {
   // Git badges, in a folder inside a repository, are likewise asked for the rows on screen only.
   createEffect(() => {
     const listing = props.listing;
-    if (!listing || isSearch()) return;
+    // Search results span repositories; items inside an archive are not git's.
+    if (!listing || isSearch() || inArchive(listing)) return;
     const shown: Row[] = [];
     for (const index of visibleRows()) {
       const data = rowAt(index);
@@ -585,6 +588,7 @@ export function FileList(props: Props) {
   const soleRow = () => (selection().count === 1 ? selection().first : -1);
 
   const startRename = () => {
+    if (inArchive(props.listing)) return notifyReadOnly();
     const row = soleRow();
     if (row >= 0 && rowAt(row)) {
       reveal(row);
@@ -656,7 +660,22 @@ export function FileList(props: Props) {
     ];
     const extraItems = props.menuExtras?.items?.() ?? [];
     const extraFolder = props.menuExtras?.folder?.() ?? [];
-    const forItems: MenuEntry[] = [
+    // Inside an archive the menus are its own read-only ones; elsewhere extract and compress
+    // entries join the item menu (archives.ts).
+    const archive = archiveMenu({
+      listing: props.listing,
+      sole,
+      count,
+      run: command,
+      open: () => open(soleRow()),
+      openInNewTab: () => open(soleRow(), true),
+      copy: command("copy"),
+      history: [undo, ...redo],
+      refresh: command("refresh"),
+    });
+    const forItems: MenuEntry[] = archive.items
+      ? [...archive.items, ...(extraItems.length > 0 ? (["separator", ...extraItems] as MenuEntry[]) : [])]
+      : [
       { label: "Open", hint: "Enter", disabled: !sole, run: () => open(soleRow()) },
       ...(sole?.dir ? [{ label: "Open in new tab", run: () => open(soleRow(), true) }] : []),
       // Explorer parity (parity.ts): another window, the terminal, and where a result lives.
@@ -668,6 +687,7 @@ export function FileList(props: Props) {
         : []),
       ...(sole && !browsing ? [{ label: "Open file location", run: () => revealInFolder(sole.path) }] : []),
       ...(sole && !sole.dir ? [{ label: "Open with…", run: command("open-with") }] : []),
+      ...archive.extra,
       { label: "Pin to sidebar", hint: "Ctrl+D", run: command("pin") },
       { label: "Tags…", run: command("tags") },
       "separator",
@@ -684,9 +704,9 @@ export function FileList(props: Props) {
       { label: "Properties", hint: "Alt+Enter", disabled: !sole, run: command("properties") },
       ...moreOptions(true),
     ];
-    const forFolder: MenuEntry[] = [
-      ...extraFolder,
-      ...(extraFolder.length > 0 ? (["separator"] as MenuEntry[]) : []),
+    const folderExtras: MenuEntry[] = [...extraFolder, ...(extraFolder.length > 0 ? (["separator"] as MenuEntry[]) : [])];
+    const forFolder: MenuEntry[] = archive.folder ? [...folderExtras, ...archive.folder] : [
+      ...folderExtras,
       { label: "New folder", hint: "Ctrl+Shift+N", disabled: !browsing, run: command("new-folder") },
       // Every other type Windows offers, in a menu of its own, as Explorer's New submenu.
       {

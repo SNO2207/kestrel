@@ -205,7 +205,8 @@ async function arrange(tabId: number, listing: Listing, sort: SortSpec): Promise
   try {
     if (filter !== "") {
       const narrowed = await layoutApi.filterSet(listing.set, filter, sort, group);
-      const shown = { ...narrowed.listing, path: listing.path, took_us: listing.took_us + narrowed.listing.took_us };
+      // A narrowed archive folder is still read-only (`Listing.archive`).
+      const shown = { ...narrowed.listing, path: listing.path, archive: listing.archive, took_us: listing.took_us + narrowed.listing.took_us };
       return { listing: shown, unfiltered: listing, groups: group ? narrowed.starts : null };
     }
     if (!group) return { listing, unfiltered: null, groups: null };
@@ -483,7 +484,7 @@ export function setFilter(tabId: number, text: string | null) {
     try {
       const group = groupAt(listingLocation(base));
       const narrowed = await layoutApi.filterSet(base.set, tab.filter, tab.sort, group);
-      const listing = { ...narrowed.listing, path: base.path, took_us: narrowed.listing.took_us };
+      const listing = { ...narrowed.listing, path: base.path, archive: base.archive, took_us: narrowed.listing.took_us };
       show(tabId, listing, await carryMarks(tabId, listing), (tab) => {
         tab.unfiltered = base;
         tab.groups = group ? narrowed.starts : null;

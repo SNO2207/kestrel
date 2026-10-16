@@ -373,6 +373,12 @@ pub fn serve(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         return viewer(request.uri());
     }
     let Some(path) = requested_path(request.uri()) else { return status_only(StatusCode::BAD_REQUEST) };
+    // A file inside an archive is served from its copy in the cache (archive::browse).
+    let path = match crate::archive::preview_file(&path) {
+        Some(Ok(copy)) => copy,
+        Some(Err(_)) => return status_only(StatusCode::NOT_FOUND),
+        None => path,
+    };
     // Checked before the file is opened, since opening some online-only files downloads them.
     let agreed = download_agreed(request.uri());
     if is_plain_path(&path) && !agreed && is_online_only(&path) {
@@ -615,6 +621,10 @@ fn explain(error: &io::Error) -> String {
 
 #[tauri::command(async)]
 pub fn preview_text(path: String) -> Result<TextPreview, String> {
+    let path = match crate::archive::preview_file(&path) {
+        Some(copy) => copy?,
+        None => path,
+    };
     read_text(&path).map_err(|error| explain(&error))
 }
 
@@ -695,7 +705,7 @@ fn attribute_data(path: &str) -> io::Result<WIN32_FILE_ATTRIBUTE_DATA> {
 }
 
 /// The shell's name for files with this extension, such as "PNG File".
-fn type_name(ext: &str) -> Option<String> {
+pub(crate) fn type_name(ext: &str) -> Option<String> {
     let assoc = wide(&format!(".{ext}"));
     let mut buffer = [0u16; 256];
     let mut len = buffer.len() as u32;
@@ -774,6 +784,10 @@ fn read_header(path: &str) -> io::Result<Vec<u8>> {
 
 #[tauri::command(async)]
 pub fn preview_details(engine: State<'_, Arc<Engine>>, path: String) -> Result<Details, String> {
+    // Items inside archives, and archives themselves, with what they hold (archive::browse).
+    if let Some(details) = crate::archive::preview_details(&engine, &path) {
+        return details;
+    }
     describe(&engine, &path).map_err(|error| explain(&error))
 }
 

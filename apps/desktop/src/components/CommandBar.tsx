@@ -1,5 +1,6 @@
 import { Show, createEffect, createSignal, on, onCleanup, onMount, type JSX } from "solid-js";
 
+import { inArchive } from "../archives";
 import { api, type SortKey } from "../lib/api";
 import {
   detailsOpen,
@@ -43,6 +44,8 @@ export function CommandBar(props: { runCommand: (command: ListCommand) => void; 
   const tab = activeTab;
   const selected = () => tab()?.selected ?? 0;
   const folder = () => inFolder(tab());
+  /** Inside an archive nothing can be cut, renamed or deleted (archives.ts). */
+  const changeable = () => selected() > 0 && !inArchive(tab()?.listing);
 
   const checkPaste = () => void api.canPaste().then(setCanPaste).catch(() => setCanPaste(false));
   onMount(() => {
@@ -168,11 +171,11 @@ export function CommandBar(props: { runCommand: (command: ListCommand) => void; 
         <ParityIcon name="chevron" size={12} />
       </Button>
       <span class="command-gap" />
-      <Button icon="cut" label="Cut" title="Cut (Ctrl+X)" disabled={selected() === 0} onClick={run("cut")} />
+      <Button icon="cut" label="Cut" title="Cut (Ctrl+X)" disabled={!changeable()} onClick={run("cut")} />
       <Button icon="copy" label="Copy" title="Copy (Ctrl+C)" disabled={selected() === 0} onClick={run("copy")} />
       <Button icon="paste" label="Paste" title="Paste (Ctrl+V)" disabled={!folder() || !canPaste()} onClick={run("paste")} />
-      <Button icon="rename" label="Rename" title="Rename (F2)" disabled={selected() === 0} onClick={() => renameSelection(activeId())} />
-      <Button icon="delete" label="Delete" title="Delete (Del); Shift+Del deletes permanently" disabled={selected() === 0} onClick={run("delete")} />
+      <Button icon="rename" label="Rename" title="Rename (F2)" disabled={!changeable()} onClick={() => renameSelection(activeId())} />
+      <Button icon="delete" label="Delete" title="Delete (Del); Shift+Del deletes permanently" disabled={!changeable()} onClick={run("delete")} />
       <span class="command-gap" />
       <Button
         icon="sort"

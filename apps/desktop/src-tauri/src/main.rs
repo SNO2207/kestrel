@@ -3,6 +3,7 @@
 
 mod access;
 mod address;
+mod archive;
 mod batchrename;
 mod clipboard;
 mod dragdrop;
@@ -76,6 +77,11 @@ fn list_dir(
     show_hidden: Option<bool>,
     show_protected: Option<bool>,
 ) -> Result<Listing, String> {
+    // An archive, or a folder inside one, is listed from the archive; it has nothing to watch.
+    let visibility = Visibility::from_request(show_hidden).with_protected(show_protected);
+    if let Some(listing) = archive::list(&engine, &path, sort, visibility) {
+        return listing;
+    }
     if watch {
         let path = engine::normalize(&path);
         // Each window watches the folder its tab on screen shows (`parity::appwindows`).
@@ -83,7 +89,7 @@ fn list_dir(
             let _ = app.emit("dir-changed", changed);
         });
     }
-    engine.list_dir_with(&path, sort, Visibility::from_request(show_hidden).with_protected(show_protected))
+    engine.list_dir_with(&path, sort, visibility)
 }
 
 /// Runs a search. `tag:` clauses are resolved to the items carrying the tag.
@@ -157,6 +163,7 @@ fn delete_items(
     if paths.is_empty() {
         return Ok(false);
     }
+    archive::refuse_entries(&paths)?;
     let outcome = fileops::execute(Request::Delete { paths, permanent }, interactive(&window))?;
     journal.record(&outcome);
     Ok(outcome.completed)
@@ -166,6 +173,7 @@ fn delete_items(
 /// for when the user resolves a conflict by keeping both. `None` if nothing was renamed.
 #[tauri::command(async)]
 fn rename_item(window: Window, journal: State<Journal>, path: String, new_name: String) -> Result<Option<String>, String> {
+    archive::refuse_entries(std::slice::from_ref(&path))?;
     let outcome = fileops::execute(Request::Rename { path, new_name }, interactive(&window))?;
     journal.record(&outcome);
     Ok(outcome.results().find_map(|done| match done {
@@ -177,6 +185,7 @@ fn rename_item(window: Window, journal: State<Journal>, path: String, new_name: 
 /// Creates a folder with the first unused "New folder" name and returns the name it got.
 #[tauri::command(async)]
 fn new_folder(window: Window, journal: State<Journal>, parent: String) -> Result<String, String> {
+    archive::refuse_location(&parent)?;
     let name = fileops::unused_name(&parent, "New folder");
     let outcome = fileops::execute(Request::NewFolder { parent, name: name.clone() }, interactive(&window))?;
     journal.record(&outcome);
@@ -199,6 +208,11 @@ fn copy_items(
     cut: bool,
 ) -> Result<usize, String> {
     let paths = engine.paths(set, &ranges)?;
+    // Items inside an archive can only be copied, from copies taken out of it.
+    if cut {
+        archive::refuse_entries(&paths)?;
+    }
+    let paths = archive::materialize(paths)?;
     if !paths.is_empty() {
         clipboard::set_files(owner(&window), &paths, cut)?;
     }
@@ -215,6 +229,7 @@ fn can_paste() -> bool {
 /// if there was nothing to paste or the user cancelled.
 #[tauri::command(async)]
 fn paste_items(window: Window, journal: State<Journal>, destination: String) -> Result<Vec<String>, String> {
+    archive::refuse_location(&destination)?;
     let Some(clip) = clipboard::files(owner(&window))? else { return Ok(Vec::new()) };
     let kind = if clip.cut { Transfer::Move } else { Transfer::Copy };
     let request = Request::Transfer { sources: clip.paths, destination, kind };
@@ -236,6 +251,9 @@ fn paste_items(window: Window, journal: State<Journal>, destination: String) -> 
 /// Opens the standard Windows Properties dialog for a file or folder.
 #[tauri::command(async)]
 fn show_properties(window: Window, path: String) -> Result<(), String> {
+    if archive::is_entry(&path) {
+        return Err("Items inside an archive have no Windows properties. The preview pane (Alt+P) shows their details.".into());
+    }
     let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
     let owner = owner(&window).map_or(std::ptr::null_mut(), |hwnd| hwnd as _);
     // SAFETY: `wide` is NUL-terminated and outlives the call; the shell shows the dialog on a
@@ -259,6 +277,10 @@ fn places() -> places::Places {
 /// remembers it among Home's recent files (`parity::recent`).
 #[tauri::command(async)]
 fn open_path(db: State<Arc<kestrel_db::Db>>, path: String) -> Result<(), String> {
+    // A file inside an archive opens from a copy in the temp folder, as in Explorer.
+    if let Some(opened) = archive::open_entry(&path) {
+        return opened;
+    }
     open_with_shell(&path)?;
     if !std::path::Path::new(&path).is_dir() {
         let _ = kestrel_db::parity::record_opened(&db, &path, parity::now_ms());
@@ -366,6 +388,7 @@ fn main() {
         .manage(Watcher::default())
         // The second pane's folder is watched too (layout.rs).
         .manage(layout::OtherPaneWatcher::default())
+        .manage(archive::Jobs::default())
         // The undo history is kept in the database, and brought back in `setup`.
         .manage(Journal::with_store(database.clone()))
         .manage(database.clone())
@@ -388,7 +411,8 @@ fn main() {
                 responder.respond(response);
             };
             match parse_icon_request(request.uri()) {
-                Some((key, size)) => icons.request(key, size, move |png| match png {
+                // Items inside archives have no file to ask; they get their type's icon.
+                Some((key, size)) => icons.request(archive::icon_key(key), size, move |png| match png {
                     Some(png) => respond(StatusCode::OK, png.to_vec()),
                     None => respond(StatusCode::NOT_FOUND, Vec::new()),
                 }),
@@ -531,6 +555,15 @@ fn main() {
             parity::appwindows::new_window,
             parity::appwindows::window_start,
             parity::appwindows::app_windows_dev,
+            archive::archive_extract,
+            archive::archive_compress,
+            archive::archive_cancel,
+            archive::archive_open,
+            archive::archive_copy,
+            archive::archive_pick_folder,
+            archive::archive_preferences,
+            archive::archive_set_preferences,
+            archive::archive_dev_materialize,
         ]))
         .on_window_event(|window, event| {
             dragdrop::on_window_event(event);
@@ -548,6 +581,8 @@ fn main() {
                 .name("kestrel-undo-restore".into())
                 .spawn(move || restoring.state::<Journal>().restore())?;
             projects.start(app.handle().clone());
+            // Copies taken out of archives on earlier days (previews, drags) are cleared away.
+            std::thread::Builder::new().name("kestrel-archive-tidy".into()).spawn(archive::tidy)?;
             // The quick launcher, its shortcut and the tray icon; never fatal.
             launcher::setup(app.handle(), database.clone());
             // Launching Kestrel again shows this one, wherever it is hiding.

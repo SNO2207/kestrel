@@ -7,5 +7,6 @@ import "./projects.css";
 import "./places.css";
 import "./layout.css";
 import "./parity.css";
+import "./archives.css";
 
 render(() => <App />, document.getElementById("root")!);

@@ -12,6 +12,8 @@ import { CommandBar } from "./components/CommandBar";
 import { DetailsPane } from "./components/DetailsPane";
 import { ParityLayer } from "./components/ParityLayer";
 import { registerSelector } from "./lib/selectionOps";
+import { copyFromArchive, isArchiveFile, openEntry, runArchiveCommand, tabInArchive } from "./archives";
+import { ArchiveDialogs, ArchiveJobs } from "./components/ArchiveDialogs";
 import { isDropFolder, listenForDrops } from "./dragdrop";
 import { DropHint } from "./components/DropHint";
 import { FileList, type ListCommand } from "./components/FileList";
@@ -82,16 +84,19 @@ export function App() {
   const otherPaneEntries = (tabId: number): MenuEntry[] => {
     if (!dual()) return [];
     const none = otherPaneFolder(tabId) === null;
-    return [
-      { label: "Copy to other pane", hint: "Alt+C", disabled: none, run: () => void sendToOtherPane(tabId, "copy") },
-      { label: "Move to other pane", hint: "Alt+X", disabled: none, run: () => void sendToOtherPane(tabId, "move") },
-    ];
+    const copy: MenuEntry = { label: "Copy to other pane", hint: "Alt+C", disabled: none, run: () => void sendToOtherPane(tabId, "copy") };
+    // Items inside an archive are extracted there; nothing moves out of an archive.
+    if (tabInArchive(tabId)) return [copy];
+    return [copy, { label: "Move to other pane", hint: "Alt+X", disabled: none, run: () => void sendToOtherPane(tabId, "move") }];
   };
 
   const open = (tabId: number, row: Row, inNewTab: boolean) => {
+    // An archive opens as a folder, as in Explorer (archives.ts).
+    const folder = row.dir || isArchiveFile(row);
     if (isLocked(row)) notify(LOCKED_MESSAGE, "info");
-    else if (row.dir && inNewTab) openTab(row.path);
-    else if (row.dir) navigate(tabId, row.path);
+    else if (folder && inNewTab) openTab(row.path);
+    else if (folder) navigate(tabId, row.path);
+    else if (tabInArchive(tabId)) void openEntry(tabId, row);
     else void api.openPath(row.path).catch(notify);
   };
 
@@ -100,7 +105,7 @@ export function App() {
       case "cut":
         return void copySelection(tabId, true);
       case "copy":
-        return void copySelection(tabId, false);
+        return void (tabInArchive(tabId) ? copyFromArchive(tabId) : copySelection(tabId, false));
       case "paste":
         return paste(tabId);
       case "copy-path":
@@ -130,6 +135,12 @@ export function App() {
       case "pin-folder":
       case "tags":
         return runShortcutCommand(tabId, command);
+      case "extract-all":
+      case "extract-here":
+      case "extract-items":
+      case "compress-zip":
+      case "compress-to":
+        return runArchiveCommand(tabId, command);
     }
   };
 
@@ -260,6 +271,7 @@ export function App() {
         <DetailsPane />
         <ProjectsHub />
         <DropHint />
+        <ArchiveJobs />
         <Show when={notice()}>
           <div class="notice" classList={{ info: noticeTone() === "info" }} role="alert">
             <span>{notice()}</span>
@@ -277,6 +289,7 @@ export function App() {
       <PaletteOverlay runCommand={(command) => runCommand(activeId(), command)} focusList={focusList} />
       <LauncherSettingsDialog onClose={focusList} />
       <ConfirmDialog onClose={focusList} />
+      <ArchiveDialogs focusList={focusList} />
     </div>
   );
 }

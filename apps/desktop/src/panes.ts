@@ -11,7 +11,9 @@
 import { createEffect, createSignal, on, onCleanup } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import { extract, inArchive, notifyReadOnly } from "./archives";
 import { loadColumns } from "./lib/columns";
+import { baseName } from "./lib/format";
 import { givenLocation, startLocation } from "./lib/home";
 import { layoutApi } from "./lib/layoutApi";
 import { locationOf } from "./lib/locations";
@@ -28,6 +30,7 @@ import {
   refresh,
   revealTab,
   selectInFolder,
+  selectedRows,
   selectionOf,
   setDualPane,
   setFilter,
@@ -237,12 +240,15 @@ export function focusPane(pane: number) {
   focusListOf(target);
 }
 
-/** The folder the pane beside a tab's shows, if it shows a folder rather than search results. */
+/**
+ * The folder the pane beside a tab's shows, if it shows a folder things can go into: not search
+ * results, a special location or the inside of an archive (which is read-only).
+ */
 export function otherPaneFolder(tabId: number): string | null {
   const tab = tabs.find((each) => each.id === tabId);
   if (!dual() || !tab) return null;
   const other = tabs.find((each) => each.id === shownTab(tab.pane === 0 ? 1 : 0));
-  return other && !isSearch(other) && other.listing ? other.listing.path : null;
+  return other && !isSearch(other) && other.listing && !inArchive(other.listing) ? other.listing.path : null;
 }
 
 /**
@@ -254,6 +260,15 @@ export async function sendToOtherPane(tabId: number, mode: "copy" | "move") {
   const selection = selectionOf(tabId);
   if (!destination) return notify("The other pane shows no folder to put them in.", "info");
   if (!selection) return;
+  // Items inside an archive are copied out by extracting them there (archives.ts).
+  const source = tabs.find((each) => each.id === tabId);
+  if (source?.listing?.archive) {
+    if (mode === "move") return notifyReadOnly();
+    const items = (await selectedRows(tabId, 100_000)).map((row) => row.path);
+    const name = baseName(source.listing.archive);
+    await extract({ tabId, source: source.path, items, name, destination }, false);
+    return;
+  }
   try {
     const names = await layoutApi.transferItems(selection.set, selection.ranges, destination, mode);
     selectInFolder(destination, names);

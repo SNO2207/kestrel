@@ -4,6 +4,9 @@ A fast file explorer for Windows 11. One in-memory index of every file on the dr
 instant search, instant folder listings with folder sizes, a command palette that reaches
 every folder and file, the projects on the drive with their git status, This PC with every
 drive, the Recycle Bin, and a folder tree in the sidebar; disk analysis is to come.
+every folder and file, and the projects on the drive with their git status. Archives (zip,
+7z, RAR, tar and its compressed forms) open like folders, extract and compress; disk analysis
+is to come.
 
 *Kestrel is a working name.*
 
@@ -122,6 +125,7 @@ Clauses are separated by spaces and must all match. Prefix any clause with `!` t
 | Del / Shift+Del | Move to the Recycle Bin / delete permanently |
 | Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste, shared with Explorer's clipboard |
 | Ctrl+Shift+N | New folder |
+| Enter, double-click (on an archive) | Open it as a folder; Backspace or Alt+Up leaves it |
 | Ctrl+Shift+C | Copy as path |
 | Alt+Enter | Properties; with nothing selected, the folder's |
 | Right-click, Menu key | Context menu |
@@ -221,6 +225,54 @@ expression, optionally case-sensitive), a prefix and suffix, numbering (`Photo #
 start value; `*` stands for the current name) and case changes, applied to the name, the
 extension or both. A live preview flags conflicts and invalid names, and Apply renames
 everything as one undoable operation.
+
+## Archives
+
+Zip, 7z, RAR and tar archives, tar compressed with gzip, bzip2 or xz (`.tar.gz` or `.tgz`,
+`.tar.bz2`, `.tar.xz`), and single compressed files (`.gz`, `.bz2`, `.xz`) open like folders,
+with a double-click or Enter, and the address goes on past the archive
+(`C:\Downloads\photos.zip\2024`). Inside, everything is read-only: folders open, items sort and
+show in every view with their type's icon, the preview pane and Quick Look show them, and an
+archive inside an archive opens too. Opening a file copies it to a folder of its own under the
+temp folder and opens the copy, as Explorer does; Copy, a drag out to any program and
+"Extract…" copy items out. Search does not look inside archives.
+
+"Extract all…" asks where the files go (a folder named after the archive, beside it, unless you
+choose another) and whether to show them when it is done; "Extract here" puts them in the
+archive's own folder. Items that clash with ones already there go through Windows' own "Replace
+or skip files" dialog. "Compress to ZIP file" zips the selection beside it, named after the
+first item, and starts renaming the new archive, as Explorer does; "Compress to…" offers zip, 7z
+and tar.gz, a compression level and a folder. Progress shows at the bottom right, with Cancel;
+a cancelled or failed job leaves nothing behind. Both go into the undo history: an undo sends
+what the job made to the Recycle Bin, and only while it is as the job left it.
+
+What an archive holds is checked before anything is written:
+
+- an item whose path would land outside the destination (`..`, an absolute path, a drive, a
+  share or a `\\?\` path, with either kind of slash) gets the whole archive refused, with a
+  message naming the item;
+- links are never made: symbolic links are left out, and a tar hard link becomes a plain copy of
+  the file it names when that file comes from the same archive (and so lands inside), or is
+  left out otherwise;
+- names Windows can't hold are renamed: device names (`CON`, `nul.txt`, `COM1`…) get `_` after
+  the device part, `:` and the other characters NTFS forbids become `_` (so no alternate data
+  stream is ever written), trailing dots and spaces are dropped, and names that then clash, or
+  differ only in case, are numbered;
+- the sizes the archive declares must fit in the drive's free space; while extracting, no item
+  may hold more than it declared and nothing may expand past 1,100 times the archive's size (1
+  GB at least), so a decompression bomb stops there;
+- the Mark of the Web passes on: what is extracted, opened, previewed or copied out of an archive
+  downloaded from the Internet gets the archive's zone, so SmartScreen and Office's Protected
+  View apply to it;
+- encrypted zip (ZipCrypto and AES) and 7z archives ask for the password, which is used for that
+  one job and never kept; password-protected RAR archives are reported as unsupported; a damaged
+  archive says so.
+
+RAR is read through Windows' own `tar.exe` (libarchive, in System32), which turns the archive
+into a tar stream that goes through the same checks. Kestrel never downloads or runs any other
+tool for archives. Copies made for the preview and for drags are kept in the data folder's
+`archive-cache` and cleared after a day; "Extract all…" remembers whether to show the files, and
+"Compress to…" its last format and level.
 
 ## Views
 
@@ -538,6 +590,7 @@ node e2e/connections.mjs    # where the palette, shortcuts, projects and preview
 node e2e/places.mjs         # This PC, the Recycle Bin page, the folder tree, address completion
 node e2e/layout.mjs         # two panes, grouping, columns, the filter box, the rectangle, Content (restarts the slot)
 node e2e/parity.mjs         # Explorer parity: New, Home, the details pane, a second window, shortcuts
+node e2e/archives.mjs       # compress, browse inside a zip, preview, Extract all, undo, zip slip
 node e2e/dev.mjs stop
 ```
 
@@ -559,6 +612,8 @@ own, and records and forgets a file of its own as opened; Windows Terminal is no
 projects feature's hook records the launch). `connectToKestrel()` in `e2e/connect.mjs` returns
 the first window, `main`, when there are several; `waitForKestrelWindow(browser, label)` finds
 another.
+`archives.mjs` need a dev build, whose test hooks they use. A release build has the Windows menu's test hook only
+when started with `KESTREL_TEST_HOOKS=1`, as `dev.mjs` starts it.
 
 Run the suites one after another, not side by side: several use the clipboard or the window's
 settings. Every suite works in its own scratch folder under `%TEMP%` and removes it afterwards;
@@ -611,3 +666,11 @@ bin has no test hook at all. Ejecting, drives coming and going, disconnected net
 and the shell's conflict dialog on a restore are manual checks. The unit test
 `recyclebin::tests::lists_restores_and_erases_items_it_recycled_itself` does the same as the
 suite with two files, through the backend, and runs by default.
+`archives.mjs` leaves the clipboard alone (what Copy would carry out of an archive is asked of a
+development hook) and undoes an extraction, which sends one extracted folder named
+`kestrel-test-*` to the Recycle Bin; the redo that follows brings it back. The unit test
+`archive::tests::an_extraction_is_undone_through_the_recycle_bin_and_redone` does the same. The
+archive unit tests build their archives themselves (malicious ones byte by byte, RAR ones too)
+and use Windows' `tar.exe` to read RAR and to check that Windows reads what Kestrel writes.
+Showing Windows' folder picker ("Browse…"), a real drag out of an archive, pasting what Copy put
+on the clipboard, and opening a file from an archive in its app are manual checks.

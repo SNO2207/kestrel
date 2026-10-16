@@ -15,6 +15,7 @@ use serde::de::DeserializeOwned;
 
 pub use rusqlite;
 
+pub mod archives;
 pub mod layout;
 pub mod palette;
 pub mod parity;

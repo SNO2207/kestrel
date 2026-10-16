@@ -9,6 +9,7 @@
  */
 import { createSignal } from "solid-js";
 
+import { isArchiveFile } from "./archives";
 import { locationOf, resolveLocation } from "./lib/locations";
 import { placesApi, type DriveInfo, type ThisPcData } from "./lib/placesApi";
 import { activeTab, isSearch, navigate, notify, openTab, selectInFolder, tabs } from "./state";
@@ -121,7 +122,10 @@ export async function openAddress(tabId: number, typed: string) {
   const base = tab && !locationOf(tab.path) ? tab.path : null;
   try {
     const resolved = await placesApi.addressResolve(text, base);
-    if (resolved.kind === "file") return void (await revealFile(tabId, resolved.folder, resolved.name));
+    // An archive opens as a folder, as a double-click does (archives.ts); other files are shown in theirs.
+    if (resolved.kind === "file" && !isArchiveFile({ dir: false, name: resolved.name })) {
+      return void (await revealFile(tabId, resolved.folder, resolved.name));
+    }
     navigate(tabId, resolved.path);
   } catch (error) {
     notify(error);
