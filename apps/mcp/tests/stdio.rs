@@ -161,7 +161,7 @@ fn initialize_announces_kestrel_and_its_tools() {
     }
     let search = tools.iter().find(|tool| tool["name"] == "search_files").unwrap();
     let description = search["description"].as_str().unwrap();
-    for syntax in ["ext:", "type:image", "size:>1gb", "dm:", "in:", "regex:", "tag:", "*.rs"] {
+    for syntax in ["ext:", "type:image", "size:>1gb", "dm:", "in:", "regex:", "tag:", "*.rs", "content:", "taken:", "kind:photo", "duration:", "text:", "like:", "ran_as"] {
         assert!(description.contains(syntax), "the query syntax documents {syntax}");
     }
     assert_eq!(search["inputSchema"]["required"], json!(["query"]));

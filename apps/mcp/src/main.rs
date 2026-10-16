@@ -34,8 +34,9 @@ Sizes are in bytes; a folder's size is everything in it. Dates are UTC. Every to
 Files marked cloud_only are OneDrive placeholders whose contents are not on this PC: opening one downloads it.";
 
 const SEARCH_DESCRIPTION: &str = "Search every file and folder on this PC by name, path, type, size or date, through \
-Kestrel's live index (answers in milliseconds, and current within a second). The query is in Kestrel's syntax: \
-clauses separated by spaces must all match, and `!` before a clause negates it.\n\
+Kestrel's live index (answers in milliseconds, and current within a second), as Kestrel's own search box does: also \
+inside files, by what the media library knows of photos and videos, by what a photo shows, and in plain phrases. The \
+query is in Kestrel's syntax: clauses separated by spaces must all match, and `!` before a clause negates it.\n\
 - `report`: the name contains report (case-insensitive)\n\
 - `\"two words\"`: quoted text is taken literally\n\
 - `src\\main`: the full path contains src\\main\n\
@@ -47,9 +48,17 @@ clauses separated by spaces must all match, and `!` before a clause negates it.\
 - `in:C:\\Projects`: only beneath this folder (or use the folder argument)\n\
 - `regex:^a.*\\d$`: a regular expression on the name\n\
 - `tag:urgent`: carries this tag given in Kestrel\n\
-Examples: `ext:pdf invoice dm:2025`, `*.log size:>100mb`, `type:folder node_modules in:C:\\Code`, `Cargo.toml !target`. \
-Returns the total number of matches and the first results (path, kind, size in bytes, size on disk, modified in \
-UTC). Hidden files are left out unless include_hidden is true.";
+- `content:\"fn main\"`: the file contains this text (Kestrel reads the files the other clauses find, or every file \
+in the folder given; each result has the first matching line as `matched`; files only in the cloud are never read)\n\
+- photos and videos in Kestrel's media library: `kind:photo`, `kind:video`, `taken:2024-07` (date taken, as dm:), \
+`width:>1920`, `height:1080`, `camera:pixel`, `duration:>1m`, `geo:yes`, `text:costco` (words read in the picture)\n\
+- `like:\"a dog on a sofa\"` (or a whole query starting with `~`): photos and videos that look like the description, \
+best match first, when AI search has a model in Kestrel; `like:\"C:\\Photos\\dog.jpg\"` finds ones like that picture\n\
+- a plain phrase is read into clauses: `pdfs from last week`, `videos longer than 5 minutes`, `screenshots containing \
+invoice`, `photos of a beach taken in 2023`; the result's `ran_as` says what it was read as\n\
+Examples: `ext:pdf invoice dm:2025`, `*.log size:>100mb`, `type:folder node_modules in:C:\\Code`, `Cargo.toml !target`, \
+`content:TODO ext:rs` with a folder. Returns the total number of matches and the first results (path, kind, size in \
+bytes, size on disk, modified in UTC). Hidden files are left out unless include_hidden is true.";
 
 #[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]

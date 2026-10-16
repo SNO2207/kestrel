@@ -73,9 +73,13 @@ struct Running {
 
 impl Running {
     fn new(key: String, place: String) -> Arc<Self> {
+        Self::stopped_by(key, place, Arc::new(AtomicBool::new(false)))
+    }
+
+    fn stopped_by(key: String, place: String, cancel: Arc<AtomicBool>) -> Arc<Self> {
         Arc::new(Self {
             key,
-            cancel: Arc::new(AtomicBool::new(false)),
+            cancel,
             progress: Progress::default(),
             found: Mutex::new(Vec::new()),
             done: AtomicBool::new(false),
@@ -187,6 +191,15 @@ impl Searches {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
+}
+
+/// Runs a search on this thread to the end, or until `cancel` is raised, and returns what it
+/// found and how far it got: the query service's searches inside files (devtools/query.rs).
+pub fn run_to_end(plan: Plan, cancel: Arc<AtomicBool>) -> (Vec<Found>, Status) {
+    let running = Running::stopped_by(String::new(), plan.place.clone(), cancel);
+    run(&running, plan);
+    let found = std::mem::take(&mut *running.found.lock());
+    (found, running.status())
 }
 
 /// Milliseconds each file waits before it is read (development builds only, `search_dev_slow`):

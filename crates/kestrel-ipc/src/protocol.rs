@@ -282,6 +282,20 @@ pub struct Entry {
     /// Its contents are in the cloud only (OneDrive): opening it would download it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub cloud_only: bool,
+    /// For a search inside files (`content:`): the first line that matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched: Option<LineMatch>,
+}
+
+/// The line of a file a search inside it matched.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineMatch {
+    /// One-based.
+    pub line: u64,
+    /// The line, trimmed, and cut around the match when long.
+    pub text: String,
+    /// How many other lines match too.
+    pub more_lines: u32,
 }
 
 impl Entry {
@@ -293,6 +307,10 @@ impl Entry {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SearchResult {
     pub query: String,
+    /// What a phrase was read as ("pdfs from last week" runs as `ext:pdf dm:lastweek`), when
+    /// that differs from the query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ran_as: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
     /// Everything that matched.

@@ -10,18 +10,21 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use kestrel_db::Db;
-use kestrel_index::{EntryId, Index, attr, walk};
+use kestrel_index::{DirItem, EntryId, Index, Meta, attr, walk};
 use kestrel_ipc::protocol::{
-    self as wire, DiskArgs, Entry, Failure, FailureKind, FolderListing, FolderSize, GitSummary, Hello, LimitArgs, ListArgs,
+    self as wire, DiskArgs, Entry, Failure, FailureKind, FolderListing, FolderSize, GitSummary, Hello, LimitArgs, LineMatch, ListArgs,
     PathArgs, ProjectArgs, ProjectDetails, ProjectList, ProjectSummary, ProjectsArgs, RecentFile, RecentFiles, SearchArgs,
     SearchResult, SortBy, bounds, iso_utc,
 };
 use kestrel_ipc::{Context, Request};
+use kestrel_query::natural;
 use kestrel_query::{Clause, ClauseKind, Clock, Sort, SortKey, compile, parse, search};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::engine::{Engine, normalize};
+use crate::search::resolve::Resolver;
+use crate::search::{Ask, Decided};
 use crate::visibility::Visibility;
 
 /// Entries walked between looks at the clock while adding a folder up.
@@ -65,6 +68,7 @@ fn entry_of(index: &Index, id: EntryId) -> Entry {
         modified: iso_utc(kestrel_analyze::unix_ms(index.mtime(id))),
         hidden: attrs & attr::HIDDEN != 0,
         cloud_only: kestrel_analyze::is_cloud_only(attrs),
+        matched: None,
     }
 }
 
@@ -112,34 +116,115 @@ fn first_sorted(index: &Index, ids: &mut Vec<EntryId>, order: Sort, limit: usize
     ids.truncate(limit);
 }
 
-pub fn search_index(engine: &Engine, db: &Db, args: &SearchArgs, context: &Context) -> Result<SearchResult, Failure> {
-    ready(engine)?;
-    let started = Instant::now();
-    let limit = bounds::clamp(args.limit, bounds::SEARCH);
-    let mut query = parse(&args.query, Clock::local()).map_err(|error| Failure::bad_request(error.to_string()))?;
-    let folder = args.folder.as_deref().map(normalize).filter(|folder| !folder.is_empty());
-    if let Some(folder) = &folder {
-        query.clauses.push(Clause { negate: false, kind: ClauseKind::Within(folder.clone()) });
+/// What the window's search understands beyond the index, which the query service's search
+/// understands too: tags, the media library's clauses, descriptions for AI search, phrases, and
+/// searches inside files (`search/`). One query finds the same things wherever it is asked.
+pub struct Understanding<'a> {
+    pub db: &'a Db,
+    /// Runs the model for descriptions (`like:`, `~`); `None` where there is none (tests).
+    pub semantic: Option<&'a crate::semantic::Semantic>,
+    /// Whether the media library reads a folder: `taken:` in a search limited to one it
+    /// doesn't is read from the photos, as in the window.
+    pub library: &'a dyn Fn(&str) -> bool,
+    /// Known folders and projects, for phrases ("pdfs in downloads", "code in kestrel").
+    pub places: &'a dyn natural::Places,
+}
+
+fn resolver<'a>(understanding: &Understanding<'a>, text: &str) -> Result<Resolver<'a>, Failure> {
+    match understanding.semantic {
+        Some(semantic) => Resolver::prepare(understanding.db, semantic, text).map_err(Failure::bad_request),
+        None => Ok(Resolver::index_only(understanding.db)),
+    }
+}
+
+/// The index's entries for `text` beneath `folder`, every clause resolved, with descriptions'
+/// scores when the query has one. The index is read in place, with the asker's cancel flag.
+fn index_ids(
+    index: &Index,
+    text: &str,
+    folder: Option<&str>,
+    shown: Visibility,
+    resolver: &mut Resolver<'_>,
+    context: &Context,
+) -> Result<(Vec<EntryId>, Option<std::collections::HashMap<EntryId, f32>>), Failure> {
+    let mut query = parse(text, Clock::local()).map_err(|error| Failure::bad_request(error.to_string()))?;
+    if let Some(folder) = folder {
+        query.clauses.push(Clause { negate: false, kind: ClauseKind::Within(folder.to_owned()) });
     }
     if query.clauses.is_empty() {
         return Err(Failure::bad_request("Give something to search for"));
     }
-    let index = engine.index().read();
-    crate::shortcuts::tags::resolve(db, &mut query, &index).map_err(Failure::bad_request)?;
-    let compiled = compile(&query, &index).map_err(|error| Failure::bad_request(error.to_string()))?;
+    let scores = resolver.resolve(&mut query, index).map_err(Failure::bad_request)?;
+    let compiled = compile(&query, index).map_err(|error| Failure::bad_request(error.to_string()))?;
     // Its own cancel flag: the server raises it when it stops waiting.
-    let mut ids = search(&index, &compiled, &context.cancelled).ok_or_else(timed_out)?;
-    let shown = visibility(args.hidden);
+    let mut ids = search(index, &compiled, &context.cancelled).ok_or_else(timed_out)?;
     ids.retain(|&id| shown.shows(index.attrs(id)));
-    let total = ids.len() as u64;
-    if context.expired() {
-        return Err(timed_out());
+    Ok((ids, scores))
+}
+
+pub fn search_index(engine: &Engine, args: &SearchArgs, context: &Context, understanding: &Understanding) -> Result<SearchResult, Failure> {
+    ready(engine)?;
+    let started = Instant::now();
+    let limit = bounds::clamp(args.limit, bounds::SEARCH);
+    let folder = args.folder.as_deref().map(normalize).filter(|folder| !folder.is_empty());
+    let shown = visibility(args.hidden);
+    if args.query.trim().is_empty() && folder.is_none() {
+        return Err(Failure::bad_request("Give something to search for"));
     }
-    first_sorted(&index, &mut ids, sort_of(args.sort, args.descending, false), limit);
-    let results: Vec<Entry> = ids.iter().map(|&id| entry_of(&index, id)).collect();
-    drop(index);
+    // As the search box reads it: a phrase into clauses, contents and dates taken to read.
+    let options = crate::search::Options::default();
+    let ask = Ask { text: &args.query, scope: folder.as_deref(), folder: folder.as_deref(), visibility: shown, options: &options, library: understanding.library };
+    let (understood, decided) = crate::search::decide(&ask, Clock::local(), understanding.places).map_err(Failure::bad_request)?;
+    let ran_as = (understood.natural && understood.query != args.query.trim()).then(|| understood.query.clone());
+    let (total, results) = match decided {
+        Decided::Index { query } => {
+            let mut resolver = resolver(understanding, &query)?;
+            let index = engine.index().read();
+            let (mut ids, scores) = index_ids(&index, &query, folder.as_deref(), shown, &mut resolver, context)?;
+            let total = ids.len() as u64;
+            if context.expired() {
+                return Err(timed_out());
+            }
+            match (&scores, args.sort) {
+                // A description's results come best first, as in the window, unless a sort is asked for.
+                (Some(scores), None) => {
+                    let score = |id: &EntryId| scores.get(id).copied().unwrap_or(f32::NEG_INFINITY);
+                    ids.sort_by(|a, b| score(b).total_cmp(&score(a)).then_with(|| index.cmp_name(*a, *b)));
+                    ids.truncate(limit);
+                }
+                _ => first_sorted(&index, &mut ids, sort_of(args.sort, args.descending, false), limit),
+            }
+            (total, ids.iter().map(|&id| entry_of(&index, id)).collect::<Vec<Entry>>())
+        }
+        Decided::Content { plan_query, patterns, taken } => {
+            let choose = |plan_query: &str| -> Result<Vec<(String, DirItem)>, String> {
+                let mut resolver = resolver(understanding, plan_query).map_err(|failure| failure.message)?;
+                let index = engine.index().read();
+                let (ids, _) = index_ids(&index, plan_query, folder.as_deref(), shown, &mut resolver, context).map_err(|failure| failure.message)?;
+                Ok(ids
+                    .into_iter()
+                    .filter(|&id| !index.is_dir(id))
+                    .map(|id| {
+                        let meta = Meta { size: index.size(id), alloc: index.alloc(id), mtime: index.mtime(id), attrs: index.attrs(id), file_id: 0 };
+                        (index.path(index.parent(id)), DirItem { name: index.name(id).to_owned(), meta, alias: false })
+                    })
+                    .collect())
+            };
+            let plan = crate::search::plan(engine, &ask, &plan_query, patterns, taken, choose).map_err(Failure::bad_request)?;
+            let (found, status) = crate::search::run_to_end(plan, context.cancelled.clone());
+            if context.expired() && !status.done {
+                return Err(timed_out());
+            }
+            let mut entries: Vec<Entry> = found.iter().map(found_entry).collect();
+            sort_entries(&mut entries, args.sort, args.descending);
+            let total = entries.len() as u64;
+            entries.truncate(limit);
+            (total, entries)
+        }
+    };
     Ok(SearchResult {
         query: args.query.clone(),
+        ran_as,
         folder,
         total,
         returned: results.len(),
@@ -147,6 +232,38 @@ pub fn search_index(engine: &Engine, db: &Db, args: &SearchArgs, context: &Conte
         took_ms: started.elapsed().as_secs_f64() * 1000.0,
         results,
     })
+}
+
+/// A file a search inside files found, with its first matching line.
+fn found_entry(found: &kestrel_content::Found) -> Entry {
+    let meta = &found.item.meta;
+    Entry {
+        path: found.path(),
+        name: found.item.name.clone(),
+        kind: kind_of(false),
+        size: meta.size,
+        size_on_disk: meta.alloc,
+        modified: iso_utc(kestrel_analyze::unix_ms(meta.mtime)),
+        hidden: meta.attrs & attr::HIDDEN != 0,
+        cloud_only: kestrel_analyze::is_cloud_only(meta.attrs),
+        matched: found.hit.as_ref().map(|hit| LineMatch { line: hit.line, text: hit.text.clone(), more_lines: hit.lines.saturating_sub(1) }),
+    }
+}
+
+/// Files found by reading them, sorted as asked (by name when not).
+fn sort_entries(entries: &mut [Entry], by: Option<SortBy>, descending: Option<bool>) {
+    let order = sort_of(by, descending, false);
+    entries.sort_by(|a, b| {
+        let ordering = match order.key {
+            SortKey::Size => a.size.cmp(&b.size),
+            SortKey::Modified => a.modified.cmp(&b.modified),
+            SortKey::Path => a.path.to_lowercase().cmp(&b.path.to_lowercase()),
+            SortKey::Type => a.name.rsplit('.').next().cmp(&b.name.rsplit('.').next()),
+            _ => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        if order.descending { ordering.reverse() } else { ordering }
+    });
 }
 
 /// A share (`\\server\share`, `\\?\UNC\...`) or a device path, rather than a drive's folder.
@@ -228,6 +345,7 @@ pub fn list_folder(engine: &Engine, args: &ListArgs, _context: &Context) -> Resu
             modified: iso_utc(kestrel_analyze::unix_ms(item.meta.mtime)),
             hidden: item.meta.attrs & attr::HIDDEN != 0,
             cloud_only: kestrel_analyze::is_cloud_only(item.meta.attrs),
+            matched: None,
         })
         .collect();
     let size = entries.iter().map(|entry| entry.size).sum();
@@ -457,6 +575,7 @@ pub fn project_details(app: &AppHandle, args: &ProjectArgs, context: &Context) -
                 modified: file.get("mtime").and_then(Value::as_i64).and_then(iso_utc),
                 hidden: false,
                 cloud_only: false,
+                matched: None,
             })
             .collect(),
         build_output_folders: list("reclaimable_dirs").iter().map(|d| (text(d, "path").unwrap_or_default(), number(d, "bytes"))).collect(),
@@ -514,6 +633,7 @@ pub fn disk_usage(app: &AppHandle, args: &DiskArgs) -> Result<wire::DiskUsage, F
                         modified: row.get("mtime").and_then(Value::as_i64).and_then(iso_utc),
                         hidden: false,
                         cloud_only: false,
+                        matched: None,
                     })
                     .collect()
             })
@@ -547,7 +667,15 @@ pub fn answer(app: &AppHandle, request: Request, context: &Context) -> Result<Va
     let db = app.state::<Arc<Db>>().inner().clone();
     let value = match request {
         Request::Hello => serde_json::to_value(hello(&engine)),
-        Request::Search(args) => serde_json::to_value(search_index(&engine, &db, &args, context)?),
+        Request::Search(args) => {
+            let semantic = app.state::<Arc<crate::semantic::Semantic>>().inner().clone();
+            let media = app.state::<Arc<crate::media::Media>>().inner().clone();
+            let projects = app.state::<Arc<crate::projects::Projects>>().inner().clone();
+            let library = |path: &str| media.covers(path);
+            let places = crate::search::places::Resolver::new(projects);
+            let understanding = Understanding { db: &db, semantic: Some(&semantic), library: &library, places: &places };
+            serde_json::to_value(search_index(&engine, &args, context, &understanding)?)
+        }
         Request::ListFolder(args) => serde_json::to_value(list_folder(&engine, &args, context)?),
         Request::FolderSize(args) => serde_json::to_value(folder_size(&engine, &args, context)?),
         Request::Projects(args) => serde_json::to_value(projects(app, &args)?),
@@ -604,6 +732,16 @@ mod tests {
         Db::open_in_memory().unwrap()
     }
 
+    /// The media library reads nothing in these tests.
+    fn nowhere(_: &str) -> bool {
+        false
+    }
+
+    /// What the search understands without a model or places.
+    fn plain(db: &Db) -> Understanding<'_> {
+        Understanding { db, semantic: None, library: &nowhere, places: &natural::NoPlaces }
+    }
+
     fn hide(path: &std::path::Path) {
         use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, SetFileAttributesW};
         let wide: Vec<u16> = path.to_str().unwrap().encode_utf16().chain([0]).collect();
@@ -613,9 +751,10 @@ mod tests {
 
     #[test]
     fn searches_are_bounded_sorted_and_scoped() {
+        let database = db();
         let (engine, root, root_text) = scratch("search");
         let args = SearchArgs { query: "ext:rs".into(), folder: Some(root_text.clone()), sort: Some(SortBy::Size), limit: Some(2), ..SearchArgs::default() };
-        let found = search_index(&engine, &db(), &args, &context(5)).unwrap();
+        let found = search_index(&engine, &args, &context(5), &plain(&database)).unwrap();
         assert_eq!((found.total, found.returned, found.truncated), (3, 2, true));
         // Largest first, as sizes start.
         assert_eq!(found.results.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["lib.rs", "util.rs"]);
@@ -623,26 +762,55 @@ mod tests {
         assert_eq!(found.results[0].size, 30);
         assert!(found.results[0].modified.as_deref().is_some_and(|m| m.ends_with('Z')));
         let by_name = SearchArgs { sort: Some(SortBy::Name), limit: None, ..args.clone() };
-        let names: Vec<String> = search_index(&engine, &db(), &by_name, &context(5)).unwrap().results.into_iter().map(|e| e.name).collect();
+        let names: Vec<String> = search_index(&engine, &by_name, &context(5), &plain(&database)).unwrap().results.into_iter().map(|e| e.name).collect();
         assert_eq!(names, ["lib.rs", "main.rs", "util.rs"]);
         // Hidden items only when asked for.
         let hidden = SearchArgs { query: "hidden".into(), folder: Some(root_text.clone()), ..SearchArgs::default() };
-        assert_eq!(search_index(&engine, &db(), &hidden, &context(5)).unwrap().total, 0);
-        assert_eq!(search_index(&engine, &db(), &SearchArgs { hidden: true, ..hidden }, &context(5)).unwrap().total, 1);
+        assert_eq!(search_index(&engine, &hidden, &context(5), &plain(&database)).unwrap().total, 0);
+        assert_eq!(search_index(&engine, &SearchArgs { hidden: true, ..hidden }, &context(5), &plain(&database)).unwrap().total, 1);
         // A bad query is the asker's mistake.
         let bad = SearchArgs { query: "size:>>".into(), ..SearchArgs::default() };
-        assert_eq!(search_index(&engine, &db(), &bad, &context(5)).unwrap_err().kind, FailureKind::BadRequest);
-        assert_eq!(search_index(&engine, &db(), &SearchArgs::default(), &context(5)).unwrap_err().kind, FailureKind::BadRequest);
+        assert_eq!(search_index(&engine, &bad, &context(5), &plain(&database)).unwrap_err().kind, FailureKind::BadRequest);
+        assert_eq!(search_index(&engine, &SearchArgs::default(), &context(5), &plain(&database)).unwrap_err().kind, FailureKind::BadRequest);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The query service's search understands what the window's does: phrases, searches inside
+    /// files, the media library's clauses and tags (`Understanding`).
+    #[test]
+    fn searches_read_phrases_and_inside_files_as_the_window_does() {
+        let database = db();
+        let (engine, root, root_text) = scratch("understand");
+        fs::write(root.join("docs").join("notes.md"), "first line\nthe needle is here\n").unwrap();
+        let inside = |query: &str| SearchArgs { query: query.into(), folder: Some(root_text.clone()), ..SearchArgs::default() };
+        // A search inside files: the files, each with its first matching line.
+        let found = search_index(&engine, &inside(r#"content:needle"#), &context(5), &plain(&database)).unwrap();
+        assert_eq!(found.results.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["notes.md"]);
+        let matched = found.results[0].matched.clone().unwrap();
+        assert_eq!((matched.line, matched.text.as_str(), matched.more_lines), (2, "the needle is here", 0));
+        assert_eq!(found.ran_as, None, "typed clauses are run as they are");
+        // Narrowed by the other clauses.
+        assert_eq!(search_index(&engine, &inside("content:needle ext:rs"), &context(5), &plain(&database)).unwrap().total, 0);
+        // A phrase is read into clauses, and says what it ran as.
+        let phrase = search_index(&engine, &inside("rust files"), &context(5), &plain(&database)).unwrap();
+        assert_eq!(phrase.ran_as.as_deref(), Some("ext:rs"));
+        assert_eq!(phrase.total, 3);
+        // The media library's clauses are answered (by its tables: nothing here is in it).
+        let media = search_index(&engine, &inside("width:>100 kind:photo"), &context(5), &plain(&database)).unwrap();
+        assert_eq!(media.total, 0);
+        // A description needs AI search's model: without one it is the asker's mistake to fix.
+        assert_eq!(search_index(&engine, &inside("like:dog"), &context(5), &plain(&database)).unwrap_err().kind, FailureKind::BadRequest);
         fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn a_search_given_up_on_stops() {
+        let database = db();
         let (engine, root, _) = scratch("cancel");
         let given_up = context(5);
         given_up.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
         let args = SearchArgs { query: "*".into(), ..SearchArgs::default() };
-        assert_eq!(search_index(&engine, &db(), &args, &given_up).unwrap_err().kind, FailureKind::Timeout);
+        assert_eq!(search_index(&engine, &args, &given_up, &plain(&database)).unwrap_err().kind, FailureKind::Timeout);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -703,9 +871,10 @@ mod tests {
 
     #[test]
     fn nothing_is_answered_while_the_index_loads() {
+        let database = db();
         let engine = Engine::default();
         let args = SearchArgs { query: "x".into(), ..SearchArgs::default() };
-        assert_eq!(search_index(&engine, &db(), &args, &context(5)).unwrap_err().kind, FailureKind::Unavailable);
+        assert_eq!(search_index(&engine, &args, &context(5), &plain(&database)).unwrap_err().kind, FailureKind::Unavailable);
         assert_eq!(hello(&engine).index, "loading");
     }
 

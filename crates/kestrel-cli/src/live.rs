@@ -60,8 +60,14 @@ impl Live {
         let request = Request::Search(SearchArgs { query, limit: Some(limit), sort: Some(sort), descending: Some(descending), ..SearchArgs::default() });
         let Some((found, value)) = self.ask_as::<SearchResult>(&request)? else { return Ok(false) };
         if !self.printed_json(&value) {
+            if let Some(ran_as) = &found.ran_as {
+                println!("(read as: {ran_as})");
+            }
             for entry in &found.results {
                 println!("{:>10}  {}", human(entry.size), entry.path);
+                if let Some(matched) = &entry.matched {
+                    println!("{:>10}  {}: {}", "", matched.line, matched.text);
+                }
             }
             println!("{} results in {:.2} ms (from the running Kestrel)", found.total, found.took_ms);
         }

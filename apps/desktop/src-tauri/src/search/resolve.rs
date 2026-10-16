@@ -30,6 +30,12 @@ impl<'a> Resolver<'a> {
         Ok(Self { db, described: prepare(semantic, text)? })
     }
 
+    /// A resolver without AI search's model: a description finds nothing (the query service in
+    /// tests, which have no model).
+    pub fn index_only(db: &'a Db) -> Self {
+        Self { db, described: Prepared::default() }
+    }
+
     /// Replaces every clause the index can't answer with the entries it stands for. Returns
     /// the descriptions' scores, for ranking, when the query has one.
     pub fn resolve(&mut self, query: &mut Query, index: &Index) -> Result<Option<HashMap<EntryId, f32>>, String> {

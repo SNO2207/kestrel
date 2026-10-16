@@ -8,7 +8,8 @@
 // menu; closing them must leave none of their processes running. A project in the sandbox has
 // an npm script that echoes a marker, which the projects hub's Run starts in the pane once the
 // setting says so (skipped where npm isn't installed). The MCP server is started over stdio
-// against this slot's Kestrel and answers search_files for a file in the sandbox; kestrel-cli
+// against this slot's Kestrel and answers search_files for a file in the sandbox (by name, inside
+// it, and as a phrase, as the window's search box reads one); kestrel-cli
 // is built in the slot's target folder and asked the same with --live. The system clipboard is
 // never used (the Copy button and terminal copy and paste are manual checks).
 //
@@ -488,6 +489,14 @@ try {
       );
       assert.equal(found.results[0].path.toLowerCase(), needle.toLowerCase());
       assert.equal(found.results[0].kind, "file");
+      // It searches as the window's search box does: inside files, with the line that matched...
+      const inside = JSON.parse((await mcp.call("search_files", { query: "content:\"by the MCP\"", folder: sandbox })).text);
+      assert.deepEqual(inside.results.map((entry) => entry.name), [needleName], JSON.stringify(inside));
+      assert.deepEqual(inside.results[0].matched, { line: 1, text: "found by the MCP server", more_lines: 0 });
+      // ...and plain phrases, saying what they were read as.
+      const phrase = JSON.parse((await mcp.call("search_files", { query: "text files containing MCP", folder: sandbox })).text);
+      assert.equal(phrase.ran_as, "ext:txt;md;log content:MCP");
+      assert.deepEqual(phrase.results.map((entry) => entry.name), [needleName]);
       const listed = JSON.parse((await mcp.call("list_folder", { path: sandbox })).text);
       assert.deepEqual(listed.items.map((entry) => entry.name), ["alpha", "beta", "scripted"]);
       const size = JSON.parse((await mcp.call("folder_size", { path: sandbox })).text);

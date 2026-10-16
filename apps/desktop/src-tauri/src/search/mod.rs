@@ -16,6 +16,7 @@
 
 mod content;
 pub mod places;
+pub(crate) use content::{Files, run_to_end};
 pub mod resolve;
 pub mod taken;
 
@@ -32,7 +33,7 @@ use tauri::{AppHandle, State, Window};
 use crate::engine::{Engine, Listing, Row, SortSpec};
 use crate::projects::Projects;
 use crate::visibility::Visibility;
-use content::{Files, Filters, Plan};
+use content::{Filters, Plan};
 pub use content::{Searches, Status};
 
 /// FILETIME ticks at the Unix epoch.
@@ -110,7 +111,6 @@ pub struct Ask<'a> {
     /// The folder the tab is in, if it is one: where a search inside files with no other
     /// clause looks, even when searching everywhere.
     pub folder: Option<&'a str>,
-    pub sort: SortSpec,
     pub visibility: Visibility,
     pub options: &'a Options,
     /// Whether the media library reads the folder at a path (`Media::covers`): `taken:` in a
@@ -127,7 +127,8 @@ pub enum Decided {
 }
 
 /// Reads the text: as a phrase, or with "Search inside files" on, as text to look for and
-/// the clauses that choose files. Returns what it was read as, and what to do.
+/// the clauses that choose files. Returns what it was read as, and what to do. The query
+/// service's search reads its text the same way (devtools/query.rs).
 pub fn decide(ask: &Ask<'_>, clock: Clock, places: &dyn natural::Places) -> Result<(Understood, Decided), String> {
     let options = ask.options;
     let case = if options.match_case { Case::Sensitive } else { Case::Insensitive };
@@ -196,8 +197,17 @@ fn folder_name(path: &str) -> String {
     trimmed.rsplit('\\').next().filter(|name| !name.is_empty() && !name.ends_with(':')).unwrap_or(trimmed).to_owned()
 }
 
-/// Decides which files a search inside files reads.
-fn plan(engine: &Engine, ask: &Ask<'_>, plan_query: &str, patterns: Vec<Pattern>, taken: Vec<(i64, i64, bool)>, resolve: impl FnOnce(&mut kestrel_query::Query, &kestrel_index::Index) -> Result<(), String>) -> Result<Plan, String> {
+/// Decides which files a search inside files reads; `choose` runs the index's search of the
+/// other clauses when they choose the files (the window's way keeps a result set for a moment,
+/// the query service's reads the index in place).
+pub(crate) fn plan(
+    engine: &Engine,
+    ask: &Ask<'_>,
+    plan_query: &str,
+    patterns: Vec<Pattern>,
+    taken: Vec<(i64, i64, bool)>,
+    choose: impl FnOnce(&str) -> Result<Vec<(String, DirItem)>, String>,
+) -> Result<Plan, String> {
     let options = ask.options;
     let max_size = if options.max_size_mb == 0 { Limits::default().max_file_size } else { options.max_size_mb << 20 };
     let search = Search::new(&patterns, Limits { max_file_size: max_size, ..Limits::default() })?;
@@ -208,10 +218,7 @@ fn plan(engine: &Engine, ask: &Ask<'_>, plan_query: &str, patterns: Vec<Pattern>
     let indexed = root.is_some_and(|root| engine.index().read().lookup(&crate::engine::normalize(root)).is_some());
     let has_clauses = !parsed.clauses.is_empty();
     let files = if has_clauses && (ask.scope.is_none() || indexed) {
-        let listing = engine.search_resolving(plan_query, ask.scope, ask.sort, ask.visibility, resolve)?;
-        let rows = engine.rows(listing.set, 0, listing.total);
-        engine.release(listing.set);
-        Files::Chosen(rows?.into_iter().filter_map(item_of).collect())
+        Files::Chosen(choose(plan_query)?)
     } else if let Some(root) = root {
         Files::Folder { root: crate::engine::normalize(root), visibility: ask.visibility, filters: Filters::new(&parsed)? }
     } else {
@@ -253,7 +260,7 @@ pub fn search_run(
 ) -> Result<Answer, String> {
     let visibility = Visibility::from_request(show_hidden).with_protected(show_protected);
     let library = |path: &str| media.covers(path);
-    let ask = Ask { text: &text, scope: scope.as_deref(), folder: folder.as_deref(), sort, visibility, options: &options, library: &library };
+    let ask = Ask { text: &text, scope: scope.as_deref(), folder: folder.as_deref(), visibility, options: &options, library: &library };
     let places = places::Resolver::new(projects.inner().clone());
     let (understood, decided) = decide(&ask, Clock::local(), &places)?;
     let label = window.label().to_owned();
@@ -266,9 +273,14 @@ pub fn search_run(
         Decided::Content { plan_query, patterns, taken } => {
             let key = serde_json::to_string(&(&text, &scope, &folder, &options, show_hidden, show_protected)).unwrap_or_default();
             if !(update && searches.is_current(&label, tab, &key)) {
-                let mut resolver = resolve::Resolver::prepare(&db, &semantic, &plan_query)?;
-                let resolve = |query: &mut kestrel_query::Query, index: &kestrel_index::Index| resolver.resolve(query, index).map(|_| ());
-                let plan = plan(&engine, &ask, &plan_query, patterns, taken, resolve)?;
+                let choose = |plan_query: &str| -> Result<Vec<(String, DirItem)>, String> {
+                    let mut resolver = resolve::Resolver::prepare(&db, &semantic, plan_query)?;
+                    let listing = engine.search_resolving(plan_query, ask.scope, sort, visibility, |query, index| resolver.resolve(query, index).map(|_| ()))?;
+                    let rows = engine.rows(listing.set, 0, listing.total);
+                    engine.release(listing.set);
+                    Ok(rows?.into_iter().filter_map(item_of).collect())
+                };
+                let plan = plan(&engine, &ask, &plan_query, patterns, taken, choose)?;
                 searches.start(app, &label, tab, key, plan);
             }
             let (listing, status) = searches.snapshot(&engine, &label, tab, sort).ok_or("The search stopped")?;
@@ -321,7 +333,7 @@ mod tests {
     }
 
     fn ask<'a>(text: &'a str, options: &'a Options) -> Ask<'a> {
-        Ask { text, scope: None, folder: Some(r"C:\work"), sort: BY_NAME, visibility: Visibility::ALL, options, library: &nowhere }
+        Ask { text, scope: None, folder: Some(r"C:\work"), visibility: Visibility::ALL, options, library: &nowhere }
     }
 
     #[test]
@@ -399,10 +411,10 @@ mod tests {
         let root_text = root.to_str().unwrap().to_owned();
         let engine = Engine::default();
         let options = Options { inside: true, gitignore: true, ..Options::default() };
-        let asked = Ask { text: "needle", scope: None, folder: Some(&root_text), sort: BY_NAME, visibility: Visibility::ALL, options: &options, library: &nowhere };
+        let asked = Ask { text: "needle", scope: None, folder: Some(&root_text), visibility: Visibility::ALL, options: &options, library: &nowhere };
         let (_, decided) = decide(&asked, CLOCK, &natural::NoPlaces).unwrap();
         let Decided::Content { plan_query, patterns, taken } = decided else { panic!() };
-        let planned = plan(&engine, &asked, &plan_query, patterns, taken, |_, _| Ok(())).unwrap();
+        let planned = plan(&engine, &asked, &plan_query, patterns, taken, |_| Ok(Vec::new())).unwrap();
         assert!(matches!(planned.files, Files::Folder { .. }));
         assert_eq!(planned.place, format!("kestrel-search-run-{}", std::process::id()));
         // Run it as the background thread does, then show it as the window would.
