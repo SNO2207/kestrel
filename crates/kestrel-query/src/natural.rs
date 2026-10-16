@@ -11,7 +11,12 @@
 //!   "tiny" or "empty" before a kind ("large files");
 //! - places: "in downloads", "on the desktop", "in my documents", and projects by name
 //!   ("in kestrel"), through a [`Places`] resolver the app provides;
-//! - contents: "containing invoice", "that mention 'fn main'".
+//! - contents: "containing invoice", "that mention 'fn main'"; in pictures, the text the media
+//!   library read in them ("screenshots containing invoice" is `text:invoice`);
+//! - the media library's facts: a video's length ("longer than 5 minutes", "short videos"), the
+//!   camera ("taken with my pixel"), a location ("with gps"), and dates taken ("taken in 2023");
+//! - what a photo or video shows, for AI search: "photos of a dog on the beach", "that look like
+//!   a sunset" (`like:"…"`). A query that is a description already (`~…`) is left to it.
 //!
 //! Words that are none of these stay as name terms, and clauses already written in the query
 //! language (`ext:pdf`, `*.rs`, `"two words"`) are kept as they are. A single kind word alone
@@ -52,6 +57,11 @@ pub enum PartKind {
     Size,
     Place,
     Content,
+    /// A fact the media library holds: a video's length, the camera, a location, text in a
+    /// picture (`duration:`, `camera:`, `geo:`, `text:`).
+    Media,
+    /// What a photo or video shows, for AI search (`like:"…"`).
+    Like,
     /// A word of the name.
     Name,
     /// A clause typed in the query language.
@@ -244,6 +254,40 @@ const WEEKDAYS: &[&[&str]] = &[
     &["saturday", "sat"],
     &["sunday", "sun"],
 ];
+
+/// A video length's unit as the query writes it (`s`, `m` or `h`), and its name.
+fn duration_unit(word: &str) -> Option<(char, &'static str)> {
+    Some(match word {
+        "s" | "sec" | "secs" | "second" | "seconds" => ('s', "second"),
+        "min" | "mins" | "minute" | "minutes" => ('m', "minute"),
+        "h" | "hr" | "hrs" | "hour" | "hours" => ('h', "hour"),
+        _ => return None,
+    })
+}
+
+/// A length of time at `at`: `5 minutes`, `90s`, `1.5 hours`; as the query's `5m`, in words, and
+/// how many words it took.
+fn length_at(words: &[Word], at: usize) -> Option<(String, String, usize)> {
+    let word = &words.get(at)?.lower;
+    let digits: String = word.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let (count, unit, used) = if is_number(&digits) {
+        let rest = &word[digits.len()..];
+        if rest.is_empty() {
+            (digits.clone(), duration_unit(&words.get(at + 1)?.lower)?, 2)
+        } else {
+            (digits.clone(), duration_unit(rest)?, 1)
+        }
+    } else {
+        // "a minute", "an hour", "two minutes".
+        (number_word(word)?.to_string(), duration_unit(&words.get(at + 1)?.lower)?, 2)
+    };
+    let (letter, name) = unit;
+    let shown = if count == "1" { format!("1 {name}") } else { format!("{count} {name}s") };
+    Some((format!("{count}{letter}"), shown, used))
+}
+
+/// Words that introduce what a photo or video shows, right after its kind ("photos of…").
+const SHOWING: &[&str] = &["of", "showing", "with", "depicting", "featuring"];
 
 /// Verbs that say which date a phrase is about.
 const MODIFIED_VERBS: &[&str] = &["modified", "changed", "edited", "updated", "saved", "created", "made", "downloaded", "added", "written"];
@@ -783,6 +827,148 @@ impl Reader<'_> {
         project(1).map(|root| found(root, 1))
     }
 
+    /// A video's length: "longer than 5 minutes", "under 30 seconds", "between 1 and 5 minutes",
+    /// and "short" or "long" before videos.
+    fn duration(&self, at: usize) -> Option<Found> {
+        let word = self.plain(at)?;
+        let next = self.plain(at + 1).unwrap_or("");
+        if matches!(word, "short" | "long") {
+            let (kind, _) = self.kind(at + 1)?;
+            if !kind.clause.starts_with("type:video") {
+                return None;
+            }
+            let (clause, label) = if word == "short" { ("duration:<1m", "Shorter than a minute") } else { ("duration:>10m", "Longer than 10 minutes") };
+            return Some(Found { parts: vec![self.part(at, 1, PartKind::Media, clause.into(), label.into())], used: 1, strong: true });
+        }
+        let (op, skip) = match (word, next) {
+            ("longer" | "more", "than") => (">", 2),
+            ("over" | "above" | "exceeding", _) => (">", 1),
+            ("at", "least") => (">=", 2),
+            ("shorter" | "less", "than") => ("<", 2),
+            ("under" | "below", _) => ("<", 1),
+            ("at", "most") | ("up", "to") => ("<=", 2),
+            ("between", _) => ("..", 1),
+            _ => return None,
+        };
+        if op == ".." {
+            // "between 1 and 5 minutes", "between 30 seconds and 2 minutes".
+            let first = self.plain(at + 1)?;
+            let (low, low_words, low_used) = match length_at(self.words, at + 1) {
+                Some(found) => found,
+                None if is_number(first) => (first.to_owned(), first.to_owned(), 1),
+                None => return None,
+            };
+            if self.plain(at + 1 + low_used) != Some("and") {
+                return None;
+            }
+            let (high, high_words, high_used) = length_at(self.words, at + 2 + low_used)?;
+            let unit = high.chars().last().unwrap_or('s');
+            let (low, low_words) = if low.ends_with(['s', 'm', 'h']) { (low, low_words) } else { (format!("{low}{unit}"), low_words) };
+            let used = 2 + low_used + high_used;
+            let label = format!("{low_words} to {high_words} long");
+            return Some(Found { parts: vec![self.part(at, used, PartKind::Media, format!("duration:{low}..{high}"), label)], used, strong: true });
+        }
+        let (amount, shown, amount_used) = length_at(self.words, at + skip)?;
+        let used = skip + amount_used;
+        let label = match op {
+            ">" => format!("Longer than {shown}"),
+            ">=" => format!("{shown} or longer"),
+            "<" => format!("Shorter than {shown}"),
+            _ => format!("Up to {shown} long"),
+        };
+        Some(Found { parts: vec![self.part(at, used, PartKind::Media, format!("duration:{op}{amount}"), label)], used, strong: true })
+    }
+
+    /// The camera: "taken with my pixel", "shot on an iphone 15".
+    fn camera(&self, at: usize) -> Option<Found> {
+        if !TAKEN_VERBS.contains(&self.plain(at)?) || !matches!(self.plain(at + 1), Some("with" | "on" | "using" | "by")) {
+            return None;
+        }
+        let mut i = at + 2;
+        while matches!(self.plain(i), Some("my" | "a" | "an" | "the" | "our")) {
+            i += 1;
+        }
+        let first = self.words.get(i).filter(|w| !w.syntax)?;
+        if FILLER.contains(&first.lower.as_str()) || first.lower.is_empty() {
+            return None;
+        }
+        // A model number goes with the name: "iphone 15", "pixel 8a".
+        let second = self.words.get(i + 1).filter(|w| !w.syntax && w.lower.chars().any(|c| c.is_ascii_digit()));
+        let (name, length) = match second {
+            Some(second) => (format!("{} {}", first.lower, second.lower), 2),
+            None => (first.lower.clone(), 1),
+        };
+        let shown = match second {
+            Some(second) => format!("{} {}", first.raw, second.raw),
+            None => first.raw.clone(),
+        };
+        let used = i + length - at;
+        let clause = if name.contains(' ') { format!("camera:\"{name}\"") } else { format!("camera:{name}") };
+        Some(Found { parts: vec![self.part(at, used, PartKind::Media, clause, format!("Taken with {shown}"))], used, strong: true })
+    }
+
+    /// A location known, or not: "with gps", "with a location", "geotagged", "without location".
+    fn geo(&self, at: usize) -> Option<Found> {
+        let word = self.plain(at)?;
+        if word == "geotagged" {
+            return Some(Found { parts: vec![self.part(at, 1, PartKind::Media, "geo:yes".into(), "With a location".into())], used: 1, strong: true });
+        }
+        let with = match word {
+            "with" => true,
+            "without" | "no" => false,
+            _ => return None,
+        };
+        let mut i = at + 1;
+        while matches!(self.plain(i), Some("a" | "their" | "its" | "the")) {
+            i += 1;
+        }
+        if !matches!(self.plain(i), Some("location" | "locations" | "gps" | "coordinates" | "place" | "geotag" | "geotags")) {
+            return None;
+        }
+        let used = i + 1 - at;
+        let (clause, label) = if with { ("geo:yes", "With a location") } else { ("geo:no", "No location") };
+        Some(Found { parts: vec![self.part(at, used, PartKind::Media, clause.into(), label.into())], used, strong: true })
+    }
+
+    /// What a photo or video shows: "of a dog on the beach" right after a kind of picture or
+    /// video (`after_media`), or "that look like a sunset" anywhere. The description runs to the
+    /// next filter, clause or the end.
+    fn like(&self, at: usize, after_media: bool) -> Option<Found> {
+        let word = self.plain(at)?;
+        let mut i = at;
+        match word {
+            "looking" | "resembling" if word == "resembling" || self.plain(at + 1) == Some("like") => i += if word == "looking" { 2 } else { 1 },
+            "that" | "which" if matches!(self.plain(at + 1), Some("look" | "looks")) && self.plain(at + 2) == Some("like") => i += 3,
+            "look" | "looks" if self.plain(at + 1) == Some("like") => i += 2,
+            _ if after_media && SHOWING.contains(&word) => i += 1,
+            _ => return None,
+        }
+        let start = i;
+        while i < self.words.len() {
+            let word = &self.words[i];
+            if word.syntax
+                || (i > start
+                    && (self.content(i).is_some()
+                        || self.duration(i).is_some()
+                        || self.size(i).is_some()
+                        || self.date(i).is_some()
+                        || self.place(i).is_some()
+                        || self.camera(i).is_some()))
+            {
+                break;
+            }
+            i += 1;
+        }
+        let description: Vec<&str> = self.words[start..i].iter().map(|w| w.raw.trim_matches(|c| c == '"' || c == ',')).collect();
+        let description = description.join(" ");
+        if description.trim().is_empty() || description.split_whitespace().all(|w| FILLER.contains(&w.to_lowercase().as_str())) {
+            return None;
+        }
+        let used = i - at;
+        let clause = format!("like:\"{}\"", description.replace('"', ""));
+        Some(Found { parts: vec![self.part(at, used, PartKind::Like, clause, format!("Looks like \u{201c}{description}\u{201d}"))], used, strong: true })
+    }
+
     /// Contents: "containing invoice", "that mention 'fn main'", "with the text TODO".
     fn content(&self, at: usize) -> Option<Found> {
         let mut i = at;
@@ -832,6 +1018,10 @@ fn folder_title(path: &str) -> String {
 
 /// Reads `text` as a phrase, with dates relative to `clock` and places found by `places`.
 pub fn understand(text: &str, clock: Clock, places: &dyn Places) -> Understood {
+    // A description for AI search is the whole query: its bar says what it looks for.
+    if text.trim_start().starts_with('~') {
+        return Understood { query: text.trim().to_owned(), parts: Vec::new(), natural: false };
+    }
     let words = words(text);
     let reader = Reader { words: &words, clock, places };
     let mut parts: Vec<Part> = Vec::new();
@@ -844,11 +1034,16 @@ pub fn understand(text: &str, clock: Clock, places: &dyn Places) -> Understood {
             at += 1;
             continue;
         }
+        let after_media = parts.last().is_some_and(|part| part.kind == PartKind::Kind && is_media_kind(&part.clause));
         let found = reader
             .content(at)
+            .or_else(|| reader.duration(at))
             .or_else(|| reader.size(at))
             .or_else(|| reader.date(at))
+            .or_else(|| reader.camera(at))
+            .or_else(|| reader.geo(at))
             .or_else(|| reader.place(at))
+            .or_else(|| reader.like(at, after_media))
             .or_else(|| reader.kind(at).map(|(part, used)| Found { strong: used > 1, parts: vec![part], used }));
         match found {
             Some(found) => {
@@ -873,8 +1068,29 @@ pub fn understand(text: &str, clock: Clock, places: &dyn Places) -> Understood {
         _ => true,
     });
     merge_kinds(&mut parts);
+    text_in_pictures(&mut parts);
     let query = parts.iter().map(|part| part.clause.as_str()).collect::<Vec<_>>().join(" ");
     Understood { query, parts, natural: true }
+}
+
+/// Whether a kind's clause is pictures or videos: what can be described ("photos of…").
+fn is_media_kind(clause: &str) -> bool {
+    clause.starts_with("type:image") || clause.starts_with("type:video")
+}
+
+/// In pictures, "containing X" means the text the media library read in them (`text:`): a
+/// search inside the files of a PNG would find nothing.
+fn text_in_pictures(parts: &mut [Part]) {
+    if !parts.iter().any(|part| part.kind == PartKind::Kind && part.clause.starts_with("type:image")) {
+        return;
+    }
+    for part in parts.iter_mut().filter(|part| part.kind == PartKind::Content) {
+        let Some(value) = part.clause.strip_prefix("content:") else { continue };
+        let shown = value.trim_matches('"').to_owned();
+        part.clause = format!("text:{value}");
+        part.label = format!("Text \u{201c}{shown}\u{201d} in the picture");
+        part.kind = PartKind::Media;
+    }
 }
 
 /// The text as typed, with a label for each clause in it.
@@ -963,6 +1179,9 @@ pub fn describe(clause: &str) -> String {
     };
     let value = value.trim_matches('"');
     match key.to_ascii_lowercase().as_str() {
+        // `kind:photo` and `kind:video` are the media library's; other kinds are types.
+        "kind" if matches!(value.to_ascii_lowercase().as_str(), "photo" | "photos") => "Photos in the media library".into(),
+        "kind" if matches!(value.to_ascii_lowercase().as_str(), "video" | "videos") => "Videos in the media library".into(),
         "type" | "kind" => match value.to_ascii_lowercase().as_str() {
             "image" | "images" | "picture" | "pictures" | "photo" | "photos" | "pic" => "Pictures".into(),
             "video" | "videos" | "movie" | "movies" => "Videos".into(),
@@ -988,11 +1207,68 @@ pub fn describe(clause: &str) -> String {
         "taken" | "dt" => format!("Taken {}", date_words(value)),
         "in" | "folder" => format!("In {}", folder_title(value)),
         "content" => format!("Contains \u{201c}{value}\u{201d}"),
+        "width" => format!("Width {}", pixel_words(value)),
+        "height" => format!("Height {}", pixel_words(value)),
+        "camera" => format!("Taken with {value}"),
+        "duration" | "length" => duration_words(value),
+        "geo" if matches!(value.to_ascii_lowercase().as_str(), "yes" | "y" | "true" | "1" | "on") => "With a location".into(),
+        "geo" => "No location".into(),
+        "text" => format!("Text \u{201c}{value}\u{201d} in the picture"),
+        // A picture's path is what Find similar searches for.
+        "like" if value.contains('\\') => format!("Looks like {}", folder_title(value)),
+        "like" => format!("Looks like \u{201c}{value}\u{201d}"),
         "tag" => format!("Tagged {value}"),
         "regex" => format!("Name matches {value}"),
         "path" => format!("Path contains {value}"),
         "name" => format!("Name contains {value}"),
         _ => clause.to_owned(),
+    }
+}
+
+/// A `width:` or `height:` value in words: "over 1920 px", "1000 to 2000 px".
+fn pixel_words(value: &str) -> String {
+    let px = |text: &str| format!("{} px", text.trim_end_matches("px"));
+    if let Some(v) = value.strip_prefix(">=") {
+        format!("{} or more", px(v))
+    } else if let Some(v) = value.strip_prefix("<=") {
+        format!("up to {}", px(v))
+    } else if let Some(v) = value.strip_prefix('>') {
+        format!("over {}", px(v))
+    } else if let Some(v) = value.strip_prefix('<') {
+        format!("under {}", px(v))
+    } else if let Some((from, to)) = value.split_once("..") {
+        format!("{} to {}", from.trim_end_matches("px"), px(to))
+    } else {
+        px(value)
+    }
+}
+
+/// A `duration:` value in words: "Longer than 1 minute", "30 seconds to 2 minutes long".
+fn duration_words(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    let amount = |text: &str| {
+        let digits: String = text.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let name = match &text[digits.len()..] {
+            "" | "s" | "sec" | "secs" => "second",
+            "m" | "min" | "mins" => "minute",
+            "h" | "hr" | "hrs" => "hour",
+            "ms" => "millisecond",
+            other => return text.trim_end_matches(other).to_owned() + other,
+        };
+        if digits == "1" { format!("1 {name}") } else { format!("{digits} {name}s") }
+    };
+    if let Some(v) = lower.strip_prefix(">=") {
+        format!("{} or longer", amount(v))
+    } else if let Some(v) = lower.strip_prefix("<=") {
+        format!("Up to {} long", amount(v))
+    } else if let Some(v) = lower.strip_prefix('>') {
+        format!("Longer than {}", amount(v))
+    } else if let Some(v) = lower.strip_prefix('<') {
+        format!("Shorter than {}", amount(v))
+    } else if let Some((from, to)) = lower.split_once("..") {
+        format!("{} to {} long", amount(from), amount(to))
+    } else {
+        format!("About {} long", amount(&lower))
     }
 }
 
@@ -1172,6 +1448,66 @@ mod tests {
         assert_eq!(labels("photos taken in 2023"), ["Pictures", "Taken in 2023"]);
         assert_eq!(labels("large files in downloads"), ["Over 100 MB", "Files", "In Downloads"]);
         assert_eq!(labels("code changed today in kestrel"), ["Code", "Modified today", "In Kestrel"]);
+    }
+
+    #[test]
+    fn media_phrases_become_media_clauses() {
+        // Lengths of videos.
+        assert_eq!(query("videos longer than 5 minutes"), "type:video duration:>5m");
+        assert_eq!(query("clips under 30 seconds"), "type:video duration:<30s");
+        assert_eq!(query("videos over 1.5 hours"), "type:video duration:>1.5h");
+        assert_eq!(query("videos between 1 and 5 minutes"), "type:video duration:1m..5m");
+        assert_eq!(query("short videos from last week"), "duration:<1m type:video dm:lastweek");
+        assert_eq!(query("long videos"), "duration:>10m type:video");
+        assert_eq!(labels("videos longer than 5 minutes"), ["Videos", "Longer than 5 minutes"]);
+        assert_eq!(labels("videos between 30 seconds and 2 minutes"), ["Videos", "30 seconds to 2 minutes long"]);
+        // A size is still a size.
+        assert_eq!(query("videos over 1 GB"), "type:video size:>1gb");
+        // The camera, a location, and the date taken.
+        assert_eq!(query("photos taken with my pixel"), "type:image camera:pixel");
+        assert_eq!(query("photos shot on an iPhone 15 last year"), r#"type:image camera:"iphone 15" dm:lastyear"#);
+        assert_eq!(labels("photos taken with my Pixel"), ["Pictures", "Taken with Pixel"]);
+        assert_eq!(query("photos taken on monday"), "type:image taken:2026-10-12", "a date is a date");
+        assert_eq!(query("photos with gps"), "type:image geo:yes");
+        assert_eq!(query("pictures without a location"), "type:image geo:no");
+        // Text in pictures is what the library read in them, not their bytes.
+        assert_eq!(query("screenshots containing invoice"), "type:image screenshot text:invoice");
+        assert_eq!(labels("photos with the text costco"), ["Pictures", "Text \u{201c}costco\u{201d} in the picture"]);
+        assert_eq!(query("notes containing invoice"), "ext:txt;md;log content:invoice", "other files' contents are read");
+        // What a picture shows, for AI search.
+        assert_eq!(query("photos of a dog on the beach"), r#"type:image like:"a dog on the beach""#);
+        assert_eq!(query("videos of the kids playing from last month"), r#"type:video like:"the kids playing" dm:lastmonth"#);
+        assert_eq!(query("pictures that look like a sunset"), r#"type:image like:"a sunset""#);
+        assert_eq!(query("photos of sunsets taken in 2023"), r#"type:image like:"sunsets" taken:2023"#);
+        assert_eq!(labels("photos of a red car"), ["Pictures", "Looks like \u{201c}a red car\u{201d}"]);
+        // "of" after other kinds, or with nothing after it, is no description.
+        as_typed("minutes of the meeting");
+        as_typed("photos of");
+        // A description already is left to AI search, without chips.
+        let described = understand("~a dog from last year", CLOCK, &Fake);
+        assert_eq!((described.query.as_str(), described.parts.len(), described.natural), ("~a dog from last year", 0, false));
+    }
+
+    #[test]
+    fn media_clauses_are_described() {
+        assert_eq!(describe("kind:photo"), "Photos in the media library");
+        assert_eq!(describe("kind:videos"), "Videos in the media library");
+        assert_eq!(describe("kind:image"), "Pictures");
+        assert_eq!(describe("width:>1920"), "Width over 1920 px");
+        assert_eq!(describe("height:1000..2000"), "Height 1000 to 2000 px");
+        assert_eq!(describe("camera:pixel"), "Taken with pixel");
+        assert_eq!(describe("duration:>1m"), "Longer than 1 minute");
+        assert_eq!(describe("duration:30s..2m"), "30 seconds to 2 minutes long");
+        assert_eq!(describe("geo:yes"), "With a location");
+        assert_eq!(describe("!geo:yes"), "Not with a location");
+        assert_eq!(describe("text:costco"), "Text \u{201c}costco\u{201d} in the picture");
+        assert_eq!(describe("taken:2023"), "Taken in 2023");
+        assert_eq!(describe(r#"like:"a dog on a sofa""#), "Looks like \u{201c}a dog on a sofa\u{201d}");
+        assert_eq!(describe(r#"like:"C:\Photos\dog.jpg""#), "Looks like dog.jpg");
+        // Typed among other words, they are chips too.
+        let typed = understand("beach width:>1920 kind:photo", CLOCK, &Fake);
+        assert!(!typed.natural);
+        assert_eq!(typed.parts.iter().map(|part| part.kind).collect::<Vec<_>>(), [PartKind::Name, PartKind::Filter, PartKind::Filter]);
     }
 
     #[test]

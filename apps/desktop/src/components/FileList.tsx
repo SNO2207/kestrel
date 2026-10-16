@@ -113,6 +113,11 @@ interface Props {
   unfilteredTotal?: number | null;
   onFilter?: (text: string | null) => void;
   /**
+   * The query a search ran as, when it differs from what was typed: a phrase such as "photos of
+   * a dog" runs as `type:image like:"a dog"`, whose results are ranked as any description's.
+   */
+  ranQuery?: string | null;
+  /**
    * More entries for the item and folder menus, such as "Copy to other pane" and "Group by";
    * the item menu's are given the item when a single one is selected.
    */
@@ -225,9 +230,15 @@ export function FileList(props: Props) {
    * (into the column's order): then the arrow shows again.
    */
   const [resorted, setResorted] = createSignal<number | null>(null);
+  /** The description the results are ranked by, typed (`~…`, `like:`) or read from a phrase. */
+  const described = (): string | null => {
+    if (isDescribeQuery(shown().query)) return shown().query;
+    const ran = props.ranQuery;
+    return ran && isSearch() && isDescribeQuery(ran) ? ran : null;
+  };
   const ranked = () => {
     const listing = shownListing();
-    return isDescribeQuery(shown().query) && listing !== null && listing.set !== resorted() && !props.filter?.trim();
+    return described() !== null && listing !== null && listing.set !== resorted() && !props.filter?.trim();
   };
   const headerSort = (): SortSpec => (ranked() ? { key: "relevance" as SortKey, desc: false } : shown().sort);
   const sortBy = (key: SortKey) => {
@@ -1436,8 +1447,8 @@ export function FileList(props: Props) {
         />
       </Show>
       {/* AI search: what a description looked for, and the relevance slider (semantic.ts). */}
-      <Show when={isDescribeQuery(shown().query)}>
-        <DescribeBar query={shown().query} set={shownListing()?.set ?? null} total={total()} onRefresh={() => props.onStale()} />
+      <Show when={described()}>
+        {(query) => <DescribeBar query={query()} set={shownListing()?.set ?? null} total={total()} onRefresh={() => props.onStale()} />}
       </Show>
       {props.banner}
       <ColumnHeaders kind={columnKind()} sort={headerSort()} shift={shift()} onSort={sortBy} measure={measure} />

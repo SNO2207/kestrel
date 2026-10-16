@@ -76,7 +76,8 @@
   border-style: dashed;
 }
 
-.search-chip[data-kind="content"] {
+.search-chip[data-kind="content"],
+.search-chip[data-kind="like"] {
   border-color: var(--select-line);
 }
 

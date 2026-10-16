@@ -82,7 +82,7 @@ import {
 import { redoLast, undoLast } from "./undo";
 import { registerStepper, setFocusedRow } from "./previewState";
 import { SearchBanner } from "./components/SearchBanner";
-import { startSearch, stillSearching } from "./search";
+import { readingOf, startSearch, stillSearching } from "./search";
 import { startTriage } from "./triage";
 import { startWsl } from "./wsl";
 
@@ -261,6 +261,7 @@ export function App() {
                 revision={tab.revision}
                 sort={tab.sort}
                 query={tab.query}
+                ranQuery={readingOf(tab.id)?.query ?? null}
                 error={tab.error}
                 restore={tab.restore}
                 pending={tab.pending}

@@ -59,7 +59,8 @@ pub struct Options {
 pub struct Chip {
     pub clause: String,
     pub label: String,
-    /// `kind`, `modified`, `taken`, `size`, `place`, `content`, `name` or `filter`.
+    /// `kind`, `modified`, `taken`, `size`, `place`, `content`, `media` (a media library fact),
+    /// `like` (what a picture shows), `name` or `filter`.
     pub kind: &'static str,
     /// The words it was read from.
     pub phrase: String,
@@ -86,6 +87,8 @@ fn kind_name(kind: PartKind) -> &'static str {
         PartKind::Size => "size",
         PartKind::Place => "place",
         PartKind::Content => "content",
+        PartKind::Media => "media",
+        PartKind::Like => "like",
         PartKind::Name => "name",
         PartKind::Filter => "filter",
     }

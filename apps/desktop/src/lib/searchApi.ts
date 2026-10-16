@@ -28,7 +28,7 @@ export interface SearchOptions {
 export interface Chip {
   clause: string;
   label: string;
-  kind: "kind" | "modified" | "taken" | "size" | "place" | "content" | "name" | "filter";
+  kind: "kind" | "modified" | "taken" | "size" | "place" | "content" | "media" | "like" | "name" | "filter";
   /** The words it was read from. */
   phrase: string;
 }
