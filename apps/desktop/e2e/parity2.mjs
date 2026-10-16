@@ -369,9 +369,11 @@ try {
       input.dispatchEvent(new InputEvent("input", { bubbles: true }));
       return await new Promise((resolve) => {
         const check = () => {
-          // Results, which match both words: "file 00999.dat" comes first.
+          // Results, which match both words: "file 00999.dat" comes first. It may be another
+          // scratch folder's (another run of this suite's, searching everywhere), which this
+          // same search found too.
           const first = document.querySelector(".tab-panel.active .filelist.results .row[data-index='0']");
-          if (first?.getAttribute("data-path")?.toLowerCase() === `${big.toLowerCase()}\\file 00999.dat`) resolve(performance.now() - started);
+          if (first?.getAttribute("data-path")?.toLowerCase().endsWith("\\file 00999.dat")) resolve(performance.now() - started);
           else if (performance.now() - started > 15000) resolve(Infinity);
           else requestAnimationFrame(check);
         };
