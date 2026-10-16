@@ -102,6 +102,38 @@ try {
     assert.equal(await input.inputValue(), "beta.txt");
   });
 
+  await step("F2 pressed while the rows are being fetched again still renames", async () => {
+    await page.keyboard.press("Escape");
+    await panel.locator("input.rename").waitFor({ state: "detached" });
+    await row("beta.txt").click();
+    // F2 goes in at the moment the refreshed list draws its rows without their details yet. A
+    // list that keeps its rows drawn until the new ones are in has no such moment: then F2
+    // goes in once the refresh is over.
+    const whileLoading = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const list = document.querySelector(".tab-panel.active .list-viewport");
+          const press = (loading) => {
+            observer.disconnect();
+            clearTimeout(timer);
+            list.dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true, cancelable: true }));
+            resolve(loading);
+          };
+          const observer = new MutationObserver(() => {
+            const rows = [...document.querySelectorAll(".tab-panel.active .row")];
+            if (rows.length > 0 && rows.some((row) => !row.hasAttribute("data-path"))) press(true);
+          });
+          const timer = setTimeout(() => press(false), 2_000);
+          observer.observe(list, { subtree: true, childList: true, attributes: true });
+          document.querySelector('button[aria-label="Refresh"]').click();
+        }),
+    );
+    const input = panel.locator("input.rename");
+    await input.waitFor({ timeout: 5_000 });
+    assert.equal(await input.inputValue(), "beta.txt");
+    if (!whileLoading) console.log("    (the rows stayed drawn through the refresh, so F2 came after it)");
+  });
+
   await step("a file that arrives during a rename shows once the rename is over", async () => {
     writeFileSync(join(sandbox, "during.txt"), "during");
     await page.waitForTimeout(600);

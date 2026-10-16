@@ -588,14 +588,33 @@ export function FileList(props: Props) {
   /** The single row an action such as Rename applies to, or -1 if the selection is not one row. */
   const soleRow = () => (selection().count === 1 ? selection().first : -1);
 
+  /**
+   * A rename asked for while its row's details were still on their way: just after a refresh
+   * the rows are fetched again, and for a few milliseconds F2 found nothing to rename and was
+   * lost. It starts once the row is in, if the list and selection are still the same.
+   */
+  let renameWhenLoaded: { row: number; key: string } | null = null;
+
   const startRename = () => {
     if (inArchive(props.listing)) return notifyReadOnly();
     const row = soleRow();
-    if (row >= 0 && rowAt(row)) {
-      reveal(row);
-      setRenaming(row);
-    }
+    if (row < 0) return;
+    reveal(row);
+    if (rowAt(row)) setRenaming(row);
+    else renameWhenLoaded = { row, key: contentKey() };
   };
+
+  createEffect(() => {
+    loadedTick();
+    const wanted = renameWhenLoaded;
+    if (!wanted) return;
+    if (wanted.key !== contentKey() || soleRow() !== wanted.row) {
+      renameWhenLoaded = null;
+    } else if (rowAt(wanted.row)) {
+      renameWhenLoaded = null;
+      setRenaming(wanted.row);
+    }
+  });
 
   const finishRename = (row: number, name: string | null) => {
     if (renaming() !== row) return;
