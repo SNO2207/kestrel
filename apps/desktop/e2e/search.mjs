@@ -366,6 +366,18 @@ try {
     await clearSearch();
   });
 
+  await step("Search inside files is off again after a restart, while its options are kept", async () => {
+    await page.locator(".search-inside").click();
+    assert.equal(await page.locator(".search-inside").getAttribute("aria-pressed"), "true");
+    // Settings reach local storage when they change; a reload stands in for a restart.
+    await page.reload();
+    await page.locator(".search-inside").waitFor();
+    assert.equal(await page.locator(".search-inside").getAttribute("aria-pressed"), "false");
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("kestrel.search-options") ?? "{}"));
+    assert.equal(stored.inside, false, "the mode itself is not remembered");
+    assert.equal(stored.gitignore, true, "the other options are");
+  });
+
   // ---------- phrases ----------
 
   await step("a phrase is read into chips, with the right results", async () => {

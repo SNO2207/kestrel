@@ -976,3 +976,7 @@ Git:
   (`Pipe::drained`, which polls `FilePipeLocalInformation`), and only after a final answer.
 - Python run from the Bash tool on this machine may write files with CRLF line endings; strip the
   carriage returns before committing or comparing (`.gitattributes` keeps the repository LF).
+- Modes that change what a search means ("Search inside files", Describe) last only until the
+  app closes; their options (case, regular expressions, the size limit) are remembered. A mode
+  left on across a restart made every later search look inside files, and a whole e2e pass
+  failed on it. Don't persist a new mode of that kind either.

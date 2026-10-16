@@ -6,7 +6,8 @@
  * Describe mode is the search box's toggle: while it is on, what is typed is sent as a
  * description (`~` and the text), and the box shows the text without the `~`. A query that is
  * already a description (typed with `~`, or with a `like:` clause, or from a saved search) is
- * sent as it is.
+ * sent as it is. The mode lasts until the app closes: left on across a restart, every search
+ * would quietly be a description.
  */
 import { createSignal } from "solid-js";
 
@@ -19,17 +20,8 @@ import { activeTab, openSearch, setQuery } from "./state";
 /** The AI search page's address. */
 export const AI_SEARCH = "kestrel:ai-search";
 
-const MODE_KEY = "kestrel.describe";
 
-function stored(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-const [describing, setDescribingSignal] = createSignal(stored(MODE_KEY) === "on");
+const [describing, setDescribingSignal] = createSignal(false);
 export { describing };
 
 /** Whether a query asks for photos and videos by description. */
@@ -46,11 +38,6 @@ export function setDescribing(on: boolean) {
   const tab = activeTab();
   const typed = tab ? boxText(tab.query) : "";
   setDescribingSignal(on);
-  try {
-    localStorage.setItem(MODE_KEY, on ? "on" : "off");
-  } catch {
-    // Not kept; the mode still changes.
-  }
   if (tab && typed.trim() !== "") setQuery(tab.id, on ? queryFor(typed) : typed.replace(/^\s*~\s?/, ""));
 }
 

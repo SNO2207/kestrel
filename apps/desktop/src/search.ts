@@ -9,7 +9,9 @@
  * leaves its search, or closes, stops its search inside files.
  *
  * The options ("Search inside files", regular expressions, case, whole words, .gitignore, the
- * size limit) are the window's, remembered in local storage.
+ * size limit) are the window's, remembered in local storage, except "Search inside files"
+ * itself, which lasts until the app closes: left on, it would make every later search, after a
+ * restart too, look inside files rather than at names.
  */
 import { createEffect, createRoot, createSignal } from "solid-js";
 
@@ -26,7 +28,7 @@ export const SIZE_LIMITS = [1, 10, 50, 200, 1000];
 function storedOptions(): SearchOptions {
   try {
     const stored: unknown = JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "null");
-    if (stored && typeof stored === "object") return { ...DEFAULT_OPTIONS, ...(stored as Partial<SearchOptions>) };
+    if (stored && typeof stored === "object") return { ...DEFAULT_OPTIONS, ...(stored as Partial<SearchOptions>), inside: false };
   } catch {
     // Unreadable or unavailable: the defaults stand.
   }
@@ -41,7 +43,7 @@ export function setSearchOptions(change: Partial<SearchOptions>) {
   const next = { ...options(), ...change };
   setOptionsSignal(next);
   try {
-    localStorage.setItem(OPTIONS_KEY, JSON.stringify(next));
+    localStorage.setItem(OPTIONS_KEY, JSON.stringify({ ...next, inside: false }));
   } catch {
     // Not remembered, which is harmless.
   }
