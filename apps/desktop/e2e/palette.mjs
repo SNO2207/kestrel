@@ -385,6 +385,28 @@ try {
     await until(async () => (await activeTabTitle()) === OTHER, "the folder typed opens");
   });
 
+  await step("a query that reaches the backend after the next one neither cancels it nor is shown", async () => {
+    // The backend runs queries on a pool of threads, so under load the query for one key can
+    // arrive after the next key's (places.mjs once waited in vain for "this pc"). The hook
+    // holds the query for the shorter text back until the longer one's has started, and that
+    // one then waits until the held one has been through, as the pool once had them.
+    await closePalette();
+    await openPalette();
+    await main.settled();
+    const shorter = `${tag} othe`;
+    assert.equal(await invoke(page, "palette_dev_late", { hold: shorter }), "armed");
+    await main.input.fill(shorter);
+    await until(async () => (await invoke(page, "palette_dev_late")) === "holding", "the query for the shorter text is held back");
+    await page.keyboard.type("r");
+    await main.settled();
+    assert.equal(await invoke(page, "palette_dev_late"), "off", "the held query has been through");
+    // The answer for what was typed, with its matched letters marked: not the list shown before.
+    assert.equal(await main.input.inputValue(), `${tag} other`);
+    assert.equal((await main.titles())[0], OTHER);
+    assert((await main.items.first().locator("mark").count()) > 0, "the first hit is the answer's, its letters marked");
+    await closePalette();
+  });
+
   // ---------- the quick launcher ----------
 
   const launcher = paletteIn(quick);
@@ -618,6 +640,7 @@ try {
   console.log("\nall checks passed; screenshots are in", out);
 } finally {
   holder?.kill();
+  await invoke(page, "palette_dev_late", { release: true }).catch(() => {});
   await invoke(page, "launcher_dev_hotkey", { shortcut: null }).catch(() => {});
   await invoke(page, "set_keep_in_tray", { keep: false }).catch(() => {});
   await invoke(page, "show_main_window").catch(() => {});

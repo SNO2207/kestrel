@@ -86,9 +86,17 @@ export const PALETTE_RUN = "palette-run";
 export const LAUNCHER_SHOWN = "launcher-shown";
 export const LAUNCHER_SETTINGS = "launcher-settings";
 
+/** Which of its page's queries a request is. Mirrors `palette::Sent`. */
+export interface PaletteSent {
+  /** Different at every load of the page. */
+  page: string;
+  /** Counts up with each query the page sends. */
+  number: number;
+}
+
 export const paletteApi = {
-  query: (request: { text: string; session: string; items: PaletteItem[]; show_hidden: boolean; limit?: number }) =>
-    invoke<PaletteResults>("palette_query", { request }),
+  query: (request: { text: string; session: string; items: PaletteItem[]; show_hidden: boolean; limit?: number }, sent?: PaletteSent) =>
+    invoke<PaletteResults>("palette_query", { request, sent: sent ?? null }),
   record: (item: PaletteUse) => invoke<void>("palette_record", { item }),
   forget: (provider: string, id: string) => invoke<void>("palette_forget", { provider, id }),
 
